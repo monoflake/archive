@@ -123,8 +123,8 @@ else, on a timeout, or on no answer, with events for each step and the status an
 ## Seen in the console
 
 The console's Schedules page is to list every job -- its node, its service, its schedule, when it
-runs next, how its last run went, read from the ledger -- and run one now; it waits on the console's
-own todo. **It reads each node's `cron` through that node's door, as it reads the node's host**,
+runs next, how its last run went, read from the ledger -- and run one now; it waits on RFC
+68xsm. **It reads each node's `cron` through that node's door, as it reads the node's host**,
 infra's `spec/architecture/host.md`, "host has no interface on the node, and a door Caddy keeps". **Pausing a job is the repository's
 change**, as every setting the console changes is to be (infra's `spec/architecture/host.md`, "One name inside, and a
 domain label outside"): until the bot that writes it exists, a pause is `cron`'s own, held until

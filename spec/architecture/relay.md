@@ -74,8 +74,7 @@ holds.** The console's server is a stateless front end that draws and never wait
 relay of the node nearest it is its backend: `/state` is the whole cluster as held, with no read of
 host or of a neighbor on the way. A read the console needs that the relay cannot yet answer that way
 is held by the relay before the console reads it, never gathered while the console waits; what is
-still gathered in the console is listed in web's `spec/todo/todo.md`, "The console's reads move to
-the backend". Decided with the author on 2026-10-09.
+still gathered in the console is listed in RFC mij2d. Decided with the author on 2026-10-09.
 
 ## A node says it is leaving before it goes
 

@@ -201,8 +201,8 @@ concern.
 back for a while; the bytes stay where they were. A cid becomes garbage only when no reference in its
 scope -- live, or deleted and still restorable -- points at it, which deduplication makes the one
 safe test: two references may share the bytes. They are counted by a table of references, never a
-number kept beside the cid -- web's `spec/todo/milestones.md`, "Deleting removes one thing, and never
-what it pointed at", is why.
+number kept beside the cid -- web's `spec/architecture/collection.md`, "Deleting removes one thing, and
+never what it pointed at", is why.
 
 **Every period is seven days for now**: a deleted reference can be put back for seven days, and a
 cid nothing references is reclaimed seven days after. A period of its own for an app, or for one
