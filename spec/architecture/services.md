@@ -43,7 +43,8 @@ hint: each program asks GitHub about the run itself before it runs anything.
 `vpc_services` and nowhere in its code; one node down does not keep the others from hearing. The
 hook answers GitHub with success only when every node took the run, so a node that missed it shows
 as a failed delivery, which can be sent again -- harmless to the nodes that took it, since each
-takes a run once. A node offline when a run ended still misses it until then -- RFC tkuxb.
+takes a run once. A node offline when a run ended takes it once it is back, asking GitHub itself --
+RFC tkuxb.
 
 **Rejected: a step in the workflow calling the Worker with GitHub's OIDC token.** It holds no secret
 at all, which the webhook does not match. It also fires before the run has ended, so a node would
