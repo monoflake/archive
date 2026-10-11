@@ -86,8 +86,7 @@ ENV PGDATA=/var/lib/postgresql/data \
 	WALG_LIBSODIUM_KEY_TRANSFORM=hex \
 	AWS_S3_FORCE_PATH_STYLE=true
 # An unreachable store fails in seconds: Postgres retries archiving by itself, and the backup runs
-# again the next day. See spec/issues/scheduling.md, "Health does not say that archiving has
-# stopped".
+# again the next day. See RFC np65b.
 ENV S3_MAX_RETRIES=3
 # The image's `postgres`, by number; host gives the app's directory to this user.
 USER 999:999

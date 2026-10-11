@@ -219,4 +219,4 @@ the browser at once. A browser that has died is started again for the next captu
 
 ## What is still open
 
-See [../issues/services.md](../issues/services.md).
+A place that signs a picture's address for a while -- RFC ukhvi.

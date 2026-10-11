@@ -246,4 +246,4 @@ console's row of each node's round trip to the database's primary.
    catches up by it. A node that was away no longer misses a run.
 3. **Three writers.** The one writer becomes the three, an entry committed by two of them.
 
-Which consensus and which gossip is open -- [../issues/relay.md](../issues/relay.md).
+Which consensus and which gossip is open -- RFC oq3rw.

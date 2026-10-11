@@ -4,8 +4,7 @@ version = 1
 name = "ledger"
 display_name = "Task Ledger"
 # One node until the platform's scheduler can run it on more; its data is in the cluster, reached by
-# the `DATABASE_URL` that `mise run database grant platform ledger` writes. See
-# spec/todo/todo.md, "Toward services that keep nothing".
+# the `DATABASE_URL` that `mise run database grant platform ledger` writes. See RFC z9vqb.
 placements = ["rdu"]
 # Deployed by hand until ledger moves into the database: the version a run would deploy needs the
 # `DATABASE_URL` that only `mise run database grant` makes. See spec/architecture/databases.md,

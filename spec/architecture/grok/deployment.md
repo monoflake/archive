@@ -90,5 +90,4 @@ yet: its `GROK2API_API_KEY` goes into the node's `secret.env` first, then `home`
 not listen, so host's health check would read a first deploy as failed. So the image is run once
 on the node with `login`, against the directory host gives the app as `/data`, before `home` is
 placed; the deploy that follows finds the CLI signed in. Whether the server should listen while it
-waits instead is [../../issues/services.md](../../issues/services.md), "grok listens only once it
-is signed in".
+waits instead is RFC zaabo.

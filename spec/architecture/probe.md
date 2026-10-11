@@ -108,4 +108,4 @@ reads, listens and reports its errors is web's `spec/architecture/status.md`.
 
 ## What is still open
 
-See [../issues/services.md](../issues/services.md).
+A second place sharing the checks with the first -- RFC lz39t.

@@ -234,8 +234,7 @@ kept.
 
 **What an app connects to is the next step.** Its URL names the primary, so a failover or a major's
 switch rewrites every app's URL and restarts it. A proxy on every node, answering on one address that
-never changes and passing on to whichever node is primary, would make both invisible to the apps --
-[../todo/todo.md](../todo/todo.md), "The database".
+never changes and passing on to whichever node is primary, would make both invisible to the apps.
 
 ## The sidecar, for an adopted program until then
 

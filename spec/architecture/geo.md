@@ -31,7 +31,7 @@ index, so the deploy fails and the previous version answers on.
 
 **The data is as new as the last build.** Any push touching geo rebuilds it, and `deploy.yml`
 rebuilds geo alone on the first of each month. How often it should be rebuilt, and by whom, is open
--- [../issues/scheduling.md](../issues/scheduling.md), "How often geo's data is rebuilt".
+-- RFC 04grr.
 
 Rejected: **geo fetching GeoLite2 itself, once a day, into a data directory of its own**, which was
 how it began. A node without IPv4 could not reach the mirror, so `/geo/ip` answered `503` there,

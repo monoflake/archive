@@ -112,8 +112,7 @@ pub fn patroni(config: &Config, machine: Machine, data: &Path, run: &Path) -> Va
 			"connect_address": format!("{address}:{REST}"),
 			"authentication": { "username": REST_USER, "password": config.patroni_password },
 		},
-		// etcd answers only with a password, the same as the REST's. See spec/todo/todo.md, "The
-		// database".
+		// etcd answers only with a password, the same as the REST's.
 		"etcd3": {
 			"hosts": etcd,
 			"protocol": "http",

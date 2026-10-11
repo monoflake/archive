@@ -206,8 +206,7 @@ what it pointed at", is why.
 
 **Every period is seven days for now**: a deleted reference can be put back for seven days, and a
 cid nothing references is reclaimed seven days after. A period of its own for an app, or for one
-part of an app, is open -- [../issues/scheduling.md](../issues/scheduling.md), "How long an app keeps
-what it deleted".
+part of an app, is open -- RFC n3s8k.
 
 **Each store says how it lets garbage go**:
 

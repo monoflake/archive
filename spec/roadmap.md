@@ -1,8 +1,7 @@
 # Roadmap
 
-Where the platform is going, without the steps. What is decided and waiting is
-[todo/todo.md](todo/todo.md), and what is open is [issues/issues.md](issues/issues.md); how the three
-divide the work is the workspace's `spec/planning.md`.
+Where the platform is going, without the steps. What is not done is an RFC -- the workspace's
+`spec/planning.md`.
 
 - **Every API is reached through one gateway**, whose declarations are the only description of a
   service's routes, limits and lifetimes -- [architecture/gateway.md](architecture/gateway.md). The

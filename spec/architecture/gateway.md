@@ -6,9 +6,8 @@ everything a service would otherwise write again: where a request goes, CORS, ho
 is kept, whether a credential is needed, and the files every host answers for. A service is
 business logic and one declaration the gateway reads.
 
-The move to it is done but for milestones E7 and E13 in
-[../todo/milestones.md](../todo/milestones.md); what is left is listed in
-[../issues/gateway.md](../issues/gateway.md). Where [services.md](services.md) or
+The move to it is done but for milestones E7 and E13, RFC 8qh17 and RFC j131f; what is left is
+filed under the RFCs' `gateway` area. Where [services.md](services.md) or
 [delivery.md](delivery.md) say something else about the hosts, this file wins.
 
 ## The gateway is infrastructure, and pages are not
@@ -415,6 +414,5 @@ quiet, and it is released.
 `ffoni.com` left this way. `cdn.ffoni.com` and `api.ffoni.com` were such profiles --
 `api.ffoni.com/geo/ip` read as `/v1/geo/ip` -- until rdm, the last caller, asked
 `cdn.monoflake.com` instead; their rows, the gateway's route and `rules/ffoni.com` were deleted on 2026-10-04. `cdn.ffoni.com`
-was bound back on 2026-10-08, as the same profile, because the live corpus still names it --
-[../issues/gateway.md](../issues/gateway.md), "cdn.ffoni.com is bound back until the corpus stops
-naming it".
+was bound back on 2026-10-08, as the same profile, because the live corpus still names it -- RFC
+q3054.

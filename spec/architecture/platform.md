@@ -50,4 +50,4 @@ there is something to hold; until the router is deployed, the zone's redirect ru
 
 ## What is still open
 
-See [../issues/services.md](../issues/services.md).
+Where the telemetry view goes -- RFC nva8u.

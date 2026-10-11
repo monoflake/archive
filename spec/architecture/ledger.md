@@ -115,13 +115,11 @@ mirrored and failed over as the cluster is, and the ledger keeps nothing on its 
 - **Its schema moves by migrations the ledger runs itself**, each at start under one advisory lock,
   in its own transaction with its row in `ledger_migrations`. A migration is an expand or a
   contract, and a test refuses an expand that drops, renames, retypes, adds `NOT NULL` or truncates
-  anything; a runner for every app is [../issues/scheduling.md](../issues/scheduling.md), "Schema
-  changes go through the platform".
+  anything; a runner for every app is RFC hz1av.
 - **Its SQL is tested against a real Postgres 18**: a service in CI, and a throwaway one in docker
   locally; without one the SQL tests say so and pass over themselves, and in CI that is a failure.
 - **The SQLite it was kept in is read once, by `ledger import <path>`**, which copies every task as
   kept and every event, any schema it ever had, and copies nothing twice when run again.
 
 Until it moves in, the ledger deployed on `rdu` is the SQLite one, `ledger.db` in its own directory,
-and its rollout is by hand so the new one is not deployed before its database exists --
-[../todo/todo.md](../todo/todo.md), "The database".
+and its rollout is by hand so the new one is not deployed before its database exists -- RFC xsarw.
