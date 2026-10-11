@@ -502,7 +502,20 @@ object's address.** The status page answers every one of its marks this way, at 
 alias layer for each mark its head names and writes the object's address straight into the markup,
 so the browser fetches the bytes with no redirect at all; a mark that resolves to nothing is left
 out of the head. Each answer is held in the server's memory for the publication delay, so a render
-asks again at most every five minutes.
+asks again at most every five minutes. The site's root layout is the pattern to copy:
+`+layout.server.ts` asks `marksOf` for its scope's marks and `+layout.svelte` names each in the head.
+
+**A mark is never a file in an app's `static/`, and a head never names `/favicon.svg` or
+`/favicon.ico`.** Those paths are for the names a browser asks for on its own, followed by a route
+as above; a head that names them sends every page through a redirect the rule exists to spare it,
+and a file in `static/` is a mark the record does not know, which no other host can find and no
+publication moves. A new mark is the three steps above -- its bytes an object under their content
+id, one line in `data/record/symlinks.json`, the root naming it -- and then the head. Written after
+space's favicon on 2026-10-11 went first into `static/`, then behind a redirect copied from the
+console's `app.html`, and showed in Chrome's tab from neither; it showed once the head named the
+objects. Chrome's tab strip is out of a DevTools session's reach -- a screenshot is the page alone,
+and a favicon's fetch may land before the network log starts -- so whether a tab draws its icon is
+for a person to look at, not for an agent to infer.
 
 **A file a browser takes only from the page's own origin is served, not redirected to.** A sitemap's
 XSL stylesheet is the case: `serveSymlink` follows the name and returns the bytes from the asking
@@ -517,7 +530,7 @@ publishing, not by redeploying anything.
 **web's `data/record/symlinks.json` names every scope's fixed names by content id** -- its marks, and any
 other file a host answers under a name of its own, such as a sitemap's stylesheet -- and the bytes
 are objects like any other, in the published tree and out of git. A scope is a service's internal name -- `site`,
-`status`, `api`, `cdn`, `aka`, `console`, and `platform` for the page `monoflake.com` and `monoflake.net`
+`status`, `api`, `cdn`, `aka`, `console`, `space`, and `platform` for the page `monoflake.com` and `monoflake.net`
 will answer at their apexes, named before it is built -- never a host, since one service may be
 deployed under several, and
 each of its files points at a content id; the extension is the file's. A service with no page names
