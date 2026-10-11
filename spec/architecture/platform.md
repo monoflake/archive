@@ -17,12 +17,13 @@ their own behind Access -- see infra's `spec/architecture/host.md`, "One name in
 
 ## One name, many apps: SPA within a scope, MPA across
 
-**Planned, not built: a router Worker, `platform`, answers `canmi.app/*` and sends each path on by
-its first segment.** Today the apex is a redirect rule in `rules/canmi.app/`, sending `canmi.app` to
-the site, and no `platform` app exists; what follows is the shape it is to take. A scope with an app of its own goes to that app --
-a Worker by its binding, or an app on the node through the one VPC service, with its label as
-`Host`. Everything else goes to the platform's core app. The table is generated from the scopes'
-`service.toml`s, as the API gateway's is.
+**A router Worker answers `canmi.app/*` and sends each path on by its first segment: web's
+`space`**, a Hono app in `apps/space`, rather than a Worker of the platform's, since `platform` names
+monoflake, this repository and infra, and the scopes are web's. A scope with an app of its own goes
+to that app -- a Worker by its binding, or an app on the node through the one VPC service, with its
+label as `Host`. Everything else goes to the core app, and until there is one, `/` redirects to the
+site. The table is generated from the scopes' `service.toml`s, as the API gateway's is. How space
+lays its scopes out is web's `spec/architecture/space.md`.
 
 - **The core is one SvelteKit app** holding what belongs together and moves between itself
   constantly: the landing, and later signing in and the account. Within it, navigation is a
@@ -44,8 +45,8 @@ a Worker by its binding, or an app on the node through the one VPC service, with
 
 **The status page is not one of its scopes**: it is served by Vercel alone, at `status.canmi.app`
 and `canmi.vercel.app`, so that a page reporting whether the platform is up does not go down with
-it -- web's `spec/architecture/status.md`, \"The page: one app, served by Vercel\". The core app and the router
-wait until there is something to hold; until then the zone's redirect rule stands in for both.
+it -- web's `spec/architecture/status.md`, \"The page: one app, served by Vercel\". The core app waits until
+there is something to hold; until the router is deployed, the zone's redirect rule stands in for it.
 
 ## What is still open
 
