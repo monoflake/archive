@@ -6,9 +6,10 @@ everything a service would otherwise write again: where a request goes, CORS, ho
 is kept, whether a credential is needed, and the files every host answers for. A service is
 business logic and one declaration the gateway reads.
 
-The move to it is done but for milestones E7 and E13, RFC 8qh17 and RFC j131f; what is left is
-filed under the RFCs' `gateway` area. Where [services.md](services.md) or
-[delivery.md](delivery.md) say something else about the hosts, this file wins.
+The move to it is done but for milestones E7 and E13, RFC 8qh17 and RFC j131f -- E1, RFC 57fc8, to
+E12, RFC 8ndqx, landed -- and what is left is filed under the RFCs' `gateway` area. Where
+[services.md](services.md) or [delivery.md](delivery.md) say something else about the hosts, this
+file wins.
 
 ## The gateway is infrastructure, and pages are not
 
@@ -376,7 +377,7 @@ through Cloudflare as every other caller does: the LAN's DNS -- infra's resolver
 and the control plane is on `tyo`. So a caller anywhere meets one gateway and one order of
 placements. The gateway that once ran at home for the LAN, the same program under a Node entry, is
 retired with that. Decided on 2026-10-07, when a `shot` task taken through Cloudflare on `tyo` was
-not found from the LAN.
+not found from the LAN -- RFC bssu2.
 
 **A container asks the private side, and the private side is its own node's Caddy.** A service on a
 node asks another as `api.internal.ixc.one/{scope}/...`; that name resolves, inside the node's
