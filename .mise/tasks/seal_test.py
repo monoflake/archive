@@ -445,10 +445,12 @@ class Scope(unittest.TestCase):
 			return None if dry else f"made-{key}"
 
 		manifests = {"registry": {"placements": ["tyo", "sin", "rdu"]}, "site": {"placements": ["workers"]}}
+		addresses = {"tyo": "100.64.0.1", "sin": "100.64.0.2", "rdu": "100.64.0.3"}
 		patches = [
 			mock.patch.object(seal, "cores", lambda: ["tyo", "sin", "rdu"]),
 			mock.patch.object(seal.database, "stored_secret", stored),
 			mock.patch.object(seal.database, "manifest_of", manifests.__getitem__),
+			mock.patch.object(seal.database, "tailnet_ipv4", addresses.__getitem__),
 			mock.patch.dict(
 				seal.os.environ,
 				{"SECRETS_SCOPE_TOKEN_CANMI__WEB": "canmi-token", "SECRETS_SCOPE_TOKEN_OLD": "ignored"},
@@ -491,11 +493,34 @@ class Scope(unittest.TestCase):
 		with mock.patch.object(seal.database, "upsert", return_value=True) as wrote:
 			said = self.quietly("accounts", "identities", "--app", "registry")
 		given = [call.args for call in wrote.call_args_list if call.args[1] == "registry"]
-		self.assertEqual([node for node, *_ in given], ["tyo", "sin", "rdu"])
 		token = "made-SECRETS_SCOPE_TOKEN_ACCOUNTS__IDENTITIES"
-		self.assertEqual(given[0][2:], ("secret.env", {"SECRETS_SCOPE_TOKEN": token}))
+		cores = "100.64.0.1 100.64.0.2 100.64.0.3"
+		self.assertEqual(
+			[(node, file, pairs) for node, _, file, pairs in given],
+			[
+				(node, file, pairs)
+				for node in ["tyo", "sin", "rdu"]
+				for file, pairs in [("secret.env", {"SECRETS_SCOPE_TOKEN": token}), ("config.env", {"SECRETS": cores})]
+			],
+		)
 		self.assertIn("registry reads its token, writing accounts/identities, as SECRETS_SCOPE_TOKEN", said)
+		self.assertIn("where to ask as SECRETS", said)
 		self.assertNotIn("made-", said)
+
+	def test_without_an_app_no_app_is_written_or_told_where_to_ask(self):
+		with (
+			mock.patch.object(seal.database, "upsert", return_value=True) as wrote,
+			mock.patch.object(seal.database, "tailnet_ipv4", mock.Mock(side_effect=AssertionError("asked"))),
+		):
+			self.quietly("accounts", "registry")
+		self.assertEqual({call.args[1:3] for call in wrote.call_args_list}, {("secrets", "secret.env")})
+
+	def test_a_failed_config_write_stops_the_run(self):
+		def failing(node, app, file, pairs):
+			return file != "config.env"
+
+		with mock.patch.object(seal.database, "upsert", failing), self.assertRaises(SystemExit):
+			self.quietly("accounts", "identities", "--app", "registry")
 
 	def test_a_dry_run_reaches_no_machine_and_prints_no_token(self):
 		explode = mock.Mock(side_effect=AssertionError("reached a core"))
@@ -508,6 +533,9 @@ class Scope(unittest.TestCase):
 			said,
 		)
 		self.assertIn("would set in /data/apps/registry/secret.env: SECRETS_SCOPE_TOKEN=<redacted>", said)
+		self.assertIn(
+			"rdu: would set in /data/apps/registry/config.env: SECRETS=100.64.0.1 100.64.0.2 100.64.0.3", said
+		)
 		self.assertNotIn("canmi-token", said)
 
 	def test_what_is_not_a_scope_and_app_or_an_app_on_nodes_is_refused(self):

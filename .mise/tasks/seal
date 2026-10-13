@@ -379,11 +379,13 @@ def scope(arguments, dry):
 	for label in (name, app):
 		if not held_label(label):
 			fail(f"`{label}` is not a scope or an app a token can be held to: one DNS label, no `--`")
-	placements = []
+	placements, addresses = [], ""
 	if target is not None:
 		placements = database.manifest_of(target)["placements"]
 		if not placements or not all(NODE.match(node) for node in placements):
 			fail(f"{target} is not placed on nodes alone, so no node can be given its token")
+		# Where the target asks: the cores' tailnet IPv4s, as `token` writes them as CORES.
+		addresses = " ".join(database.tailnet_ipv4(node) for node in cores())
 	value = database.stored_secret(scope_key(name, app), dry)
 	digests = scope_tokens({(name, app): value} if value else {})
 	held = sorted({pair.split(":")[0] for pair in digests.split()} | {f"{name}/{app}"})
@@ -400,11 +402,18 @@ def scope(arguments, dry):
 			print(
 				f"seal: {node}: would set in /data/apps/{target}/secret.env: {APP_SCOPE_TOKEN}=<redacted>"
 			)
-		elif not database.upsert(node, target, "secret.env", {APP_SCOPE_TOKEN: value}):
+			print(f"seal: {node}: would set in /data/apps/{target}/config.env: SECRETS={addresses}")
+			continue
+		if not database.upsert(node, target, "secret.env", {APP_SCOPE_TOKEN: value}):
 			fail(f"writing {name}/{app}'s token failed on {node}")
+		if not database.upsert(node, target, "config.env", {"SECRETS": addresses}):
+			fail(f"writing SECRETS failed on {node}")
 	print(f"seal: {APP} reads them on its next deploy; `mise run //repos/infra:node redeploy <node> {APP}`")
 	if target is not None:
-		print(f"seal: {target} reads its token, writing {name}/{app}, as {APP_SCOPE_TOKEN} on its next deploy")
+		print(
+			f"seal: {target} reads its token, writing {name}/{app}, as {APP_SCOPE_TOKEN}, and where to ask"
+			" as SECRETS, on its next deploy"
+		)
 
 
 def unseal(arguments, dry):

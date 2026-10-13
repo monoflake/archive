@@ -52,7 +52,10 @@ line draw from: each kind's `plural`, the route it is reached at; its fields, ea
 whether it is required and whether it can be edited, a `choice`'s choices, a `reference`'s kind, and
 a list of objects its items' own fields, the first required `choice` naming the item; a field marked
 `secret`, written and never answered; and the columns a list shows first. A kind it does not hold is
-`404 no_such_kind`.
+`404 no_such_kind`. **The catalog is committed as the registry generates it** -- RFC bq3vn: its JSON
+Schema, `apps/data/registry/catalog.schema.json`, and its answer, `catalog.json`, which a reader's
+tests read rather than a copy. A test fails on either drifting from the types, and `REGENERATE=1
+cargo test -p registry-service committed_catalog` writes both again.
 
 **Every resource has an `id`, and its name is a label** -- RFC 2kuvi. The id is 64 random bits as
 16 lowercase hexadecimal digits, made when the resource is first written and never changed, unique
