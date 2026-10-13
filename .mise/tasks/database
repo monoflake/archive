@@ -46,6 +46,10 @@ QUORUM = "quorum"
 # The proxy every app reaches the database through, as `primary:5432`, on every node.
 PROXY = "primary"
 REST_USER = "patroni"
+# The apps whose scheduler acts only on the node that leads the database, and so asks its own
+# node's Patroni, `/primary`, which answers 200 on the leader. `grant` writes the address beside
+# `DATABASE_URL`. See spec/architecture/ledger.md, "The scheduler, the lease and the fence".
+SCHEDULED = ("ledger",)
 # The scopes there are, each an organization. See spec/architecture/scheduling.md, "A scope is an
 # organization, and only the boundary isolates".
 SCOPES = ("platform", "canmi")
@@ -346,6 +350,10 @@ def grant_sql(scope, login, password):
 	)
 
 
+def patroni_primary(address):
+	return f"http://{address}:{REST}/primary"
+
+
 def secret_key(scope, app):
 	return f"DATABASE_PASSWORD_{scope}_{app}".upper().replace("-", "_")
 
@@ -366,6 +374,9 @@ def grant(arguments, dry):
 		if primary is None:
 			fail("no member's Patroni names a leader now; grant once one leads")
 	password = stored_secret(secret_key(scope, app), dry)
+	# Each node's own Patroni, which a container reaches by the node's tailnet address as the
+	# `primary` proxy does.
+	gates = {node: patroni_primary(tailnet_ipv4(node)) for node in where} if app in SCHEDULED else {}
 
 	if dry:
 		shown = grant_sql(scope, login, "<redacted>")
@@ -377,6 +388,8 @@ def grant(arguments, dry):
 			f"  DATABASE_URL=postgresql://{login}:<redacted>@{PROXY}:{PORT}/{login}"
 			"?target_session_attrs=read-write"
 		)
+		for node, gate in gates.items():
+			print(f"database: and set in /data/apps/{app}/config.env on {node}: PATRONI_PRIMARY_URL={gate}")
 		return
 	command = f"docker exec -i {APP} psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1"
 	if ssh(primary, command, grant_sql(scope, login, password)) is None:
@@ -389,6 +402,12 @@ def grant(arguments, dry):
 	failed = [node for node in where if not upsert(node, app, "secret.env", {"DATABASE_URL": url})]
 	if failed:
 		fail(f"writing DATABASE_URL failed on {', '.join(failed)}")
+	failed = [
+		node for node, gate in gates.items()
+		if not upsert(node, app, "config.env", {"PATRONI_PRIMARY_URL": gate})
+	]
+	if failed:
+		fail(f"writing PATRONI_PRIMARY_URL failed on {', '.join(failed)}")
 	print(f"database: {app} reads it on its next deploy")
 
 

@@ -165,5 +165,48 @@ class Commit(unittest.TestCase):
 		self.assertIn("gvx would confirm commits", str(stopped.exception))
 
 
+class Grant(unittest.TestCase):
+	def run_grant(self, app, dry, placements):
+		out = io.StringIO()
+		with (
+			mock.patch.object(database, "manifest_of", return_value={"placements": placements}),
+			mock.patch.object(database, "placements", return_value=NODES),
+			mock.patch.object(database, "stored_secret", return_value="hunter2"),
+			mock.patch.object(
+				database, "tailnet_ipv4", side_effect=lambda node: f"100.64.0.{NODES.index(node) + 1}"
+			),
+			mock.patch.object(database, "cluster", return_value=view()),
+			mock.patch.object(database, "ssh", return_value="") as ssh,
+			mock.patch.object(database, "upsert", return_value=True) as upsert,
+			contextlib.redirect_stdout(out),
+		):
+			database.grant(["platform", app], dry)
+		return out.getvalue(), ssh, upsert
+
+	def test_the_ledger_is_told_its_own_nodes_patroni_beside_its_url(self):
+		_, _, upsert = self.run_grant("ledger", False, ["tyo", "sin", "rdu"])
+		written = {(c.args[0], c.args[2]): c.args[3] for c in upsert.call_args_list}
+		for node in ["tyo", "sin", "rdu"]:
+			self.assertIn("DATABASE_URL", written[(node, "secret.env")])
+			address = f"100.64.0.{NODES.index(node) + 1}"
+			self.assertEqual(
+				written[(node, "config.env")], {"PATRONI_PRIMARY_URL": f"http://{address}:8008/primary"}
+			)
+
+	def test_another_app_is_given_no_gate(self):
+		_, _, upsert = self.run_grant("registry", False, ["tyo", "sin", "rdu"])
+		self.assertEqual({c.args[2] for c in upsert.call_args_list}, {"secret.env"})
+
+	def test_a_dry_run_says_both_and_touches_and_prints_nothing_secret(self):
+		printed, ssh, upsert = self.run_grant("ledger", True, ["tyo", "sin", "rdu"])
+		ssh.assert_not_called()
+		upsert.assert_not_called()
+		self.assertNotIn("hunter2", printed)
+		for node, address in [("tyo", "100.64.0.1"), ("sin", "100.64.0.2"), ("rdu", "100.64.0.3")]:
+			self.assertIn(
+				f"config.env on {node}: PATRONI_PRIMARY_URL=http://{address}:8008/primary", printed
+			)
+
+
 if __name__ == "__main__":
 	unittest.main()

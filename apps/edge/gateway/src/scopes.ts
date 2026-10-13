@@ -155,10 +155,10 @@ export const SCOPES: Readonly<Record<string, Scope>> = {
 		],
 	},
 	ledger: {
-		placement: 'rdu',
+		placement: 'tyo',
 		private: true,
-		binding: 'RDU',
-		nodes: ['RDU'],
+		binding: 'TYO',
+		nodes: ['TYO', 'SIN', 'RDU'],
 		routing: 'any',
 		routes: [
 			{

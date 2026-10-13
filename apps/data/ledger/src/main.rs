@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
 	// does not run, as on a copy that is not one of the cores. See spec/architecture/ledger.md.
 	match std::env::var("PATRONI_PRIMARY_URL") {
 		Ok(gate) => {
+			eprintln!("ledger: scheduling where {gate} answers 200");
 			tokio::spawn(ledger_service::scheduler::run(shared.clone(), gate));
 		}
 		Err(_) => eprintln!("ledger: PATRONI_PRIMARY_URL is not set; no run is scheduled from here"),
