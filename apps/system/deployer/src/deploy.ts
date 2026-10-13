@@ -38,12 +38,15 @@ export interface Rollback {
 /**
  * A run a notice never brought, taken as one would be: `passedOver` names each Worker a newer run
  * built too, with that run, so it is recorded as passed over and never deployed from this one.
+ * `again` is set on a run taken before, naming the Workers it did not download for a reason of the
+ * moment: only they are taken, and the run's releases, recorded then, are not recorded again.
  */
 export interface Missed extends Notice {
 	readonly passedOver: ReadonlyMap<string, number>;
+	readonly again?: ReadonlySet<string>;
 }
 
-type RunWork = { kind: 'run' } & Notice & { readonly passedOver?: ReadonlyMap<string, number> };
+type RunWork = { kind: 'run' } & Notice & Partial<Missed>;
 type Work = RunWork | ({ kind: 'rollback' } & Rollback);
 
 export type Unpack = (zip: string, directory: string) => Promise<void>;
@@ -143,7 +146,7 @@ export class Deployer {
 	}
 
 	/** Every Worker the run built, once the run is one of its sources' to deploy. */
-	private async take({ run, repository, passedOver }: RunWork): Promise<void> {
+	private async take({ run, repository, passedOver, again }: RunWork): Promise<void> {
 		const { config, github, store } = this.parts;
 		if (!config.sources.includes(repository)) {
 			this.log(`run ${run}: ${repository} is not a repository it deploys from`);
@@ -163,10 +166,13 @@ export class Deployer {
 			throw error;
 		}
 		const { commit, artifacts } = built;
-		// Recorded before any deploy, so a deployer stopped in one still writes the run's releases.
-		store.built(repository, run, commit, built.built, await this.settled(repository, run, built));
-		if (artifacts.length === 0) this.log(`run ${run} of ${repository} built no Worker`);
+		if (!again) {
+			// Recorded before any deploy, so a deployer stopped in one still writes the run's releases.
+			store.built(repository, run, commit, built.built, await this.settled(repository, run, built));
+			if (artifacts.length === 0) this.log(`run ${run} of ${repository} built no Worker`);
+		}
 		for (const artifact of artifacts) {
+			if (again && !again.has(artifact.app)) continue;
 			const newer = passedOver?.get(artifact.app);
 			if (newer !== undefined) {
 				this.passOver(repository, run, commit, artifact.app, newer);
@@ -271,7 +277,8 @@ export class Deployer {
 			store.deployed(id, version);
 			this.log(`${artifact.app} from run ${run} ${dry ? 'ran dry' : `is ${version}`}`);
 		} catch (error) {
-			store.failed(id, messageOf(error));
+			// An artifact not given for a reason of the moment: catching up takes the Worker again.
+			store.failed(id, messageOf(error), null, error instanceof Transient);
 			this.log(`${artifact.app} from run ${run}: ${messageOf(error)}`);
 		} finally {
 			await forget(work);

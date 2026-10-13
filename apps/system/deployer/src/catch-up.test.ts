@@ -2,21 +2,21 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CatchUp, WITHIN_MS, missed, plan } from './catch-up.ts';
+import { CatchUp, WITHIN_MS, missed, plan, unfinished } from './catch-up.ts';
 import { configOf } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { PACKAGED, zipOf } from './fixtures.ts';
-import { type Artifact, DECLARATIONS, RateLimited, Unread } from './github.ts';
+import { type Artifact, DECLARATIONS, RateLimited, Refused, Transient, Unread } from './github.ts';
 import { type Registry, Releases } from './releases.ts';
 import { Store } from './store.ts';
 
 const WEB = 'canmi21/web';
 const ID = '0b7c2f1e-6c3a-4a7e-9b0d-1f2e3d4c5b6a';
 
-/** The console's artifact as .mise/tasks/worker packages it. */
-function consoleZip(): Buffer {
+/** A Worker's artifact as .mise/tasks/worker packages it, the console's unless told. */
+function workerZip(name = 'console'): Buffer {
 	const declaration = {
-		name: 'console',
+		name,
 		main: 'bundle/_worker.js',
 		no_bundle: true,
 		compatibility_date: '2026-07-29',
@@ -26,13 +26,15 @@ function consoleZip(): Buffer {
 }
 
 const CONSOLE: Artifact = { app: 'console', id: 1, digest: 'sha256:00' };
+const AKA: Artifact = { app: 'aka', id: 2, digest: 'sha256:00' };
 const DECLARED: Artifact = { app: DECLARATIONS, id: 9, digest: 'sha256:00' };
 
 /**
  * A deployer and its catch-up over a GitHub listing `recent` runs, each run building what `built`
  * says, the console unless told, and the `images` given, each declared as `declared` says, plainly
  * where it says nothing, and with no declarations at all where it says null; either of the first
- * two throws where the option is an error. Releases go to `registry`, where one is given.
+ * two throws where the option is an error. A Worker's download throws what `downloads` holds under
+ * `<run> <app>`, while it does. Releases go to `registry`, where one is given.
  */
 async function setup(
 	options: {
@@ -40,6 +42,7 @@ async function setup(
 		built?: Record<number, Artifact[] | Error>;
 		images?: Record<number, string[]>;
 		declared?: Record<number, Record<string, string> | null>;
+		downloads?: Record<string, Error>;
 		registry?: Pick<Registry, 'configured' | 'release'>;
 	} = {},
 ) {
@@ -47,7 +50,7 @@ async function setup(
 	const config = configOf({
 		DEPLOYER_DATA: data,
 		DEPLOY_SOURCES: 'monoflake/platform canmi21/web',
-		WORKER_OWNERS: 'console=canmi21/web',
+		WORKER_OWNERS: 'console=canmi21/web, aka=canmi21/web',
 		WORKER_ZONES: 'canmi21/web=canmi.app',
 		CLOUDFLARE_ACCOUNT_ID: 'account',
 		CLOUDFLARE_WORKERS_TOKEN: 'token',
@@ -71,7 +74,10 @@ async function setup(
 			return { commit: 'abc', artifacts: built, built: all, images, ...declarations };
 		},
 		download: async (_repository: string, run: number, artifact: Artifact, zip: string) => {
-			if (artifact.app !== DECLARATIONS) return writeFile(zip, consoleZip());
+			asked.push(`download ${run} ${artifact.app}`);
+			const refused = options.downloads?.[`${run} ${artifact.app}`];
+			if (refused) throw refused;
+			if (artifact.app !== DECLARATIONS) return writeFile(zip, workerZip(artifact.app));
 			const images = options.images?.[run] ?? [];
 			const declared = options.declared?.[run] ?? {};
 			const entries = images.map((app) => ({
@@ -145,6 +151,34 @@ describe('missed', () => {
 
 	it('is nothing while nothing of the repository is held', () => {
 		expect(missed([3, 5, 6], [])).toEqual([]);
+	});
+});
+
+describe('unfinished', () => {
+	it('is each Worker of a run taken whose every row is transient, within the recent runs', () => {
+		const taken = [
+			{ run: 5, worker: 'console' },
+			{ run: 5, worker: '' },
+			{ run: 6, worker: 'console', transient: true },
+			{ run: 6, worker: 'aka' },
+			{ run: 6, worker: '' },
+			{ run: 7, worker: 'console', transient: true },
+			{ run: 7, worker: 'console' },
+			{ run: 7, worker: '' },
+			{ run: 4, worker: 'aka', transient: true },
+			{ run: 4, worker: '' },
+		];
+		expect(unfinished([5, 6, 7], taken)).toEqual([[6, ['console']]]);
+	});
+
+	it('is none of a run missed as a whole, which is taken whole', () => {
+		const taken = [
+			{ run: 5, worker: 'console' },
+			{ run: 8, worker: '', transient: true },
+			{ run: 8, worker: 'console', transient: true },
+		];
+		expect(missed([5, 8], taken)).toEqual([8]);
+		expect(unfinished([5, 8], taken)).toEqual([]);
 	});
 });
 
@@ -273,6 +307,109 @@ describe('catching up', () => {
 		built[6] = [CONSOLE];
 		await pass();
 		expect(store.list()[0]).toMatchObject({ run: 6, stage: 'skipped' });
+	});
+});
+
+describe('a Worker GitHub did not give for a reason of the moment', () => {
+	const UNAVAILABLE = 'storage answered 503 for artifact worker-console of run 7 of canmi21/web';
+
+	it('is taken again on the next pass and deployed, the rest of its run left alone', async () => {
+		const downloads: Record<string, Error> = { '7 console': new Transient(UNAVAILABLE) };
+		const { store, asked, logs, took, pass } = await setup({
+			recent: { [WEB]: [5, 7] },
+			built: { 7: [CONSOLE, AKA] },
+			images: { 7: ['geo'] },
+			downloads,
+		});
+		await took(5);
+		await took(7);
+		expect(store.list().map((row) => [row.run, row.worker, row.stage])).toEqual([
+			[7, 'aka', 'deployed'],
+			[7, 'console', 'failed'],
+			[5, 'console', 'deployed'],
+		]);
+
+		delete downloads['7 console'];
+		await pass();
+		expect(logs).toContain(
+			`deployer: console from run 7 of ${WEB} was not downloaded; taking it again`,
+		);
+		expect(store.list().map((row) => [row.run, row.worker, row.stage])).toEqual([
+			[7, 'console', 'deployed'],
+			[7, 'aka', 'deployed'],
+			[7, 'console', 'failed'],
+			[5, 'console', 'deployed'],
+		]);
+		expect(store.lastRun('console')).toBe(7);
+		expect(asked.filter((line) => line === 'download 7 aka')).toHaveLength(1);
+		// Its releases were recorded when the run was first taken, and its declarations not read again.
+		expect(asked.filter((line) => line === `download 7 ${DECLARATIONS}`)).toHaveLength(1);
+
+		await pass();
+		expect(store.list()).toHaveLength(4);
+	});
+
+	it('is taken again each pass while it stays unavailable', async () => {
+		const downloads: Record<string, Error> = { '7 console': new Transient(UNAVAILABLE) };
+		const { store, took, pass } = await setup({ recent: { [WEB]: [5, 7] }, downloads });
+		await took(5);
+		await took(7);
+		await pass();
+		await pass();
+		expect(store.list().map((row) => [row.run, row.stage])).toEqual([
+			[7, 'failed'],
+			[7, 'failed'],
+			[7, 'failed'],
+			[5, 'deployed'],
+		]);
+		delete downloads['7 console'];
+		await pass();
+		expect(store.list()[0]).toMatchObject({ run: 7, worker: 'console', stage: 'deployed' });
+	});
+
+	it('is taken again after a spent rate limit, as a run is', async () => {
+		const spent = new RateLimited(`GitHub answered 403 for ${UNAVAILABLE}: spent`, undefined);
+		const downloads: Record<string, Error> = { '7 console': spent };
+		const { store, took, pass } = await setup({ recent: { [WEB]: [5, 7] }, downloads });
+		await took(5);
+		await took(7);
+		delete downloads['7 console'];
+		await pass();
+		expect(store.list()[0]).toMatchObject({ run: 7, worker: 'console', stage: 'deployed' });
+	});
+
+	it('is not taken again once it failed for good', async () => {
+		const downloads: Record<string, Error> = {
+			'7 console': new Refused('artifact worker-console does not match its recorded digest'),
+		};
+		const { store, asked, took, pass } = await setup({ recent: { [WEB]: [5, 7] }, downloads });
+		await took(5);
+		await took(7);
+		delete downloads['7 console'];
+		await pass();
+		expect(asked.filter((line) => line === `artifacts ${WEB} 7`)).toHaveLength(1);
+		expect(store.list()[0]).toMatchObject({ run: 7, worker: 'console', stage: 'failed' });
+	});
+
+	it('is passed over once a newer run built it again, and never deployed', async () => {
+		const downloads: Record<string, Error> = { '7 console': new Transient(UNAVAILABLE) };
+		const { store, logs, took, pass } = await setup({ recent: { [WEB]: [5, 7, 8] }, downloads });
+		await took(5);
+		await took(7);
+		await took(8);
+		delete downloads['7 console'];
+		await pass();
+		expect(store.list().map((row) => [row.run, row.stage, row.error])).toEqual([
+			[7, 'skipped', 'run 8 built it again, and is the one deployed'],
+			[8, 'deployed', null],
+			[7, 'failed', UNAVAILABLE],
+			[5, 'deployed', null],
+		]);
+		expect(store.lastRun('console')).toBe(8);
+		expect(logs.some((line) => line.includes('taking it again'))).toBe(false);
+
+		await pass();
+		expect(store.list()).toHaveLength(4);
 	});
 });
 

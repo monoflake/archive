@@ -117,6 +117,19 @@ describe('a run GitHub did not give for a reason of the moment', () => {
 		]);
 	});
 
+	it("is marked so on a Worker's own row it failed, where any other failure is not", () => {
+		const store = new Store(path(), NOW);
+		const unavailable = 'storage answered 503 for artifact worker-console of run 7 of canmi21/web';
+		store.failed(store.open('console', 'canmi21/web', 7, null, false), unavailable, null, true);
+		store.failed(store.open('aka', 'canmi21/web', 7, null, false), 'wrangler exited with 1', 'out');
+		store.deployed(store.open('console', 'canmi21/web', 7, null, false), 'v');
+		const taken = store.taken('canmi21/web');
+		expect(taken).toHaveLength(3);
+		expect(taken.filter((each) => each.transient)).toEqual([
+			{ run: 7, worker: 'console', transient: true },
+		]);
+	});
+
 	it('is marked so in a deployer.db from before the column, by what its row says', () => {
 		const file = path();
 		const old = new DatabaseSync(file);

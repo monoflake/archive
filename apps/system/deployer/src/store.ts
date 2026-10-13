@@ -45,7 +45,10 @@ export interface Deploy {
 export interface Taken {
 	readonly run: number;
 	readonly worker: string;
-	/** A row of a run GitHub did not give for a reason of the moment: seen, and not taken. */
+	/**
+	 * A row of a run GitHub did not give, or of a Worker it did not download, for a reason of the
+	 * moment: seen, and not taken.
+	 */
 	readonly transient?: boolean;
 }
 
@@ -213,8 +216,9 @@ export class Store {
 	/**
 	 * Each run of `repository` it has a deploy or a release row of, with the Worker a deploy row
 	 * names -- empty for a release, or a run GitHub never gave. A run with any row was taken,
-	 * whatever came of it: catching up recovers notices, not deploys. A run GitHub did not give for
-	 * a reason of the moment is answered `transient`: seen, and not taken.
+	 * whatever came of it: catching up recovers notices, not deploys. A run GitHub did not give, or
+	 * a Worker it did not download, for a reason of the moment is answered `transient`: seen, and not
+	 * taken.
 	 */
 	taken(repository: string): Taken[] {
 		const rows = this.db
@@ -296,13 +300,17 @@ export class Store {
 			.run(reason, this.stamp(), id);
 	}
 
-	failed(id: number, error: string, output: string | null = null): void {
+	/**
+	 * Close a row as failed where it was. `transient` where it failed for a reason of the moment --
+	 * GitHub or its storage not answering for the artifact -- so catching up takes the Worker again.
+	 */
+	failed(id: number, error: string, output: string | null = null, transient = false): void {
 		this.db
 			.prepare(
 				`UPDATE deploys SET failed_in = stage, stage = 'failed', error = ?, output = ?,
-					finished_at = ? WHERE id = ?`,
+					finished_at = ?, transient = ? WHERE id = ?`,
 			)
-			.run(error, output, this.stamp(), id);
+			.run(error, output, this.stamp(), transient ? 1 : 0, id);
 	}
 
 	/** Up to `limit` rows, the newest first, from before `before` when it is given. */

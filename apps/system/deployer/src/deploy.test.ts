@@ -311,6 +311,20 @@ describe('a replayed notice', () => {
 	});
 });
 
+describe('a run taken again', () => {
+	it('takes only the Workers named, and records none of its releases again', async () => {
+		const aka: Artifact = { app: 'aka', id: 2, digest: 'sha256:00' };
+		const { store, invoked, deployer } = await setup({ artifacts: [ARTIFACT, aka] });
+		const again = new Set(['console']);
+		deployer.missed({ run: 7, repository: 'canmi21/web', passedOver: new Map(), again });
+		await deployer.idle();
+		expect(invoked).toHaveLength(1);
+		expect(store.list()).toMatchObject([{ worker: 'console', run: 7, stage: 'deployed' }]);
+		expect(store.list()).toHaveLength(1);
+		expect(store.unwritten()).toEqual([]);
+	});
+});
+
 describe('a rollback', () => {
 	it('runs wrangler rollback, recorded, and leaves the last deployed run where it was', async () => {
 		const { store, invoked, deployer, deliver } = await setup();
@@ -425,6 +439,36 @@ describe('a run GitHub does not give', () => {
 			{ worker: 'console', run: 7, stage: 'failed', failed_in: 'downloading', error },
 		]);
 		expect(logs.some((line) => line.endsWith(error))).toBe(true);
+		expect(store.taken('canmi21/web').some((each) => each.transient)).toBe(false);
+	});
+
+	it("marks a download storage did not serve for a reason of the moment on the Worker's row", async () => {
+		let first = true;
+		const { store, deliver } = await setup({
+			github: gitHub((url) => {
+				if (url !== STORAGE || !first) return undefined;
+				first = false;
+				return new Response(null, { status: 503 });
+			}),
+		});
+		await deliver(7, 8);
+		const error = 'storage answered 503 for artifact worker-console of run 7 of canmi21/web';
+		expect(store.list()).toMatchObject([
+			{ worker: 'console', run: 8, stage: 'deployed' },
+			{ worker: 'console', run: 7, stage: 'failed', failed_in: 'downloading', error },
+		]);
+		const transient = store.taken('canmi21/web').filter((each) => each.transient);
+		expect(transient).toEqual([{ run: 7, worker: 'console', transient: true }]);
+	});
+
+	it('records the same refused for good, after a digest mismatch, as no reason of the moment', async () => {
+		const { store, deliver } = await setup({
+			download: async () => {
+				throw new Refused('artifact worker-console does not match its recorded digest');
+			},
+		});
+		await deliver(7);
+		expect(store.taken('canmi21/web').some((each) => each.transient)).toBe(false);
 	});
 
 	it('records a GitHub it could not reach', async () => {

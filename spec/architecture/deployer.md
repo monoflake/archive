@@ -26,6 +26,13 @@ once, logging when GitHub gives it back, since every call after it would be refu
 is shared with every other caller of the same user, and the deployer's first pass on 2026-10-13 lost
 infra's run 38348714781 to it.
 
+**A Worker whose artifact was not given for a reason of the moment is taken again, alone.** A 5xx
+from GitHub or its storage, GitHub not reached, or its rate limit spent marks that Worker's own row
+transient, and each catch-up pass deploys it again while CI keeps the run's artifacts, the run's
+other Workers left as they are, unless a newer run built it, when it is passed over. A Worker refused
+for any other reason stays failed: this recovers faults of the moment, not failed deploys. The
+console of web's run 38404197087 was lost to a storage 503 on 2026-10-13.
+
 **Each app's release is written to the registry by the deployer** -- RFC jln34. Every run it takes,
 by notice or by catching up, records each app it has an artifact of -- an image for host,
 `deploy-<app>-<arch>`, or a Worker, `worker-<app>` -- in its `deployer.db` before any deploy, and

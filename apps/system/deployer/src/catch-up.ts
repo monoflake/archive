@@ -1,9 +1,10 @@
 /**
  * Runs a notice never brought: at start and every 15 minutes, the deployer lists each source's runs
  * to deploy from the last 7 days and takes the ones it has no record of, newer than the oldest it
- * holds, each Worker only from the newest run that built it, then writes every release not yet
- * written. Ported from infra's apps/deploy/host/src/rollout/catch_up.rs, so a lost notice changes
- * nothing (RFC jln34). See spec/architecture/deployer.md.
+ * holds, and again each Worker of a run it took that was not downloaded for a reason of the moment,
+ * each Worker only from the newest run that built it, then writes every release not yet written.
+ * Ported from infra's apps/deploy/host/src/rollout/catch_up.rs, so a lost notice changes nothing
+ * (RFC jln34). See spec/architecture/deployer.md.
  */
 import type { Deployer } from './deploy.ts';
 import { type GitHub, RateLimited } from './github.ts';
@@ -38,6 +39,30 @@ export function missed(recent: readonly number[], taken: readonly Taken[]): numb
 	return recent
 		.filter((run) => (run > oldest || unread.has(run)) && !held.has(run))
 		.toSorted((a, b) => a - b);
+}
+
+/** A Worker of a run, as one key. */
+const workerOf = ({ run, worker }: Taken) => `${run} ${worker}`;
+
+/**
+ * The Workers of `recent` runs the deployer took and did not download for a reason of the moment,
+ * by run, the oldest first: each Worker whose every row of that run is transient. A run missed as a
+ * whole is taken whole, so it is none of these.
+ */
+export function unfinished(
+	recent: readonly number[],
+	taken: readonly Taken[],
+): [number, string[]][] {
+	const within = new Set(recent);
+	const whole = new Set(missed(recent, taken));
+	const settled = new Set(taken.filter((each) => !each.transient).map(workerOf));
+	const workers = new Map<number, string[]>();
+	for (const each of taken) {
+		const { run, worker } = each;
+		if (!each.transient || !worker || !within.has(run) || whole.has(run)) continue;
+		if (!settled.has(workerOf(each))) workers.set(run, [...(workers.get(run) ?? []), worker]);
+	}
+	return [...workers].toSorted(([a], [b]) => a - b);
 }
 
 /**
@@ -143,7 +168,21 @@ export class CatchUp {
 			if (apps.length === 0) this.empty.add(key);
 			else built.push([run, artifacts.map((artifact) => artifact.app)]);
 		}
-		for (const { run, passedOver } of plan(taken, built)) {
+		// Asked nothing here: the Workers are known from their rows, and the run is asked once taken.
+		const again = new Map(
+			unfinished(recent, taken).filter(([run]) => !deployer.inFlight(repository, run)),
+		);
+		for (const { run, passedOver } of plan(taken, [...built, ...again])) {
+			const workers = again.get(run);
+			if (workers) {
+				for (const worker of workers.filter((each) => !passedOver.has(each))) {
+					this.log(
+						`${worker} from run ${run} of ${repository} was not downloaded; taking it again`,
+					);
+				}
+				deployer.missed({ run, repository, passedOver, again: new Set(workers) });
+				continue;
+			}
 			const why = unread.has(run) ? 'was not read from GitHub' : 'never reached the deployer';
 			this.log(`run ${run} of ${repository} ${why}; taking it now`);
 			deployer.missed({ run, repository, passedOver });
