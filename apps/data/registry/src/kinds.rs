@@ -95,12 +95,15 @@ pub struct Field {
 	/// field.
 	#[serde(skip_serializing_if = "<[_]>::is_empty")]
 	pub fields: &'static [Field],
-	/// Written and never read back, as an identity's `value`, which the secret service keeps and the
-	/// registry answers by its name alone; beside its ordinary `type`.
+	/// Written and never read back, its value handed to the secret service and answered by the name
+	/// it is kept under; beside its ordinary `type`. No field is one today.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub secret: bool,
-	/// False for what only the registry writes, as an identity's `secret`, which is read and never
-	/// sent.
+	/// Kept and answered like any other value, and drawn hidden until the reader asks to see it, as
+	/// an identity's `value` -- RFC cpc2b; beside its ordinary `type`.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub masked: bool,
+	/// False for what only the registry writes.
 	pub editable: bool,
 	pub required: bool,
 }
@@ -132,6 +135,7 @@ const fn field(name: &'static str, type_: Type, required: bool) -> Field {
 		kind: None,
 		fields: &[],
 		secret: false,
+		masked: false,
 		editable: true,
 		required,
 	}
@@ -145,6 +149,7 @@ const fn reference(name: &'static str, kind: Kind, required: bool) -> Field {
 		kind: Some(kind),
 		fields: &[],
 		secret: false,
+		masked: false,
 		editable: true,
 		required,
 	}
@@ -158,6 +163,7 @@ const fn choice(name: &'static str, choices: &'static [&'static str], required: 
 		kind: None,
 		fields: &[],
 		secret: false,
+		masked: false,
 		editable: true,
 		required,
 	}
@@ -172,6 +178,7 @@ const fn choices(name: &'static str, choices: &'static [&'static str], required:
 		kind: None,
 		fields: &[],
 		secret: false,
+		masked: false,
 		editable: true,
 		required,
 	}
@@ -205,12 +212,10 @@ pub const APP: Description = Description {
 	columns: &["placements"],
 };
 
-/// An account's identity: its kind; its value, written alone and handed to the secret service; and
-/// the name it is kept under there, which the registry writes in the value's place.
+/// An account's identity: its kind, and its value, kept and answered, drawn hidden until asked for.
 const IDENTITY: &[Field] = &[
 	choice("kind", account::IDENTITIES, true),
-	Field { secret: true, ..field("value", Type::String, false) },
-	Field { editable: false, ..field("secret", Type::String, false) },
+	Field { masked: true, ..field("value", Type::String, true) },
 ];
 
 pub const ACCOUNT: Description = Description {

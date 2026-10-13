@@ -69,7 +69,7 @@
 					}
 				},
 				"editable": {
-					"description": "False for what only the registry writes, as an identity's `secret`, which is read and never\nsent.",
+					"description": "False for what only the registry writes.",
 					"type": "boolean"
 				},
 				"fields": {
@@ -83,6 +83,10 @@
 					"description": "The kind a `reference` names a resource of, by its id; absent, never null, for every other\nfield.",
 					"$ref": "#/$defs/Kind"
 				},
+				"masked": {
+					"description": "Kept and answered like any other value, and drawn hidden until the reader asks to see it, as\nan identity's `value` -- RFC cpc2b; beside its ordinary `type`.",
+					"type": "boolean"
+				},
 				"name": {
 					"type": "string"
 				},
@@ -90,7 +94,7 @@
 					"type": "boolean"
 				},
 				"secret": {
-					"description": "Written and never read back, as an identity's `value`, which the secret service keeps and the\nregistry answers by its name alone; beside its ordinary `type`.",
+					"description": "Written and never read back, its value handed to the secret service and answered by the name\nit is kept under; beside its ordinary `type`. No field is one today.",
 					"type": "boolean"
 				},
 				"type": {

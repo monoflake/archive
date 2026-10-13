@@ -38,11 +38,6 @@ async fn main() -> anyhow::Result<()> {
 	// `LEDGER_URL` when it is set, the platform's ledger otherwise, as every service tells it.
 	let ledger = Some(ledger::Ledger::start());
 	let secrets = registry_service::secrets::Secrets::from_env();
-	if secrets.is_none() {
-		eprintln!(
-			"registry: SECRETS or SECRETS_SCOPE_TOKEN is not set; an identity's value is refused"
-		);
-	}
 	let shared: Shared = Arc::new(Registry { store, token, ledger, secrets });
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("registry: listening on {listen}");

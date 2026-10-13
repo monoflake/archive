@@ -16,7 +16,7 @@ pub struct Registry {
 	pub token: String,
 	/// Where a write that changed something is told as a task; none, and it is told nowhere.
 	pub ledger: Option<ledger::Ledger>,
-	/// Where an account identity's value is handed; none, and a write carrying one is refused.
+	/// Where a value of a field marked `secret` is handed; no field is today, so none is needed.
 	pub secrets: Option<crate::secrets::Secrets>,
 }
 

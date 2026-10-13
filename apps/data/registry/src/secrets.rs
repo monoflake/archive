@@ -1,6 +1,8 @@
-//! The secret service, as the registry hands it an account identity's value: written once to the
-//! first core that answers, with a token that reaches `accounts/registry` alone, and never kept,
-//! logged or answered here. See spec/architecture/registry.md and spec/architecture/secrets.md.
+//! The secret service, as the registry hands it the value of a field the catalog marks `secret`:
+//! written once to the first core that answers, with a token that reaches `accounts/registry`
+//! alone, and never kept, logged or answered here. No field is marked so today; an account's
+//! identities are `masked` instead. See spec/architecture/registry.md and
+//! spec/architecture/secrets.md.
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};

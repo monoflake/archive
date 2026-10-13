@@ -4,17 +4,47 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import * as v from 'valibot';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Catalog, type Description } from './catalog.gen.ts';
-import { Failure, run, singular, type World } from './platform.ts';
+import { Catalog, type Description, type Field } from './catalog.gen.ts';
+import { Failure, cell, run, singular, type World } from './platform.ts';
 
 const REGISTRY = join(import.meta.dirname, '..');
 // The fake answers the catalog the registry generates, never a copy of it -- RFC bq3vn.
 const CATALOG = JSON.parse(readFileSync(join(REGISTRY, 'catalog.json'), 'utf8')) as Description[];
 const EXAMPLES = join(REGISTRY, 'examples/catalog');
 
+/**
+ * The catalog with an identity's value marked `secret` and the name it would be kept under beside
+ * it, as a written-only field would be: no field is one today, and the path it takes is kept for
+ * the first that is.
+ */
+const WITH_A_SECRET = structuredClone(CATALOG).map((kind) =>
+	kind.name !== 'account'
+		? kind
+		: {
+				...kind,
+				fields: kind.fields.map((field) =>
+					field.name !== 'identities'
+						? field
+						: {
+								...field,
+								fields: [
+									field.fields![0]!,
+									{ name: 'value', type: 'string' as const, secret: true, editable: true, required: false },
+									{ name: 'secret', type: 'string' as const, editable: false, required: false },
+								],
+							},
+				),
+			},
+);
+
 const TOKEN = 'token-for-the-fake';
 const SECRET_VALUE = 'me-at-example-dot-com';
 const DOMAIN_ID = '00000000000000d1';
+/** An account's identities as the registry keeps and answers them. */
+const IDENTITIES = [
+	{ kind: 'user_id', value: 'ocid1.user.oc1..example' },
+	{ kind: 'email', value: SECRET_VALUE },
+];
 const NODE_ID = 'abd3922110a78032';
 
 interface Resource {
@@ -37,6 +67,7 @@ class Registry {
 	revision = 10;
 	requests: Sent[] = [];
 	refusal: [string, string] | undefined;
+	catalog: Description[] = CATALOG;
 	held: Record<string, Record<string, Resource>>;
 
 	constructor() {
@@ -57,10 +88,7 @@ class Registry {
 			accounts: {
 				'oci-2': this.resource('account', '00000000000000a1', 'oci-2', {
 					provider: 'oracle',
-					identities: [
-						{ kind: 'user_id', secret: 'accounts/registry/ACCOUNT_00000000000000A1_USER_ID' },
-						{ kind: 'email', secret: 'accounts/registry/ACCOUNT_00000000000000A1_EMAIL' },
-					],
+					identities: structuredClone(IDENTITIES),
 				}),
 			},
 		};
@@ -77,7 +105,9 @@ class Registry {
 	answer(sent: Sent): [number, unknown] {
 		this.requests.push(sent);
 		const parts = sent.path.replace(/^\/|\/$/g, '').split('/');
-		if (parts.join('/') === 'v1/kinds') return [200, { status: 'success', data: { items: CATALOG } }];
+		if (parts.join('/') === 'v1/kinds') {
+			return [200, { status: 'success', data: { items: this.catalog } }];
+		}
 		const plural = parts[1] ?? '';
 		const held = this.held[plural];
 		if (held === undefined) {
@@ -117,7 +147,7 @@ class Registry {
 			return [200, { status: 'success', data: {} }];
 		}
 		this.revision += 1;
-		const kind = CATALOG.find((one) => one.plural === plural)!.name;
+		const kind = this.catalog.find((one) => one.plural === plural)!.name;
 		const made = found ?? this.resource(kind, this.revision.toString(16).padStart(16, '0'), key, {});
 		made.spec = spec;
 		made.revision = this.revision;
@@ -329,7 +359,60 @@ describe('writing', () => {
 	});
 });
 
+describe('masked values', () => {
+	it('are given like any value, never asked for', async () => {
+		const items = ['--identity', `email,value=${SECRET_VALUE}`, '--identity', 'tenancy,value=t'];
+		const { failed } = await task('account', 'create', 'az', '--set', 'provider=azure', ...items);
+		expect(failed).toBeUndefined();
+		expect(asked).toEqual([]);
+		const sent = [
+			{ kind: 'email', value: SECRET_VALUE },
+			{ kind: 'tenancy', value: 't' },
+		];
+		expect(writes()[0]!.body!.spec.identities).toEqual(sent);
+	});
+
+	it('are required where the catalog says', async () => {
+		const failed = await refused('account', 'patch', 'oci-2', '--identity', 'email');
+		expect(failed).toContain('takes its value');
+	});
+
+	it('replace the item of their key on a patch and keep the rest', async () => {
+		const { failed } = await task('account', 'patch', 'oci-2', '--identity', 'email,value=new');
+		expect(failed).toBeUndefined();
+		const sent = [IDENTITIES[0], { kind: 'email', value: 'new' }];
+		expect(writes()[0]!.body!.spec.identities).toEqual(sent);
+	});
+
+	it('print as dots until --reveal, and as answered with --json', async () => {
+		const hidden = await task('account', 'get', 'oci-2');
+		expect(hidden.out).not.toContain(SECRET_VALUE);
+		expect(hidden.out).toContain('kind=email  value=••••••••');
+		printed = [];
+		const revealed = await task('account', 'get', 'oci-2', '--reveal');
+		expect(revealed.out).toContain(`kind=email  value=${SECRET_VALUE}`);
+		printed = [];
+		const raw = await task('account', 'get', 'oci-2', '--json');
+		expect(JSON.parse(raw.out).spec.identities).toEqual(IDENTITIES);
+	});
+
+	it('print as dots in a list column until --reveal', () => {
+		const field = { name: 'value', type: 'string', masked: true, editable: true, required: true };
+		expect(cell(SECRET_VALUE, field as Field)).toBe('••••••••');
+		expect(cell(SECRET_VALUE, field as Field, true)).toBe(SECRET_VALUE);
+		expect(cell(undefined, field as Field)).toBe('-');
+	});
+});
+
 describe('secrets', () => {
+	beforeEach(() => {
+		state.catalog = WITH_A_SECRET;
+		state.held.accounts!['oci-2']!.spec.identities = [
+			{ kind: 'user_id', secret: 'accounts/registry/ACCOUNT_00000000000000A1_USER_ID' },
+			{ kind: 'email', secret: 'accounts/registry/ACCOUNT_00000000000000A1_EMAIL' },
+		];
+	});
+
 	it("types in an item's secret once per item, and sends it", async () => {
 		const items = ['--identity', 'email', '--identity', 'tenancy'];
 		const { out, failed } = await task('account', 'create', 'az', '--set', 'provider=azure', ...items);

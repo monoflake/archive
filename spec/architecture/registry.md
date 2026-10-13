@@ -51,7 +51,8 @@ the newest change the registry holds. `GET /v1/kinds` is the catalog the console
 line draw from: each kind's `plural`, the route it is reached at; its fields, each with its type,
 whether it is required and whether it can be edited, a `choice`'s choices, a `reference`'s kind, and
 a list of objects its items' own fields, the first required `choice` naming the item; a field marked
-`secret`, written and never answered; and the columns a list shows first. A kind it does not hold is
+`secret`, written and never answered; one marked `masked`, kept and answered like any other but drawn
+hidden until the reader asks to see it; and the columns a list shows first. A kind it does not hold is
 `404 no_such_kind`. **The catalog is committed as the registry generates it** -- RFC bq3vn: its JSON
 Schema, `apps/data/registry/catalog.schema.json`, and its answer, `catalog.json`, which a reader's
 tests read rather than a copy. A test fails on either drifting from the types, and `REGENERATE=1
@@ -85,16 +86,13 @@ references move to ids in a contract of their own.
 - **`account`** -- `/v1/accounts` and `/v1/accounts/{id}`: a paid account at a provider, named as
   the provider's code was, `oci-2`, which is how the import finds it. Only the author writes one,
   through the API, never the import. Its `spec` is its `provider` as a whole word, `oracle` or
-  `azure`, and `identities`, one to three, each exactly `{kind, secret}` and each kind at most once,
+  `azure`, and `identities`, one to three, each exactly `{kind, value}` and each kind at most once,
   so an account always keeps at least one way to be known: `kind` one of `user_id`, `tenancy` and
-  `email`, the three set for now and another discussed when they fall short; `secret` the full name
-  the secret service keys its value by, `scope/app/NAME`. The value is kept there and never here,
-  since every reader of the tailnet reads the registry -- [secrets.md](secrets.md). **An identity is
-  written with its `value` instead of its `secret`**, and the registry hands the value to the secret
-  service as `accounts/registry/ACCOUNT_<ID>_<KIND>`, the id and the kind in capitals, with a token
-  that reaches that scope and app alone, then keeps that name in its place: the value is never
-  stored, logged or answered here, and a write the secret service did not take changes nothing.
-  `accounts` is a scope no node is given. An identity carrying any other key is refused.
+  `email`, the three set for now and another discussed when they fall short; `value` the identity
+  itself, kept here and answered, and `masked`, so it is drawn hidden until asked for -- RFC cpc2b.
+  Decided with the author on 2026-10-13: an identity is how the author finds their own account, so
+  they read it back, and none of the three lets anyone act on the account. An identity carrying any
+  other key is refused.
 - **`domain`** -- `/v1/domains` and `/v1/domains/{id}`: what fails together, its `spec` an optional
   `note`, grouped by the author through the nodes that name it. A node's `account` and `domain` are
   of the catalog's `reference` type, naming the kind they point to.
@@ -123,7 +121,9 @@ history holds.
 **`mise run platform <kind> list|get|create|patch` manages every kind the registry holds**, read off
 `GET /v1/kinds` at each run, so a kind or a field added to the registry is managed without a change
 to the task -- RFC cpc2b. A field the catalog marks `secret` is asked for on the terminal with no
-echo, never taken from an argument, which the shell's history and the process list would keep.
+echo, never taken from an argument, which the shell's history and the process list would keep. One
+marked `masked` is given like any other, and `list` and `get` print it as dots unless `--reveal` is
+given; `--json` answers it as the API does.
 `--dry-run` shows the request with every such value hidden. It writes as `operator`, with
 `REGISTRY_TOKEN` from the repository's secrets, to the first core that answers. It is TypeScript,
 `apps/data/registry/scripts/platform.ts`, and refuses a catalog its validator does not accept: the

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 fn oracle() -> Value {
 	json!({
 		"provider": "oracle",
-		"identities": [{ "kind": "email", "secret": "platform/registry/OCI_2_EMAIL" }],
+		"identities": [{ "kind": "email", "value": "me@example.com" }],
 	})
 }
 
@@ -50,24 +50,23 @@ async fn an_account_and_a_domain_are_set_and_read_by_name_and_by_id() {
 	assert_eq!(account["data"]["spec"], spec);
 }
 
-/// The registry is read by the whole tailnet, so an identity names its secret and never carries it.
+/// An identity is exactly its kind and its value.
 #[tokio::test]
 async fn an_account_is_refused_what_it_cannot_hold_before_the_store_is_asked() {
 	let router = refusing(TOKEN);
-	let leaked = json!({
+	let named = json!({
 		"provider": "oracle",
 		"identities": [{ "kind": "email", "secret": "platform/registry/E", "value": "me@example.com" }],
 	});
-	let mut carried = leaked.clone();
-	carried["identities"][0].as_object_mut().unwrap().remove("value");
-	carried["identities"][0]["email"] = json!("me@example.com");
+	let mut bare = named.clone();
+	bare["identities"][0] = json!({ "kind": "email" });
 	for (spec, expected) in [
-		(leaked, "invalid_body"),
-		(carried, "forbidden_field"),
+		(named, "forbidden_field"),
+		(bare, "invalid_body"),
 		(json!({ "provider": "oracle", "name": "oci-2" }), "forbidden_field"),
 		(json!({ "provider": "oci-2" }), "invalid_body"),
 		(
-			json!({ "provider": "oracle", "identities": [{ "kind": "password", "secret": "a/b/C" }] }),
+			json!({ "provider": "oracle", "identities": [{ "kind": "password", "value": "x" }] }),
 			"invalid_body",
 		),
 	] {

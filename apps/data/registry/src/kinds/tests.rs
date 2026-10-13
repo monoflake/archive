@@ -40,7 +40,7 @@ fn example(kind: &Description) -> Value {
 		}),
 		Kind::Account => json!({
 			"provider": "oracle",
-			"identities": [{ "kind": "email", "secret": "platform/registry/OCI_2_EMAIL" }],
+			"identities": [{ "kind": "email", "value": "me@example.com" }],
 		}),
 		Kind::Domain => json!({ "note": "Oracle's Tokyo and Singapore, one card" }),
 	}
@@ -66,23 +66,20 @@ fn wrong_types(type_: Type) -> Vec<Value> {
 }
 
 /// An identity as the catalog describes it: its kind a choice, which is how an item is told
-/// apart, its value written alone and never read back, and the name it is kept under the
-/// registry's to write.
+/// apart, and its value, required, kept and answered, and masked.
 #[test]
 fn an_identity_s_fields_are_what_an_account_takes() {
 	let identities = ACCOUNT.fields.iter().find(|field| field.name == "identities").unwrap();
-	let names: Vec<&str> = identities.fields.iter().map(|field| field.name).collect();
-	assert_eq!(names, ["kind", "value", "secret"]);
-	let [kind, value, secret] = identities.fields else { panic!("three fields") };
+	let [kind, value] = identities.fields else { panic!("two fields") };
 	assert_eq!((kind.type_, kind.choices, kind.required), (Type::Choice, account::IDENTITIES, true));
-	assert_eq!((value.type_, value.secret, value.editable), (Type::String, true, true));
-	assert_eq!((secret.type_, secret.secret, secret.editable), (Type::String, false, false));
+	let marks = (value.type_, value.required, value.masked, value.secret, value.editable);
+	assert_eq!(marks, (Type::String, true, true, false, true));
 	let taken = |identity: Value| {
 		account::spec(json!({ "provider": "oracle", "identities": [identity] })).is_ok()
 	};
 	for choice in kind.choices {
 		assert!(taken(json!({ "kind": choice, "value": "x" })), "{choice}");
-		assert!(taken(json!({ "kind": choice, "secret": "accounts/registry/X" })), "{choice}");
+		assert!(!taken(json!({ "kind": choice })), "{choice} without its value");
 	}
 	for wrong in [json!(1), json!(null), json!(""), json!("two\nlines")] {
 		assert!(!taken(json!({ "kind": "email", "value": wrong.clone() })), "{wrong}");
@@ -92,8 +89,7 @@ fn an_identity_s_fields_are_what_an_account_takes() {
 		answered["fields"],
 		json!([
 			{ "name": "kind", "type": "choice", "choices": ["user_id", "tenancy", "email"], "editable": true, "required": true },
-			{ "name": "value", "type": "string", "secret": true, "editable": true, "required": false },
-			{ "name": "secret", "type": "string", "editable": false, "required": false },
+			{ "name": "value", "type": "string", "masked": true, "editable": true, "required": true },
 		])
 	);
 }

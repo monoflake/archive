@@ -4,7 +4,6 @@
 
 use super::{Shared, by_is_valid, invalid_name, refused};
 use crate::kinds::{self, Kind, Refusal};
-use crate::secrets::{self, Secrets, Untaken};
 use crate::store::{Key, Resource, Set};
 use crate::{account, app, domain, node, task};
 use axum::Router;
@@ -282,13 +281,6 @@ async fn checked(
 	if kind == Kind::Node {
 		referenced(registry, &spec).await?;
 	}
-	if kind == Kind::Account && registry.secrets.is_none() && account::holds_values(&spec) {
-		return Err(Box::new(response::failure_with(
-			StatusCode::SERVICE_UNAVAILABLE,
-			"service_unavailable",
-			"An identity's value is refused: this registry has no SECRETS or SECRETS_SCOPE_TOKEN set",
-		)));
-	}
 	Ok(spec)
 }
 
@@ -325,39 +317,9 @@ fn refused_spec(refusal: Refusal) -> Response {
 	}
 }
 
-/// Each identity's value handed to the secret service under `account`'s id, its name kept in the
-/// value's place; the first the secret service does not take ends the write, which changes nothing
-/// here.
-async fn handed(
-	secrets: &Secrets,
-	account: &str,
-	by: &str,
-	mut spec: Map<String, Value>,
-) -> Result<Value, Refused> {
-	if let Some(Value::Array(identities)) = spec.get_mut("identities") {
-		for identity in identities {
-			let Some(value) = identity.get("value").and_then(Value::as_str) else { continue };
-			let kind = identity["kind"].as_str().unwrap_or_default().to_owned();
-			if let Err(untaken) = secrets.put(&secrets::name_of(account, &kind), value, by).await {
-				return Err(Box::new(not_taken(&untaken)));
-			}
-			*identity = json!({ "kind": kind, "secret": secrets::kept_as(account, &kind) });
-		}
-	}
-	Ok(Value::Object(spec))
-}
-
-/// The secret service unreachable or refusing, answered as what is behind the registry, never with
-/// the value.
-fn not_taken(untaken: &Untaken) -> Response {
-	let message = format!("An identity's value was not kept, so nothing changed: {untaken}");
-	response::failure_with(StatusCode::BAD_GATEWAY, "upstream_unavailable", message)
-}
-
 /// A write's answer: `202` with the revision it made and the task it is, told to the ledger and
 /// never waited on; `200` with `{}` when there was nothing to change, which makes no task; and a
-/// conflict when the resource changed after the revision given was read -- RFC cpc2b. An
-/// account's identity values reach the secret service before anything here is written.
+/// conflict when the resource changed after the revision given was read -- RFC cpc2b.
 async fn set(
 	registry: &Shared,
 	kind: Kind,
@@ -366,19 +328,7 @@ async fn set(
 	revision: i64,
 	spec: Map<String, Value>,
 ) -> Response {
-	let set = match &registry.secrets {
-		Some(secrets) if kind == Kind::Account && account::holds_values(&spec) => {
-			let by = by.as_str();
-			let make = move |account: String| async move { handed(secrets, &account, by, spec).await };
-			match registry.store.set_with(kind, name, by, revision, make).await {
-				Ok(Ok(set)) => Ok(set),
-				Ok(Err(refusal)) => return *refusal,
-				Err(error) => Err(error),
-			}
-		}
-		_ => registry.store.set(kind, name, &by, revision, Value::Object(spec)).await,
-	};
-	match set {
+	match registry.store.set(kind, name, &by, revision, Value::Object(spec)).await {
 		Ok(Set::Changed(written)) => {
 			if let Some(ledger) = &registry.ledger {
 				task::tell(ledger, kind, name, &by, &written);

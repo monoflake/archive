@@ -143,15 +143,9 @@
 						{
 							"name": "value",
 							"type": "string",
-							"secret": true,
+							"masked": true,
 							"editable": true,
-							"required": false
-						},
-						{
-							"name": "secret",
-							"type": "string",
-							"editable": false,
-							"required": false
+							"required": true
 						}
 					],
 					"editable": true,

@@ -19,6 +19,8 @@ const BY = 'operator';
 const HIDDEN = '<hidden>';
 /** A resource's id as a list shows it: its first eight digits -- web's spec/console/design.md. */
 const SHORT = 8;
+/** What `list` and `get` print for a value the catalog marks `masked`, until `--reveal`. */
+const MASK = '••••••••';
 const TOKEN = 'REGISTRY_TOKEN';
 const PORT = 12013;
 const TIMEOUT_MS = 10_000;
@@ -108,7 +110,7 @@ function kindNamed(kinds: readonly Description[], word: string): Description {
 }
 
 const marks = (field: Field) =>
-	(['required', 'secret'] as const).filter((word) => field[word] === true);
+	(['required', 'secret', 'masked'] as const).filter((word) => field[word] === true);
 
 /** The kind's fields, one a line, as `--help` shows them. */
 export function described(kind: Description): string {
@@ -132,7 +134,8 @@ export function described(kind: Description): string {
 function usage(kind: Description, verb: Verb): string {
 	const key = verb === 'list' ? '' : verb === 'create' ? ' <name>' : ' <name-or-id>';
 	if (verb === 'list' || verb === 'get') {
-		return `usage: mise run ${APP} ${kind.name} ${verb}${key} [--json]\n\n${described(kind)}`;
+		const options = '[--json] [--reveal]\n\n  --json    the answer as it is\n  --reveal  every masked value';
+		return `usage: mise run ${APP} ${kind.name} ${verb}${key} ${options}\n\n${described(kind)}`;
 	}
 	const items = [...itemOptions(kind)].map(
 		([option, field]) => ` [--${option} ${keyOf(field).name.toUpperCase()}[,FIELD=VALUE...]]`,
@@ -161,6 +164,8 @@ export interface Given {
 	key: string;
 	/** A read's `--json`: the answer as it is. */
 	raw: boolean;
+	/** A read's `--reveal`: every masked value printed as it is. */
+	reveal: boolean;
 	set: string[];
 	json: string[];
 	unset: string[];
@@ -176,6 +181,7 @@ function given(kind: Description, verb: Verb, args: string[]): Given | undefined
 		help: { type: 'boolean', short: 'h' },
 		json: write ? { type: 'string', multiple: true } : { type: 'boolean' },
 	};
+	if (!write) options.reveal = { type: 'boolean' };
 	if (write) {
 		options.set = { type: 'string', multiple: true };
 		options['dry-run'] = { type: 'boolean', short: 'n' };
@@ -195,6 +201,7 @@ function given(kind: Description, verb: Verb, args: string[]): Given | undefined
 	return {
 		key: positionals[0] ?? '',
 		raw: !write && values.json === true,
+		reveal: values.reveal === true,
 		set: strings('set'),
 		json: strings('json'),
 		unset: strings('unset'),
@@ -300,7 +307,12 @@ async function items(
 			item[name] = await typed(inner, raw, resolve);
 		}
 		for (const [name, inner] of fields) {
-			if (!isSecret(inner)) continue;
+			if (!isSecret(inner)) {
+				if (inner.required && isEditable(inner) && !Object.hasOwn(item, name)) {
+					fail(`${option} ${value} takes its ${name}: ${option} ${value},${name}=<${inner.type}>`);
+				}
+				continue;
+			}
 			const secret = await asked(world, `${singular(field.name)} ${value}: ${name}`, inner.required, dry);
 			if (secret !== undefined) item[name] = secret;
 		}
@@ -459,9 +471,10 @@ async function catalog(world: World): Promise<Description[]> {
 	return read.output.items;
 }
 
-/** A value as a table shows it: an id by its first eight digits. */
-export function cell(value: unknown, field?: Field): string {
+/** A value as a table shows it: an id by its first eight digits, a masked one as dots. */
+export function cell(value: unknown, field?: Field, reveal = false): string {
 	if (value === null || value === undefined) return '-';
+	if (field?.masked && !reveal) return MASK;
 	if (typeof value === 'boolean' || typeof value === 'number') return String(value);
 	if (typeof value === 'string') {
 		return field?.type === 'reference' && isId(value) ? value.slice(0, SHORT) : value;
@@ -472,7 +485,7 @@ export function cell(value: unknown, field?: Field): string {
 	return JSON.stringify(value);
 }
 
-export function table(kind: Description, resources: readonly Resource[]): string {
+export function table(kind: Description, resources: readonly Resource[], reveal = false): string {
 	const fields = new Map(kind.fields.map((field) => [field.name, field]));
 	const rows = [['id', 'name', ...kind.columns]];
 	for (const resource of resources) {
@@ -480,7 +493,7 @@ export function table(kind: Description, resources: readonly Resource[]): string
 		rows.push([
 			resource.id.slice(0, SHORT),
 			resource.name,
-			...kind.columns.map((column) => cell(spec[column], fields.get(column))),
+			...kind.columns.map((column) => cell(spec[column], fields.get(column), reveal)),
 		]);
 	}
 	const widths = rows[0]!.map((_, at) => Math.max(...rows.map((row) => row[at]!.length)));
@@ -495,7 +508,7 @@ export function table(kind: Description, resources: readonly Resource[]): string
 }
 
 /** One resource, its spec a field a line, the catalog's order first and every other key after. */
-export function readable(kind: Description, resource: Resource): string {
+export function readable(kind: Description, resource: Resource, reveal = false): string {
 	const spec = resource.spec ?? {};
 	const known = kind.fields.map((field) => field.name);
 	const names = [
@@ -513,16 +526,20 @@ export function readable(kind: Description, resource: Resource): string {
 	];
 	for (const name of names) {
 		const value = spec[name];
+		const field = fields.get(name);
 		if (Array.isArray(value) && value.length > 0 && value.every((one) => isObject(one))) {
+			const inner = new Map((field?.fields ?? []).map((item) => [item.name, item]));
 			lines.push(`  ${name}`);
 			for (const item of value as Record<string, unknown>[]) {
-				const pairs = Object.entries(item).map(([key, one]) => `${key}=${cell(one)}`);
+				const pairs = Object.entries(item).map(
+					([key, one]) => `${key}=${cell(one, inner.get(key), reveal)}`,
+				);
 				lines.push(`    ${pairs.join('  ')}`);
 			}
-		} else if (typeof value === 'string') {
+		} else if (typeof value === 'string' && !field?.masked) {
 			lines.push(`  ${name.padEnd(width)}  ${value}`);
 		} else {
-			lines.push(`  ${name.padEnd(width)}  ${cell(value, fields.get(name))}`);
+			lines.push(`  ${name.padEnd(width)}  ${cell(value, field, reveal)}`);
 		}
 	}
 	return lines.join('\n');
@@ -586,14 +603,16 @@ export async function run(world: World, args: readonly string[]): Promise<void> 
 	if (verb === 'list') {
 		const found = dataOf(await ask(world, 'GET', `/v1/${plural}`), `GET /v1/${plural}`);
 		const resources = (found as { items: Resource[] }).items;
-		world.print(options.raw ? JSON.stringify(resources, null, 2) : table(kind, resources));
+		world.print(options.raw ? JSON.stringify(resources, null, 2) : table(kind, resources, options.reveal));
 		return;
 	}
 	const what = `${kind.name} ${options.key}`;
 	if (verb === 'get') {
 		const path = `/v1/${plural}/${options.key}`;
 		const resource = dataOf(await ask(world, 'GET', path), what) as Resource;
-		world.print(options.raw ? JSON.stringify(resource, null, 2) : readable(kind, resource));
+		world.print(
+			options.raw ? JSON.stringify(resource, null, 2) : readable(kind, resource, options.reveal),
+		);
 		return;
 	}
 	const resolve: Resolve = async (referenced, name) => {
