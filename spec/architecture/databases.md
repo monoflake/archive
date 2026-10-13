@@ -55,6 +55,9 @@ core, named by the author".
   keeps in `secrets.json`; the certificate's name is not matched to the connection's source, which
   Docker's port publishing rewrites to the bridge's gateway -- a match refused every peer when it
   was first deployed, on 2026-10-08. Rolled out by hand, a member at a time, like the database.
+  **A member is replaced while the quorum runs**: the old one removed first, the new one added as a
+  learner, which holds no vote while it catches up, deployed with `ETCD_INITIAL_CLUSTER_STATE=existing`
+  in its `config.env`, then promoted -- `sha` for `sin`, on 2026-10-12.
 - **The lease is 30 s, renewed every 5, retried for 10**, and a primary that does not start within
   25 s is failed over, as Pigsty's `norm` plan sets them. A primary that cannot renew its lease is
   demoted by Patroni. Containers have no watchdog device, so the keeper is one: it stops Postgres at
