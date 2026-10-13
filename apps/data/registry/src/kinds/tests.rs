@@ -21,6 +21,7 @@ fn example(kind: &Description) -> Value {
 			"system": "debian",
 			"core": true,
 			"expiry": 2036,
+			"retired": false,
 			"canary": true,
 			"grants": ["database"],
 		}),

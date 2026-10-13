@@ -109,6 +109,8 @@ pub struct Relay {
 	timed: Mutex<BTreeMap<String, (Duration, Instant)>>,
 	/// The newest of this node's own versions sent to each neighbor, for a relay leaving to wait on.
 	told: told::Sender<Versions>,
+	/// The nodes the registry lists as retired, whose relays are refused; see `registry::follow`.
+	retired: Mutex<BTreeSet<String>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -141,6 +143,7 @@ impl Relay {
 			conversations: AtomicU64::new(0),
 			timed: Mutex::default(),
 			told: told::Sender::new(Versions::new()),
+			retired: Mutex::default(),
 		}))
 	}
 
@@ -326,6 +329,16 @@ impl Relay {
 	pub fn state(&self) -> State {
 		let nodes = lock(&self.holding).entries(Timestamp::now(), self.started.elapsed());
 		State { version: VERSION, node: self.node.clone(), nodes }
+	}
+
+	/// The nodes held as retired from now on, every one named.
+	pub fn set_retired(&self, retired: BTreeSet<String>) {
+		*lock(&self.retired) = retired;
+	}
+
+	/// Whether `node` is held as retired, so its relay is not spoken with.
+	pub fn is_retired(&self, node: &str) -> bool {
+		lock(&self.retired).contains(node)
 	}
 
 	/// The neighbors dialed from now on. A new one is shown waiting at once; one no longer dialed

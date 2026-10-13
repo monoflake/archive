@@ -35,6 +35,10 @@ pub fn record(node: Value) -> Result<Map<String, Value>, String> {
 	if record.get("core").is_some_and(|core| !core.is_boolean()) {
 		return Err("`core` is true or false".into());
 	}
+	// A node leaves by this mark, never by its record going missing -- RFC qcyb3.
+	if record.get("retired").is_some_and(|retired| !retired.is_boolean()) {
+		return Err("`retired` is true or false".into());
+	}
 	if record.get("expiry").is_some_and(|expiry| !expiry.as_u64().is_some_and(is_year)) {
 		return Err("`expiry` is a year, as a whole number".into());
 	}
@@ -67,6 +71,7 @@ mod tests {
 			"system": "debian",
 			"core": true,
 			"expiry": 2036,
+			"retired": false,
 			"canary": true,
 			"grants": ["database"],
 		})
@@ -104,6 +109,7 @@ mod tests {
 	fn the_optional_keys_may_be_left_out() {
 		let mut node = without("core");
 		node.as_object_mut().unwrap().remove("expiry");
+		node.as_object_mut().unwrap().remove("retired");
 		assert!(record(node).is_ok());
 	}
 
@@ -138,6 +144,9 @@ mod tests {
 			("system", json!("ubuntu")),
 			("core", json!("yes")),
 			("core", json!(null)),
+			("retired", json!("yes")),
+			("retired", json!(1)),
+			("retired", json!(null)),
 			("expiry", json!("2036")),
 			("expiry", json!(2036.5)),
 			("expiry", json!(-1)),

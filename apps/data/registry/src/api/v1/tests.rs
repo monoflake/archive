@@ -63,6 +63,8 @@ async fn refuses_a_body_it_cannot_store() {
 	let router = refusing(TOKEN);
 	let mut tierless = sin();
 	tierless.as_object_mut().unwrap().remove("tier");
+	let mut unsure = sin();
+	unsure["retired"] = json!("yes");
 	let nodes = [
 		json!([]),
 		json!({ "revision": 0, "spec": sin() }),
@@ -73,6 +75,7 @@ async fn refuses_a_body_it_cannot_store() {
 		json!({ "by": "test", "revision": 1.5, "spec": sin() }),
 		json!({ "by": "test", "revision": 0 }),
 		wanted(0, tierless),
+		wanted(0, unsure),
 		wanted(0, json!({ "node": sin() })),
 	];
 	for body in nodes {

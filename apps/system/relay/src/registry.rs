@@ -1,6 +1,7 @@
-//! Where a relay's peers come from while it runs: the platform's node registry, asked every
-//! `EVERY`. `RELAY_PEERS` is the seed a relay starts from, and `registry.json` the last answer
-//! taken, kept for the next start. See spec/architecture/registry.md and RFC ja5hm.
+//! Where a relay's peers come from while it runs: the platform's node registry, `GET /v1/nodes`,
+//! asked every `EVERY`. `RELAY_PEERS` is the seed a relay starts from, and `registry.json` every
+//! node the registry has listed, kept for the next start. A node leaves by being listed `retired`,
+//! never by going missing from an answer -- RFC qcyb3. See spec/architecture/registry.md.
 
 use crate::config::{self, Peer};
 use crate::mesh::keep;
@@ -12,7 +13,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,50 +35,94 @@ const PATIENCE: Duration = Duration::from_secs(3);
 pub const FILE: &str = "registry.json";
 
 /// The version of `registry.json`, read first; workspace spec/json.md, "A contract has a version,
-/// and it is the first thing read".
-const VERSION: u32 = 1;
+/// and it is the first thing read". Version 1 held the last answer of `GET /nodes`, and is still
+/// read, once, and carried over; see `cached`.
+const VERSION: u32 = 2;
 
-/// A node as the registry lists it, with what a relay reads of it; its other keys are passed over.
+/// A node's spec as the registry lists it, with what a relay reads of it; its other keys are
+/// passed over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
 	/// Its tailnet IPv4.
 	pub address: String,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub core: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub retired: bool,
 }
 
-/// What `GET /nodes` answers: every node by name, and the newest change written, 0 when none.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One node of `GET /v1/nodes`; its `kind` and `revision` are passed over.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Item {
+	pub name: String,
+	pub spec: Node,
+}
+
+/// What `GET /v1/nodes` answers: every node by name, and the newest change written, 0 when none.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Answer {
-	pub nodes: BTreeMap<String, Node>,
-	pub change: i64,
+	pub items: Vec<Item>,
+	pub revision: i64,
 }
 
-/// The peers an answer gives `node`, or none where it is not taken: an answer naming no nodes, or
-/// not naming this one, is a registry broken or emptied, and the peers held stay. Otherwise every
-/// other node it names is a peer, on the relay's own port. The policy is the author's to revise.
-pub fn next_peers(answer: &Answer, node: &str) -> Option<Vec<Peer>> {
-	if answer.nodes.is_empty() || !answer.nodes.contains_key(node) {
+/// Every node the registry has listed, as last listed, and the revision of the answer that last
+/// changed it. A node missing from an answer stays as it was: what `registry.json` keeps.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Taken {
+	pub nodes: BTreeMap<String, Node>,
+	pub revision: i64,
+}
+
+impl Taken {
+	/// The nodes held as retired, whose relays are refused.
+	pub fn retired(&self) -> BTreeSet<String> {
+		self.nodes.iter().filter(|(_, node)| node.retired).map(|(name, _)| name.clone()).collect()
+	}
+}
+
+/// `answer` taken over `taken`: each node it lists as it lists it, and every other as it was.
+fn fold(taken: Option<&Taken>, answer: &Answer) -> Taken {
+	let mut nodes = taken.map(|taken| taken.nodes.clone()).unwrap_or_default();
+	for item in &answer.items {
+		nodes.insert(item.name.clone(), item.spec.clone());
+	}
+	Taken { nodes, revision: answer.revision }
+}
+
+fn peer(name: &str, node: &Node) -> Peer {
+	Peer { name: name.to_owned(), address: format!("{}:{}", node.address, config::PORT) }
+}
+
+/// The peers `answer` leaves `node` holding after `held`, or none where it is not taken: an answer
+/// not listing this node is a registry broken or emptied. Otherwise a node it lists retired is
+/// dropped, one it lists otherwise is held at the address listed, on the relay's own port, and one
+/// it does not list stays as held -- RFC qcyb3's policy C.
+pub fn next_peers(held: &BTreeMap<String, Peer>, answer: &Answer, node: &str) -> Option<Vec<Peer>> {
+	if !answer.items.iter().any(|item| item.name == node) {
 		return None;
 	}
-	let others = answer.nodes.iter().filter(|(name, _)| *name != node);
-	Some(
-		others
-			.map(|(name, listed)| Peer {
-				name: name.clone(),
-				address: format!("{}:{}", listed.address, config::PORT),
-			})
-			.collect(),
-	)
+	let mut next = held.clone();
+	for item in answer.items.iter().filter(|item| item.name != node) {
+		if item.spec.retired {
+			next.remove(&item.name);
+		} else {
+			next.insert(item.name.clone(), peer(&item.name, &item.spec));
+		}
+	}
+	Some(next.into_values().collect())
 }
 
-/// The peers a relay starts from: `given`, from `RELAY_PEERS`, with the last answer taken over it
-/// for a node both name.
-pub fn seeded(given: &[Peer], cached: Option<&Answer>, node: &str) -> Vec<Peer> {
+/// The peers a relay starts from: `given`, from `RELAY_PEERS`, with every node the registry has
+/// listed over it, at the address listed, and none it holds as retired.
+pub fn seeded(given: &[Peer], taken: Option<&Taken>, node: &str) -> Vec<Peer> {
 	let mut peers: BTreeMap<String, Peer> =
 		given.iter().map(|peer| (peer.name.clone(), peer.clone())).collect();
-	for peer in cached.and_then(|answer| next_peers(answer, node)).unwrap_or_default() {
-		peers.insert(peer.name.clone(), peer);
+	for (name, listed) in taken.into_iter().flat_map(|taken| &taken.nodes) {
+		if listed.retired {
+			peers.remove(name);
+		} else if name != node {
+			peers.insert(name.clone(), peer(name, listed));
+		}
 	}
 	peers.into_values().collect()
 }
@@ -95,13 +140,13 @@ fn changed(held: &BTreeMap<String, Peer>, next: &[Peer]) -> (Vec<Peer>, Vec<Stri
 	(dialed, stopped)
 }
 
-/// The registries to ask, by node and host, in order: every core node of the last answer taken,
-/// then every other peer held.
-fn candidates(taken: Option<&Answer>, held: &BTreeMap<String, Peer>) -> Vec<(String, String)> {
+/// The registries to ask, by node and host, in order: every core node listed and not retired, then
+/// every other peer held.
+fn candidates(taken: Option<&Taken>, held: &BTreeMap<String, Peer>) -> Vec<(String, String)> {
 	let core = taken
 		.into_iter()
-		.flat_map(|answer| &answer.nodes)
-		.filter(|(_, listed)| listed.core)
+		.flat_map(|taken| &taken.nodes)
+		.filter(|(_, listed)| listed.core && !listed.retired)
 		.map(|(name, listed)| (name.clone(), listed.address.clone()));
 	let mut asked: Vec<(String, String)> = core.collect();
 	for peer in held.values() {
@@ -139,7 +184,7 @@ impl Registry {
 	}
 
 	async fn ask(&self, host: &str) -> Result<Answer, AskError> {
-		let request = Request::get(format!("http://{host}:{PORT}/nodes")).body(Empty::new())?;
+		let request = Request::get(format!("http://{host}:{PORT}/v1/nodes")).body(Empty::new())?;
 		let asked = async {
 			let answer = self.client.request(request).await?;
 			Ok::<_, AskError>(answer.into_body().collect().await?.to_bytes())
@@ -175,7 +220,7 @@ pub enum CacheError {
 	Io(#[from] std::io::Error),
 	#[error("it cannot be read: {0}")]
 	Malformed(#[from] serde_json::Error),
-	#[error("it is version {0}, not {VERSION}")]
+	#[error("it is version {0}, neither 1 nor {VERSION}")]
 	Version(u32),
 }
 
@@ -187,28 +232,41 @@ struct Versioned {
 #[derive(Serialize, Deserialize)]
 struct Cached {
 	version: u32,
-	#[serde(flatten)]
-	answer: Answer,
+	nodes: BTreeMap<String, Node>,
+	revision: i64,
 }
 
-/// The last answer taken, from `data`; none before the first.
-pub fn cached(data: &Path) -> Result<Option<Answer>, CacheError> {
+/// Version 1, the last answer of `GET /nodes`; its `change` is passed over.
+#[derive(Deserialize)]
+struct CachedOne {
+	nodes: BTreeMap<String, Node>,
+}
+
+/// What was last taken, from `data`; none before the first. A version-1 file is carried over at
+/// revision 0, so the first answer is taken whatever its revision, and is written as version 2.
+pub fn cached(data: &Path) -> Result<Option<Taken>, CacheError> {
 	let bytes = match std::fs::read(data.join(FILE)) {
 		Ok(bytes) => bytes,
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
 		Err(error) => return Err(error.into()),
 	};
 	let Versioned { version } = serde_json::from_slice(&bytes)?;
-	if version != VERSION {
-		return Err(CacheError::Version(version));
+	match version {
+		1 => {
+			let CachedOne { nodes } = serde_json::from_slice(&bytes)?;
+			Ok(Some(Taken { nodes, revision: 0 }))
+		}
+		VERSION => {
+			let Cached { nodes, revision, .. } = serde_json::from_slice(&bytes)?;
+			Ok(Some(Taken { nodes, revision }))
+		}
+		other => Err(CacheError::Version(other)),
 	}
-	let Cached { answer, .. } = serde_json::from_slice(&bytes)?;
-	Ok(Some(answer))
 }
 
-/// `answer` written to `data` whole or not at all: a relay stopped mid-write starts from the last.
-fn cache(data: &Path, answer: &Answer) -> Result<(), CacheError> {
-	let record = Cached { version: VERSION, answer: answer.clone() };
+/// `taken` written to `data` whole or not at all: a relay stopped mid-write starts from the last.
+fn cache(data: &Path, taken: &Taken) -> Result<(), CacheError> {
+	let record = Cached { version: VERSION, nodes: taken.nodes.clone(), revision: taken.revision };
 	let partial = data.join(format!("{FILE}.partial"));
 	std::fs::write(&partial, serde_json::to_vec(&record)?)?;
 	std::fs::rename(&partial, data.join(FILE))?;
@@ -216,9 +274,9 @@ fn cache(data: &Path, answer: &Answer) -> Result<(), CacheError> {
 }
 
 /// Holds a socket to each of `seed`, and asks the registry every `EVERY` for as long as the relay
-/// runs, taking each answer with a change other than the one taken. `taken` is the answer the seed
-/// was read from, if any.
-pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken: Option<Answer>) {
+/// runs, taking each answer with a revision other than the one taken. `taken` is what the seed was
+/// read from, if anything.
+pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken: Option<Taken>) {
 	let registry = Registry::new();
 	let mut held = BTreeMap::new();
 	let mut tasks = BTreeMap::new();
@@ -241,19 +299,21 @@ pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken
 			}
 		};
 		failing = false;
-		if taken.as_ref().is_some_and(|taken| taken.change == answer.change) {
+		if taken.as_ref().is_some_and(|taken| taken.revision == answer.revision) {
 			continue;
 		}
-		let Some(next) = next_peers(&answer, relay.node()) else {
-			if refused != Some(answer.change) {
-				eprintln!("relay: not taking change {} from {from}'s registry", answer.change);
-				refused = Some(answer.change);
+		let Some(next) = next_peers(&held, &answer, relay.node()) else {
+			if refused != Some(answer.revision) {
+				eprintln!("relay: not taking revision {} from {from}'s registry", answer.revision);
+				refused = Some(answer.revision);
 			}
 			continue;
 		};
-		if let Err(error) = cache(&data, &answer) {
+		let folded = fold(taken.as_ref(), &answer);
+		if let Err(error) = cache(&data, &folded) {
 			eprintln!("relay: writing {FILE}: {error}");
 		}
+		relay.set_retired(folded.retired());
 		let (dialed, stopped) = changed(&held, &next);
 		let added = dialed.iter().filter(|peer| !held.contains_key(&peer.name));
 		let added: Vec<&str> = added.map(|peer| peer.name.as_str()).collect();
@@ -262,8 +322,8 @@ pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken
 		let moved = dialed.iter().filter(|peer| held.contains_key(&peer.name));
 		let moved: Vec<&str> = moved.map(|peer| peer.name.as_str()).collect();
 		eprintln!(
-			"relay: took change {} from {from}'s registry, adding [{}], removing [{}], moving [{}]",
-			answer.change,
+			"relay: took revision {} from {from}'s registry, adding [{}], removing [{}], moving [{}]",
+			answer.revision,
 			added.join(" "),
 			removed.join(" "),
 			moved.join(" ")
@@ -276,7 +336,7 @@ pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken
 		}
 		dial(&relay, dialed, &mut held, &mut tasks);
 		relay.set_peers(held.keys().cloned().collect());
-		taken = Some(answer);
+		taken = Some(folded);
 	}
 }
 
@@ -294,122 +354,4 @@ fn dial(
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn node(address: &str, core: bool) -> Node {
-		Node { address: address.into(), core }
-	}
-
-	fn peer(name: &str, address: &str) -> Peer {
-		Peer { name: name.into(), address: address.into() }
-	}
-
-	fn held(peers: &[Peer]) -> BTreeMap<String, Peer> {
-		peers.iter().map(|peer| (peer.name.clone(), peer.clone())).collect()
-	}
-
-	fn answer(nodes: &[(&str, Node)], change: i64) -> Answer {
-		let nodes = nodes.iter().map(|(name, node)| ((*name).to_owned(), node.clone())).collect();
-		Answer { nodes, change }
-	}
-
-	/// An answer as the registry gives it, with keys a relay does not read and `core` left out.
-	#[test]
-	fn reads_the_answer_as_the_registry_gives_it() {
-		let body = r#"{ "status": "success", "data": { "change": 7, "nodes": {
-			"tyo": { "address": "100.64.0.1", "core": true, "tier": "core", "domain": "tyo.test" },
-			"buf": { "address": "100.64.0.2", "system": "linux" } } } }"#;
-		let response::Envelope::Success { data } = serde_json::from_str(body).unwrap() else {
-			panic!("a success");
-		};
-		let read: Answer = data;
-		let listed = [("tyo", node("100.64.0.1", true)), ("buf", node("100.64.0.2", false))];
-		assert_eq!(read, answer(&listed, 7));
-	}
-
-	#[test]
-	fn every_other_node_named_is_a_peer_on_the_relays_port() {
-		let rdu = ("rdu", node("100.64.0.3", true));
-		let listed =
-			[("tyo", node("100.64.0.1", true)), rdu.clone(), ("buf", node("100.64.0.2", false))];
-		assert_eq!(
-			next_peers(&answer(&listed, 7), "rdu"),
-			Some(vec![peer("buf", "100.64.0.2:12012"), peer("tyo", "100.64.0.1:12012")])
-		);
-		// The only node named is this one: taken, with no peers.
-		assert_eq!(next_peers(&answer(&[rdu], 8), "rdu"), Some(vec![]));
-	}
-
-	#[test]
-	fn an_answer_naming_no_nodes_is_not_taken() {
-		assert_eq!(next_peers(&answer(&[], 0), "rdu"), None);
-		assert_eq!(next_peers(&answer(&[], 9), "rdu"), None);
-	}
-
-	#[test]
-	fn an_answer_not_naming_this_node_is_not_taken() {
-		let listed = answer(&[("tyo", node("100.64.0.1", true))], 7);
-		assert_eq!(next_peers(&listed, "rdu"), None);
-	}
-
-	#[test]
-	fn the_last_answer_taken_wins_over_relay_peers() {
-		let given = [peer("tyo", "tyo.test:12012"), peer("gvx", "gvx.test:12012")];
-		let cached = answer(&[("rdu", node("100.64.0.3", true)), ("tyo", node("100.64.0.1", true))], 7);
-		assert_eq!(
-			seeded(&given, Some(&cached), "rdu"),
-			[peer("gvx", "gvx.test:12012"), peer("tyo", "100.64.0.1:12012")]
-		);
-		let alone = [peer("gvx", "gvx.test:12012"), peer("tyo", "tyo.test:12012")];
-		assert_eq!(seeded(&given, None, "rdu"), alone);
-		// A cache that would not be taken now adds nothing.
-		assert_eq!(seeded(&given, Some(&answer(&[], 3)), "rdu").len(), 2);
-	}
-
-	#[test]
-	fn a_peer_moved_is_stopped_and_dialed_again() {
-		let held = held(&[peer("tyo", "a:12012"), peer("gvx", "b:12012"), peer("buf", "c:12012")]);
-		let next = [peer("tyo", "a:12012"), peer("buf", "d:12012"), peer("sin", "e:12012")];
-		let (dialed, stopped) = changed(&held, &next);
-		assert_eq!(dialed, [peer("buf", "d:12012"), peer("sin", "e:12012")]);
-		assert_eq!(stopped, ["buf", "gvx"]);
-	}
-
-	#[test]
-	fn the_core_is_asked_first_then_every_other_peer() {
-		let held = held(&[peer("tyo", "100.64.0.1:12012"), peer("buf", "100.64.0.2:12012")]);
-		let listed = [
-			("tyo", node("100.64.0.1", true)),
-			("sin", node("100.64.0.4", true)),
-			("buf", node("100.64.0.2", false)),
-		];
-		let taken = answer(&listed, 7);
-		let asked = |taken| -> Vec<(String, String)> { candidates(taken, &held) };
-		let pairs = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
-			pairs.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())).collect()
-		};
-		assert_eq!(
-			asked(Some(&taken)),
-			pairs(&[("sin", "100.64.0.4"), ("tyo", "100.64.0.1"), ("buf", "100.64.0.2")])
-		);
-		// Before any answer is taken, every peer, from `RELAY_PEERS`.
-		assert_eq!(asked(None), pairs(&[("buf", "100.64.0.2"), ("tyo", "100.64.0.1")]));
-	}
-
-	#[test]
-	fn the_cache_is_read_back_and_a_missing_one_is_none() {
-		let data = tempfile::tempdir().unwrap();
-		assert!(cached(data.path()).unwrap().is_none());
-		let taken = answer(&[("rdu", node("100.64.0.3", true)), ("buf", node("100.64.0.2", false))], 7);
-		cache(data.path(), &taken).unwrap();
-		assert_eq!(cached(data.path()).unwrap(), Some(taken));
-		let written: serde_json::Value =
-			serde_json::from_slice(&std::fs::read(data.path().join(FILE)).unwrap()).unwrap();
-		assert_eq!(written["version"], VERSION);
-		assert!(written["nodes"]["buf"].get("core").is_none());
-		let newer = r#"{ "version": 2, "nodes": {}, "change": 1 }"#;
-		std::fs::write(data.path().join(FILE), newer).unwrap();
-		assert!(matches!(cached(data.path()), Err(CacheError::Version(2))));
-	}
-}
+mod tests;

@@ -92,6 +92,8 @@ pub enum MeshError {
 	Unintroduced,
 	#[error("it says it is `{0}`")]
 	Stranger(String),
+	#[error("it says it is `{0}`, a node retired")]
+	Retired(String),
 	#[error("it closed the socket")]
 	Closed,
 }
@@ -163,6 +165,10 @@ pub async fn converse<S: Socket>(
 	};
 	if peer == relay.node() || expected.is_some_and(|expected| expected != peer) {
 		return Err(MeshError::Stranger(peer));
+	}
+	// A node retired leaves the mesh both ways, never by its record going missing -- RFC qcyb3.
+	if relay.is_retired(&peer) {
+		return Err(MeshError::Retired(peer));
 	}
 	// A neighbor that said nothing of runs or minutes is older than them; see `Message`.
 	let (reads_runs, reads_minutes) = (runs.is_some(), theirs_minutes.is_some());
@@ -243,6 +249,10 @@ pub async fn converse<S: Socket>(
 				Err(RecvError::Closed) => return Ok(()),
 			},
 			_ = comparison.tick() => {
+				// One retired while its socket was open is dropped within a comparison.
+				if relay.is_retired(&peer) {
+					return Err(MeshError::Retired(peer.clone()));
+				}
 				if speaking.speaks() {
 					let (runs, minutes) = (Some(relay.run_versions()), Some(relay.minute_versions()));
 					let versions = Message::Versions { versions: relay.versions(), runs, minutes };
@@ -586,6 +596,28 @@ mod tests {
 			let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: None });
 			let refused = converse(relay.clone(), expected, fake).await;
 			assert!(matches!(refused, Err(MeshError::Stranger(named)) if named == said));
+		}
+	}
+
+	#[tokio::test]
+	async fn a_neighbor_held_as_retired_is_refused() {
+		let relay = relay("rdu");
+		relay.set_retired(std::collections::BTreeSet::from(["buf".to_owned()]));
+		for (said, refused) in [("buf", true), ("tyo", false)] {
+			let (feed, incoming) = mpsc::unbounded_channel();
+			let hello = Message::Hello {
+				version: VERSION,
+				node: said.into(),
+				versions: Versions::new(),
+				runs: None,
+				minutes: None,
+			};
+			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
+			feed.send(Received::Closed).unwrap();
+			let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: None });
+			let answered = converse(relay.clone(), None, fake).await;
+			let named = matches!(&answered, Err(MeshError::Retired(named)) if named == said);
+			assert_eq!(named, refused, "{said}: {answered:?}");
 		}
 	}
 

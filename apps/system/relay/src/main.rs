@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
 	let seed = relay::registry::seeded(&config.peers, cached.as_ref(), &config.node);
 	let peers = seed.iter().map(|peer| peer.name.clone()).collect();
 	let relay = Relay::new(config.node.clone(), config.secret.clone(), peers, store)?;
+	relay.set_retired(cached.as_ref().map(relay::registry::Taken::retired).unwrap_or_default());
 
 	let host = Arc::new(Host::new(monoflake::INTERNAL_HOST, config.read_token.clone()));
 	tokio::spawn(watch(relay.clone(), host.clone(), relay::own::EVERY));

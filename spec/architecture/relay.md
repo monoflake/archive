@@ -49,9 +49,10 @@ across a full mesh of seven every three seconds; comparing costs a hop up to two
 node that cannot reach a third directly still hears it through a neighbor.
 
 **The mesh is `/mesh`, a WebSocket each relay dials on every other**, admitted by a secret the
-relays share, `RELAY_SECRET`. The peers are the nodes the registry lists, followed while the relay runs and
-kept on its disk -- [registry.md](registry.md), "Every relay follows it" -- with `RELAY_PEERS`,
-`name=address:port` by tailnet address, the seed a relay starts from; a relay skips its own. Each stream's first message
+relays share, `RELAY_SECRET`. The peers are every node the registry has listed and not marked `retired`, followed while the
+relay runs and kept on its disk -- [registry.md](registry.md), "Every relay follows it" -- with
+`RELAY_PEERS`, `name=address:port` by tailnet address, the seed a relay starts from; a relay skips
+its own, and refuses a neighbor it holds as retired. Each stream's first message
 carries the contract's version, and a neighbor speaking another is dropped. Both ends ping every
 three seconds -- the round trip below -- and drop a socket on which nothing has been heard for
 ninety seconds, a write still waiting on it included: a neighbor gone without closing stops taking

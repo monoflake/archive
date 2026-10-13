@@ -77,6 +77,7 @@ pub const NODE: Description = Description {
 		choice("system", node::SYSTEMS),
 		field("core", Type::Boolean, false),
 		field("expiry", Type::Integer, false),
+		field("retired", Type::Boolean, false),
 	],
 	actions: &[],
 	columns: &["address", "tier", "domain", "system"],

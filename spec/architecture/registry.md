@@ -56,16 +56,23 @@ change a relay takes.
 
 ## Every relay follows it
 
-**A relay asks the registry every 30 seconds and takes what it lists as its peers**, dialing a node
-newly listed and stopping one no longer listed, without restarting -- [relay.md](relay.md). It asks
-the cores the last answer named first, then every other node it holds, the first to answer being
-the answer.
+**A relay asks the registry for `GET /v1/nodes` every 30 seconds and changes its peers by what the
+answer says**, dialing a node newly listed and stopping one listed `retired`, without restarting --
+[relay.md](relay.md). It asks the core nodes it holds first, then every other peer it holds, the
+first to answer being the answer.
 
-**What a relay last took is kept on its own disk, and it never expires.** A relay that reaches no
+**A node leaves by being marked `retired`, never by going missing from an answer** -- RFC qcyb3.
+`retired` is a boolean in a node's spec that an operator writes, absent meaning false. A node an
+answer does not list stays a peer, so a write that drops a record by mistake disconnects nothing;
+one listed `retired` is dropped, its relay is refused when it dials in, and a socket already open to
+it is dropped within a comparison.
+
+**What a relay has taken is kept on its own disk, and it never expires**: `registry.json`, every
+node the registry has listed as it was last listed, and the revision taken. A relay that reaches no
 registry keeps the peers it has, and starts from them, with `RELAY_PEERS` under them as the seed for
 a node that has never been told. The registry unreachable stops a change from spreading, never a
 relay from running -- RFC ja5hm.
 
-**An answer that lists no nodes, or not the relay's own, is not taken**: a registry emptied or
-broken leaves the mesh as it was. Which answers are taken is `next_peers` in the relay's
-`src/registry.rs`.
+**An answer that does not list the relay's own node is not taken**: a registry emptied or broken
+leaves the mesh as it was. Which answers are taken, and what each one changes, is `next_peers` in
+the relay's `src/registry.rs`.
