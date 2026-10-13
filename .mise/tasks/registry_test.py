@@ -298,5 +298,121 @@ class Importing(unittest.TestCase):
 		self.assertIn("`main`", failed)
 
 
+
+class Widened(unittest.TestCase):
+	def test_what_it_names_is_kept_in_order_and_the_rest_added_once(self):
+		self.assertEqual(
+			registry.widened(
+				"monoflake/platform canmi21/web",
+				["monoflake/infra", "monoflake/platform", "canmi21/cue"],
+			),
+			"monoflake/platform canmi21/web monoflake/infra canmi21/cue",
+		)
+
+	def test_nothing_named_yet_is_the_sources_alone(self):
+		self.assertEqual(registry.widened("", ["monoflake/infra"]), "monoflake/infra")
+
+	def test_a_source_named_twice_is_named_once(self):
+		self.assertEqual(registry.widened("a/b a/b", ["a/b"]), "a/b")
+
+
+class Token(unittest.TestCase):
+	"""`token` run whole, every machine and every secret stood in for: the registry's two nodes,
+	and the deployer on tyo with what its config.env names."""
+
+	SECRET = "s3cret-never-printed"
+	SOURCES = ["monoflake/infra", "monoflake/platform", "canmi21/cue"]
+
+	def run_token(self, dry, current="monoflake/platform canmi21/web"):
+		self.written = []
+		self.asked = []
+
+		def upsert(node, app, file, pairs):
+			self.written.append((node, app, file, pairs))
+			return True
+
+		def ssh(node, command):
+			self.asked.append((node, command))
+			return current
+
+		manifests = {"registry": {"placements": ["tyo", "sin"]}, "deployer": {"placements": ["tyo"]}}
+		addresses = {"tyo": "100.64.0.1", "sin": "100.64.0.2"}
+		printed = io.StringIO()
+		database = registry.database
+		with contextlib.ExitStack() as stack:
+			stack.enter_context(mock.patch.object(database, "stored_secret", lambda *_: self.SECRET))
+			stack.enter_context(mock.patch.object(database, "manifest_of", manifests.__getitem__))
+			stack.enter_context(mock.patch.object(database, "tailnet_ipv4", addresses.__getitem__))
+			stack.enter_context(mock.patch.object(database, "upsert", upsert))
+			stack.enter_context(mock.patch.object(database, "ssh", ssh))
+			stack.enter_context(mock.patch.object(registry, "host_sources", lambda: self.SOURCES))
+			stack.enter_context(contextlib.redirect_stdout(printed))
+			registry.token(dry)
+		return printed.getvalue()
+
+	def test_a_dry_run_says_every_write_asks_nothing_and_prints_no_secret(self):
+		printed = self.run_token(True)
+		self.assertEqual(self.written, [])
+		self.assertEqual(self.asked, [])
+		self.assertNotIn(self.SECRET, printed)
+		for line in [
+			"registry: tyo: would set, keeping every other line, mode 600, in"
+			" /data/apps/registry/secret.env: REGISTRY_TOKEN=<redacted>",
+			"registry: sin: would set, keeping every other line, mode 600, in"
+			" /data/apps/registry/secret.env: REGISTRY_TOKEN=<redacted>",
+			"registry: tyo: would set in /data/apps/deployer/secret.env: REGISTRY_TOKEN=<redacted>",
+			"registry: tyo: would set in /data/apps/deployer/config.env:"
+			" REGISTRY=100.64.0.1 100.64.0.2",
+			"registry: tyo: would set in /data/apps/deployer/config.env: DEPLOY_SOURCES=<what it"
+			" names>, then each of monoflake/infra monoflake/platform canmi21/cue it does not",
+		]:
+			self.assertIn(line, printed.splitlines())
+
+	def test_a_run_gives_the_registry_and_the_deployer_the_token_and_widens_the_sources(self):
+		printed = self.run_token(False)
+		self.assertNotIn(self.SECRET, printed)
+		token = {"REGISTRY_TOKEN": self.SECRET}
+		self.assertEqual(
+			self.written,
+			[
+				("tyo", "registry", "secret.env", token),
+				("sin", "registry", "secret.env", token),
+				("tyo", "deployer", "secret.env", token),
+				(
+					"tyo",
+					"deployer",
+					"config.env",
+					{
+						"REGISTRY": "100.64.0.1 100.64.0.2",
+						"DEPLOY_SOURCES": "monoflake/platform canmi21/web monoflake/infra canmi21/cue",
+					},
+				),
+			],
+		)
+		[(node, command)] = self.asked
+		self.assertEqual(node, "tyo")
+		self.assertIn("/data/apps/deployer/config.env", command)
+		self.assertIn("s/^DEPLOY_SOURCES=//p", command)
+
+	def test_a_deployer_that_names_no_sources_is_given_hosts(self):
+		self.run_token(False, current="")
+		self.assertEqual(self.written[-1][3]["DEPLOY_SOURCES"], " ".join(self.SOURCES))
+
+	def test_its_sources_unread_writes_nothing_to_it(self):
+		with self.assertRaises(SystemExit) as failed:
+			self.run_token(False, current=None)
+		self.assertIn("reading DEPLOY_SOURCES of deployer failed on tyo", str(failed.exception.code))
+		self.assertEqual([app for _, app, _, _ in self.written], ["registry", "registry"])
+
+	def test_host_sources_are_read_from_infra_main(self):
+		made = tempfile.TemporaryDirectory()
+		self.addCleanup(made.cleanup)
+		workspace = Path(made.name)
+		(workspace / "repos/infra").mkdir(parents=True)
+		node = 'DEPLOY_SOURCES = "monoflake/infra=infra canmi21/cue=canmi"\n'
+		with mock.patch.object(registry, "committed", lambda root, path: node):
+			self.assertEqual(registry.host_sources(workspace), ["monoflake/infra", "canmi21/cue"])
+
+
 if __name__ == "__main__":
 	unittest.main()

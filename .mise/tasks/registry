@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-#MISE description="Run the platform's registry: `registry token` gives it its write token, `registry import` loads the nodes and the apps' placements into it once, each with --dry-run"
+#MISE description="Run the platform's registry: `registry token` gives it and its writers the write token, `registry import` loads the nodes and the apps' placements into it once, each with --dry-run"
 """The operator's half of the platform's registry. See spec/architecture/registry.md and RFC ja5hm.
 
 `token` writes the registry's write token on every node it runs on, made and kept in secrets.json
-the first time; `import` reads infra's nodes.toml and puts each node into the registry, then puts
+the first time, and gives each writer the token, the cores to write to and every source host deploys
+from; `import` reads infra's nodes.toml and puts each node into the registry, then puts
 where each app runs, from every repository host deploys from, held to the revision it read, which is
 safe to run again. Values move over SSH on stdin, never on a command line, and `--dry-run` touches
 no machine and prints no secret. It borrows the database task's helpers rather than copying them.
@@ -14,6 +15,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -44,6 +46,14 @@ TOKEN = "REGISTRY_TOKEN"
 # Who a change is recorded as made by.
 BY = "import"
 TIMEOUT_SECONDS = 10
+# The apps that write to the registry while they run, each on the nodes its service.toml places it:
+# the deployer, recording each app's release from every run it takes -- RFC jln34. Each is given
+# the token, the cores as `REGISTRY`, and every source host deploys from added to its own
+# `DEPLOY_SOURCES`, so no app host runs is left without a release.
+WRITERS = ("deployer",)
+# The variables a writer is told, in its config.env.
+CORES = "REGISTRY"
+SOURCES = "DEPLOY_SOURCES"
 
 
 def fail(message):
@@ -61,6 +71,41 @@ def request_body(table, address, by=BY):
 	return {"by": by, "node": {**table, "address": address}}
 
 
+def widened(current, wanted):
+	"""The sources `current` names, in its order, then each of `wanted` it does not, each once."""
+	have = list(dict.fromkeys(current.split()))
+	return " ".join(have + [source for source in wanted if source not in have])
+
+
+def configured(node, app, key):
+	"""`key` as /data/apps/<app>/config.env on `node` sets it, '' when it sets none; None when the
+	node could not be asked."""
+	path = shlex.quote(f"/data/apps/{app}/config.env")
+	return database.ssh(node, f"if [ -f {path} ]; then sed -n 's/^{key}=//p' {path}; fi")
+
+
+def wire(node, writer, value, cores, sources, dry):
+	"""Give `writer` on `node` the token in its secret.env, and in its config.env the cores and its
+	own sources widened by `sources`, keeping every other line."""
+	where = f"/data/apps/{writer}"
+	if dry:
+		print(f"{APP}: {node}: would set in {where}/secret.env: {TOKEN}=<redacted>")
+		print(f"{APP}: {node}: would set in {where}/config.env: {CORES}={cores}")
+		print(
+			f"{APP}: {node}: would set in {where}/config.env: {SOURCES}=<what it names>, then each of"
+			f" {' '.join(sources)} it does not"
+		)
+		return
+	current = configured(node, writer, SOURCES)
+	if current is None:
+		fail(f"reading {SOURCES} of {writer} failed on {node}")
+	if not database.upsert(node, writer, "secret.env", {TOKEN: value}):
+		fail(f"writing {TOKEN} for {writer} failed on {node}")
+	pairs = {CORES: cores, SOURCES: widened(current, sources)}
+	if not database.upsert(node, writer, "config.env", pairs):
+		fail(f"writing {CORES} and {SOURCES} for {writer} failed on {node}")
+
+
 def token(dry):
 	cores = placements()
 	value = database.stored_secret(TOKEN, dry)
@@ -72,7 +117,14 @@ def token(dry):
 			)
 		elif not database.upsert(node, APP, "secret.env", {TOKEN: value}):
 			fail(f"writing {TOKEN} failed on {node}")
-	print(f"{APP}: reads it on its next deploy; `mise run //repos/infra:node redeploy <node> {APP}`")
+	addresses = " ".join(database.tailnet_ipv4(core) for core in cores)
+	sources = host_sources()
+	for writer in WRITERS:
+		for node in database.manifest_of(writer)["placements"]:
+			wire(node, writer, value, addresses, sources, dry)
+	for app in (APP, *WRITERS):
+		redeploy = f"mise run //repos/infra:node redeploy <node> {app}"
+		print(f"{APP}: {app} reads it on its next deploy; `{redeploy}`")
 
 
 def is_node_name(name):
@@ -157,14 +209,20 @@ def committed(root, path):
 	return jj(root, "file", "show", "-r", MAIN, path)
 
 
+def host_sources(workspace=None):
+	"""Every repository host deploys from, as `owner/repo`, in the order DEPLOY_SOURCES names them
+	on infra's `main`."""
+	infra = (workspace or WORKSPACE) / "repos/infra"
+	if not infra.is_dir():
+		fail(f"{infra} is not there; clone infra beside this repository")
+	return deploy_sources(committed(infra, ".mise/tasks/node"))
+
+
 def source_roots(workspace=None):
 	"""The checkout of every repository host deploys from, in the order DEPLOY_SOURCES names them
 	on infra's `main`."""
 	workspace = workspace or WORKSPACE
-	infra = workspace / "repos/infra"
-	if not infra.is_dir():
-		fail(f"{infra} is not there; clone infra beside this repository")
-	sources = deploy_sources(committed(infra, ".mise/tasks/node"))
+	sources = host_sources(workspace)
 	listed = workspace / "repos.toml"
 	if not listed.is_file():
 		fail(f"{listed} is not there; it says which directory each repository is cloned in")

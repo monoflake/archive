@@ -110,7 +110,7 @@ against the user behind the token, and an account-owned token has none: its firs
 console's on 2026-10-07, was refused with code 10196 until it was replaced. D1 and DNS are never
 granted. **An artifact of a repository the
 monoflake organization does not own is fetched with a token of that owner's** --
-`GITHUB_ACTIONS_TOKEN_CANMI21`, read access to Actions on `canmi21/web` alone -- picked by the
+`GITHUB_ACTIONS_TOKEN_CANMI21`, read access to Actions on `canmi21/web` and `canmi21/cue` -- picked by the
 source's owner, here and in host.
 
 ## Admitting a repository
