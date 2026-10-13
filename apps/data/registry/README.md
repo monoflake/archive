@@ -1,6 +1,6 @@
 # Node Registry
 
-The platform's own record of its nodes, and of every change made to them.  
+The platform's own record of its nodes and its apps, and of every change made to them.  
 Runs on the node, deployed by host.
 
 ## License

@@ -22,11 +22,12 @@ pub struct Migration {
 
 /// In order, never edited once released: a change is a new one. A change row is appended and never
 /// updated or deleted; see spec/architecture/registry.md.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-	version: 1,
-	name: "nodes and their changes",
-	kind: Kind::Expand,
-	sql: r#"
+pub const MIGRATIONS: &[Migration] = &[
+	Migration {
+		version: 1,
+		name: "nodes and their changes",
+		kind: Kind::Expand,
+		sql: r#"
 		CREATE TABLE nodes (
 			name text COLLATE "C" PRIMARY KEY,
 			record jsonb NOT NULL,
@@ -41,7 +42,24 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
 			after jsonb
 		);
 	"#,
-}];
+	},
+	// Every row written before it is a node's, which the default says; a resource's revision is its
+	// newest change, read by kind and name. See RFC cpc2b.
+	Migration {
+		version: 2,
+		name: "apps, and the kind of each change",
+		kind: Kind::Expand,
+		sql: r#"
+			ALTER TABLE changes ADD COLUMN kind text COLLATE "C" NOT NULL DEFAULT 'node';
+			CREATE INDEX changes_by_resource ON changes (kind, name, id);
+			CREATE TABLE apps (
+				name text COLLATE "C" PRIMARY KEY,
+				spec jsonb NOT NULL,
+				updated_at timestamptz NOT NULL DEFAULT now()
+			);
+		"#,
+	},
+];
 
 /// The advisory lock every registry takes before migrating: "registry" in ASCII.
 const LOCK: i64 = 0x7265_6769_7374_7279;
@@ -56,6 +74,14 @@ const RECORDED: &str = "CREATE TABLE IF NOT EXISTS registry_migrations (
 /// its own: the lock is the session's, so it goes when the connection does, whatever happens.
 /// Answers the versions applied now.
 pub async fn run(client: &mut Client) -> Result<Vec<i32>, tokio_postgres::Error> {
+	apply(client, MIGRATIONS).await
+}
+
+/// `run` over `migrations` alone, so a test can stand a schema as an older release left it.
+pub(crate) async fn apply(
+	client: &mut Client,
+	migrations: &[Migration],
+) -> Result<Vec<i32>, tokio_postgres::Error> {
 	client.execute("SELECT pg_advisory_lock($1)", &[&LOCK]).await?;
 	client.batch_execute(RECORDED).await?;
 	let applied: Vec<i32> = client
@@ -65,7 +91,7 @@ pub async fn run(client: &mut Client) -> Result<Vec<i32>, tokio_postgres::Error>
 		.map(|row| row.get(0))
 		.collect();
 	let mut now = Vec::new();
-	for migration in MIGRATIONS.iter().filter(|m| !applied.contains(&m.version)) {
+	for migration in migrations.iter().filter(|m| !applied.contains(&m.version)) {
 		let transaction = client.transaction().await?;
 		transaction.batch_execute(migration.sql).await?;
 		transaction

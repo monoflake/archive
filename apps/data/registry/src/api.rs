@@ -1,5 +1,6 @@
 //! What every node's relay reads, and an operator writes, over the tailnet. See
-//! spec/architecture/registry.md.
+//! spec/architecture/registry.md. The routes outside `/v1` are the ones every relay in production
+//! reads, kept as they are until none does; `/v1` is in v1.rs.
 
 use crate::node;
 use crate::store::Store;
@@ -31,6 +32,7 @@ pub fn routes(registry: Shared) -> Router {
 		.route("/nodes", get(nodes))
 		.route("/nodes/{name}", axum::routing::put(put).delete(delete))
 		.route("/changes", get(changes))
+		.merge(v1::routes())
 		.fallback(|| async { response::failure(StatusCode::NOT_FOUND, "no_such_route") })
 		.with_state(registry)
 }
@@ -196,6 +198,8 @@ async fn changes(State(registry): State<Shared>, Query(asked): Query<ChangesAske
 		}
 	}
 }
+
+mod v1;
 
 #[cfg(test)]
 mod tests;

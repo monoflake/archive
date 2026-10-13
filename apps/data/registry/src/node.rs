@@ -4,8 +4,8 @@
 use serde_json::{Map, Value};
 use std::net::Ipv4Addr;
 
-const TIERS: &[&str] = &["datacenter", "home", "transient"];
-const SYSTEMS: &[&str] = &["debian", "alpine"];
+pub const TIERS: &[&str] = &["datacenter", "home", "transient"];
+pub const SYSTEMS: &[&str] = &["debian", "alpine"];
 
 /// Three lowercase ASCII letters, an IATA code.
 pub fn name_is_valid(name: &str) -> bool {

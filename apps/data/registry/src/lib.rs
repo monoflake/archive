@@ -1,6 +1,9 @@
-//! registry: the platform's own record of its nodes. See spec/architecture/registry.md.
+//! registry: the platform's own record of its nodes and its apps. See
+//! spec/architecture/registry.md.
 
 pub mod api;
+pub mod app;
+pub mod kinds;
 pub mod migrations;
 pub mod node;
 pub mod store;

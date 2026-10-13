@@ -5,22 +5,22 @@ use axum::http::Request;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-const TOKEN: &str = "s3cret";
+pub(super) const TOKEN: &str = "s3cret";
 
-fn registry(store: Store, token: &str) -> Router {
+pub(super) fn registry(store: Store, token: &str) -> Router {
 	routes(Arc::new(Registry { store, token: token.into() }))
 }
 
 /// A router over a database never reached, for what is refused before the store is asked.
-fn refusing(token: &str) -> Router {
+pub(super) fn refusing(token: &str) -> Router {
 	registry(unreached(), token)
 }
 
-async fn reached() -> Option<Router> {
+pub(super) async fn reached() -> Option<Router> {
 	Some(registry(store().await?, TOKEN))
 }
 
-fn sin() -> Value {
+pub(super) fn sin() -> Value {
 	json!({
 		"address": "100.64.0.9",
 		"tier": "datacenter",
@@ -32,7 +32,7 @@ fn sin() -> Value {
 	})
 }
 
-async fn send(
+pub(super) async fn send(
 	router: Router,
 	method: &str,
 	path: &str,
@@ -68,11 +68,11 @@ async fn delete_node(router: Router, name: &str) -> (StatusCode, Value) {
 		.await
 }
 
-async fn ask(router: Router, path: &str) -> (StatusCode, Value) {
+pub(super) async fn ask(router: Router, path: &str) -> (StatusCode, Value) {
 	send(router, "GET", path, None, None).await
 }
 
-fn code(answer: &(StatusCode, Value)) -> (StatusCode, &str) {
+pub(super) fn code(answer: &(StatusCode, Value)) -> (StatusCode, &str) {
 	(answer.0, answer.1["code"].as_str().unwrap_or_default())
 }
 
@@ -207,7 +207,8 @@ async fn a_node_is_set_read_and_deleted_with_every_change_kept() {
 
 #[test]
 fn every_code_it_answers_with_is_in_the_catalogue() {
-	for code in response::codes_named(include_str!("../api.rs")) {
+	let sources = [include_str!("../api.rs"), include_str!("v1.rs")];
+	for code in sources.into_iter().flat_map(response::codes_named) {
 		assert!(
 			response::message_of(code).is_some(),
 			"`{code}` is not in the response crate's codes.json"

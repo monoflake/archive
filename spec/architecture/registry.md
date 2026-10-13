@@ -2,7 +2,7 @@
 
 **`apps/data/registry` is the platform's record of where things are and with what**, kept in the
 platform's Postgres, so the code's repositories hold only what an app needs -- RFC ja5hm. It holds
-the nodes first; what each node runs and what each binding resolves to follow it there. Every
+the nodes and where each app runs; what each binding resolves to follows them there. Every
 component that needs it reads it while it runs, and none restarts for a change -- RFC qcyb3.
 
 ## Where it runs, and what it keeps
@@ -24,6 +24,32 @@ so the node task can come to read it rather than the file.
 repository's secrets and written to the registry's nodes by `mise run registry token`; without one a
 registry answers reads and refuses writes. `mise run registry import` writes every node of
 `nodes.toml` with its address, the one way in until the console writes it -- RFC dk6wz.
+
+## Nodes and apps, as resources of a kind
+
+**`/v1` answers the control contract, RFC cpc2b**: a resource is `{kind, name, revision, spec}`
+inside the `response` envelope, and a list is `{"items": [...], "revision": n}`, `revision` being
+the newest change the registry holds. `GET /v1/kinds` is the catalog the console draws from: each
+kind's fields, which can be edited, and the columns a list shows first. A kind it does not hold is
+`404 no_such_kind`.
+
+- **`node`** -- `/v1/nodes` and `/v1/nodes/{name}`, the record above as its `spec`.
+- **`app`** -- `/v1/apps` and `/v1/apps/{name}`, its `spec` being `placements`, the nodes it runs
+  on, each named once. `?node=<name>` answers only the apps placed on that node, which is how host
+  asks what its node should run -- infra's `spec/architecture/host.md`. `mise run registry import`
+  writes each app's placements from its `service.toml`, this repository's and infra's; a Worker's,
+  placed on `workers`, is not the registry's.
+
+**A write carries the revision it read**, `{"by", "revision", "spec"}` with `revision` 0 for what
+does not exist yet, and one made after another change is refused `409 invalid_revision`. A body
+carrying `status` or `drift`, or a key a kind's `spec` does not hold, is refused `forbidden_field`.
+A write answers `{"revision": n}`, or `{}` when it changed nothing; it becomes a task in the ledger
+answering `202`, and `by` is taken from the request rather than the body, in a later wave -- RFC
+cpc2b. A resource's revision is the change that last wrote it, so every kind shares one sequence.
+
+**The routes before `/v1` stay until no relay reads them**, and they answer nodes alone: `GET
+/nodes`'s `change` and `GET /changes` pass over every other kind's rows, so placing an app is not a
+change a relay takes.
 
 ## Every relay follows it
 

@@ -1,4 +1,5 @@
-//! registry: the platform's own record of its nodes. See spec/architecture/registry.md.
+//! registry: the platform's own record of its nodes and its apps. See
+//! spec/architecture/registry.md.
 
 use registry_service::api::{self, Registry, Shared};
 use registry_service::store::Store;
