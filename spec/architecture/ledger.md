@@ -69,8 +69,11 @@ nothing had said a word: the ledger not answering and answering again, a batch i
 status it refused with, and the oldest dropped past the bound, each a line of counts and reasons,
 never a record. **A service stopping flushes what it holds within a bound**, `Ledger::flush`, five
 seconds inside the twenty host gives a container to stop, so a redeploy no longer drops what was
-waiting out a backoff. The client names its TLS provider, `ring`, so a dependency that brings
-another into a build cannot leave it unable to choose. **The gateway keeps nothing of the ledger**,
+waiting out a backoff. **The client names its TLS provider, a feature of the crate**:
+`aws-lc-rs` by default, which the author chose on 2026-10-13 as running on x86_64 and arm64 alike,
+and `ring` for a service whose own clients are built on it, so a build holds one; with both on,
+aws-lc-rs is named, so a dependency that brings the other cannot leave it unable to choose.
+**The gateway keeps nothing of the ledger**,
 as of the registry: a list read through it was a quarter of an hour old.
 
 **It is reached through Caddy, as a scope that is never public**: services write to
