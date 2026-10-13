@@ -41,11 +41,7 @@ fn the_port_is_the_one_the_declaration_states() {
 async fn two_sealed_cores_open_a_third_and_one_alone_does_not() {
 	let key = RootKey::generate();
 	let shares = seal::split(&key);
-	let peers = vec![
-		core_holding(Some(shares[1].clone())).await,
-		core_holding(None).await,
-		nobody(),
-	];
+	let peers = vec![core_holding(Some(shares[1].clone())).await, core_holding(None).await, nobody()];
 	let directory = scratch("open");
 	let path = directory.join("share");
 	std::fs::write(&path, shares[0].to_json().as_bytes()).unwrap();
