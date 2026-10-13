@@ -27,7 +27,8 @@ class Body(unittest.TestCase):
 	def test_the_table_is_kept_whole_and_the_address_added(self):
 		body = registry.request_body(NODE, "100.64.0.1", 5)
 		self.assertEqual((body["by"], body["revision"]), ("import", 5))
-		self.assertEqual(body["spec"], {**NODE, "address": "100.64.0.1"})
+		derived = {"hosting": "datacenter", "account": "oci", "roles": ["compute", "core"]}
+		self.assertEqual(body["spec"], {**NODE, **derived, "address": "100.64.0.1"})
 		self.assertEqual(body["spec"]["grants"], ["hub:peer"])
 
 	def test_the_table_given_is_not_changed(self):
@@ -39,8 +40,40 @@ class Body(unittest.TestCase):
 		table = {"tier": "datacenter", "domain": "oci", "system": "alpine"}
 		self.assertEqual(
 			registry.request_body(table, "100.64.0.2", 0)["spec"],
-			{"tier": "datacenter", "domain": "oci", "system": "alpine", "address": "100.64.0.2"},
+			{
+				"tier": "datacenter",
+				"domain": "oci",
+				"system": "alpine",
+				"hosting": "datacenter",
+				"account": "oci",
+				"roles": ["compute"],
+				"address": "100.64.0.2",
+			},
 		)
+
+
+class Derived(unittest.TestCase):
+	"""RFC 32hd9's fields from the old axes: written beside them, the new from the old."""
+
+	def test_home_is_selfhost_and_every_other_tier_datacenter(self):
+		pairs = [("home", "selfhost"), ("datacenter", "datacenter"), ("transient", "datacenter")]
+		for tier, hosting in pairs:
+			self.assertEqual(registry.derived({"tier": tier, "domain": "oci"})["hosting"], hosting, tier)
+
+	def test_the_domain_is_the_account(self):
+		self.assertEqual(registry.derived({"tier": "home", "domain": "rkn"})["account"], "rkn")
+		self.assertNotIn("account", registry.derived({"tier": "home"}))
+
+	def test_every_node_computes_and_a_core_is_core_too(self):
+		self.assertEqual(registry.derived({"core": True})["roles"], ["compute", "core"])
+		for table in [{}, {"core": False}]:
+			self.assertEqual(registry.derived(table)["roles"], ["compute"], table)
+
+	def test_a_key_the_table_carries_is_the_table_s(self):
+		table = {"tier": "home", "domain": "rkn", "hosting": "datacenter", "roles": ["storage"]}
+		spec = registry.request_body(table, "100.64.0.3", 0)["spec"]
+		kept = (spec["hosting"], spec["roles"], spec["account"])
+		self.assertEqual(kept, ("datacenter", ["storage"], "rkn"))
 
 
 class Placements(unittest.TestCase):
@@ -67,6 +100,14 @@ class Placements(unittest.TestCase):
 			("b/service.toml", {"name": "aka", "placements": ["workers"]}),
 		]
 		self.assertEqual(registry.apps_placed(declarations), [("web", ["tyo"]), ("aka", None)])
+
+	def test_a_name_of_an_id_s_shape_fails(self):
+		declarations = [("a", {"name": "0123456789abcdef", "placements": ["tyo"]})]
+		with self.assertRaises(SystemExit):
+			registry.apps_placed(declarations)
+		self.assertTrue(registry.is_id("0123456789abcdef"))
+		for name in ["web", "0123456789abcde", "0123456789ABCDEF", "0123456789abcdef0123456789abcdef"]:
+			self.assertFalse(registry.is_id(name), name)
 
 	def test_a_name_declared_twice_or_not_at_all_fails(self):
 		twice = [("a", {"name": "web", "placements": ["tyo"]}), ("b", {"name": "web"})]
@@ -310,7 +351,8 @@ class Importing(unittest.TestCase):
 			return {"status": "success", "data": {"revision": held[name]["revision"]}}
 
 		self.run_import(False, answered)
-		tyo = {**self.NODES["tyo"], "address": "100.64.0.1", "retired": True}
+		tyo = {**registry.derived(self.NODES["tyo"]), **self.NODES["tyo"]}
+		tyo.update(address="100.64.0.1", retired=True)
 		self.assertEqual(held["tyo"]["spec"], tyo)
 		self.assertEqual(written, [("PATCH", "tyo"), ("PUT", "sin")])
 

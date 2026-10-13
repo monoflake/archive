@@ -43,15 +43,31 @@ by `PUT` for a node the registry does not hold, so it keeps every key `nodes.tom
 
 ## Nodes and apps, as resources of a kind
 
-**`/v1` answers the control contract, RFC cpc2b**: a resource is `{kind, name, revision, spec}`
+**`/v1` answers the control contract, RFC cpc2b**: a resource is `{kind, id, name, revision, spec}`
 inside the `response` envelope, and a list is `{"items": [...], "revision": n}`, `revision` being
 the newest change the registry holds. `GET /v1/kinds` is the catalog the console draws from: each
 kind's fields, which can be edited, and the columns a list shows first. A kind it does not hold is
 `404 no_such_kind`.
 
-- **`node`** -- `/v1/nodes` and `/v1/nodes/{name}`, the record above as its `spec`, set whole by
-  `PUT` and in part by `PATCH`.
-- **`app`** -- `/v1/apps` and `/v1/apps/{name}`, its `spec` being `placements`, the nodes it runs
+**Every resource has an `id`, and its name is a label** -- RFC 2kuvi. The id is 64 random bits as
+16 lowercase hexadecimal digits, made when the resource is first written and never changed, unique
+in its kind, so one that collides is made again; a migration gave every resource already held one.
+A route's last segment is read as an id when it is 16 lowercase hexadecimal digits and as a name
+otherwise, so a name of that shape can never be written -- a route reads it as an id and answers
+`404` for one it does not hold, and the import refuses it as a name; a list
+takes `?name=` to find one by name. Every row of the history carries the id of the resource it
+changed. What refers to a resource -- a placement, a release -- still holds its name, until those
+references move to ids in a contract of their own.
+
+- **`node`** -- `/v1/nodes` and `/v1/nodes/{id}`, the record above as its `spec`, set whole by
+  `PUT` and in part by `PATCH`. Beside the axes `nodes.toml` declares it holds the fields RFC 32hd9
+  gives a node: `hosting`, `datacenter` or `selfhost`; `account`, its failure domain, written as
+  `domain` is; and `roles`, one or more of `compute`, `storage` and `core`, each once. While
+  `nodes.toml` still declares `tier`, `domain` and `core`, the import writes both, the new from the
+  old -- `home` is `selfhost`, `domain` is `account`, and every node `compute`, a core `core` too --
+  and the relay reads `roles`, falling back to `core`. The old keys go once `nodes.toml` writes the
+  new.
+- **`app`** -- `/v1/apps` and `/v1/apps/{id}`, its `spec` being `placements`, the nodes it runs
   on, each named once. `?node=<name>` answers only the apps placed on that node, which is how host
   asks what its node should run -- infra's `spec/architecture/host.md`. `mise run registry import`
   writes each app's placements from its `service.toml`, in every repository host deploys from --
@@ -63,9 +79,14 @@ kind's fields, which can be edited, and the columns a list shows first. A kind i
 **A write carries the revision it read**, `{"by", "revision", "spec"}` with `revision` 0 for what
 does not exist yet, and one made after another change is refused `409 invalid_revision`. A body
 carrying `status` or `drift`, or a key a kind's `spec` does not hold, is refused `forbidden_field`.
-A write answers `{"revision": n}`, or `{}` when it changed nothing; it becomes a task in the ledger
-answering `202`, and `by` is taken from the request rather than the body, in a later wave -- RFC
-cpc2b. A resource's revision is the change that last wrote it, so every kind shares one sequence.
+**A write that changes something is a task**, answering `202` with `{"revision": n, "task":
+"<id>"}`, and one that changes nothing answers `200` with `{}` and makes none -- RFC cpc2b. The task
+is the ledger's, service `registry`, kind `write`, its id 16 hexadecimal digits as a resource's is,
+its summary the resource's kind, id and name and the revision written; it is recorded `done` with one
+event, `written`, since the write is whole when it is answered, and the history row keeps its id.
+The ledger is told as every service tells it and never waited on -- [ledger.md](ledger.md), "Pushed
+to, never asking": the history is the record of what changed, and the task what the console draws.
+`by` is still the body's, until the identity that writes is taken from the request, with accounts. A resource's revision is the change that last wrote it, so every kind shares one sequence.
 
 **The routes before `/v1` are gone**: `GET /nodes`, `PUT` and `DELETE /nodes/{name}` and `GET
 /changes` were removed once every relay followed `/v1/nodes`, and each answers `404 no_such_route`.

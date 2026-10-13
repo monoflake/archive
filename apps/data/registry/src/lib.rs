@@ -7,3 +7,4 @@ pub mod kinds;
 pub mod migrations;
 pub mod node;
 pub mod store;
+pub mod task;

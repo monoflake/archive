@@ -23,6 +23,12 @@ impl Kind {
 	}
 }
 
+/// Whether `key` has a resource id's shape, 16 lowercase hexadecimal digits -- RFC 2kuvi. A route
+/// reads such a key as an id, so no name may have it.
+pub fn is_id(key: &str) -> bool {
+	key.len() == 16 && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// One kind as the catalog describes it.
 #[derive(Debug, Serialize)]
 pub struct Description {
@@ -39,7 +45,8 @@ pub struct Field {
 	pub name: &'static str,
 	#[serde(rename = "type")]
 	pub type_: Type,
-	/// What a `choice` may be, and empty for every other type.
+	/// What a `choice` may be, or each item of a `list` of choices, each once; empty for every other
+	/// field.
 	#[serde(skip_serializing_if = "<[_]>::is_empty")]
 	pub choices: &'static [&'static str],
 	pub editable: bool,
@@ -66,20 +73,29 @@ const fn field(name: &'static str, type_: Type, required: bool) -> Field {
 	Field { name, type_, choices: &[], editable: true, required }
 }
 
-const fn choice(name: &'static str, choices: &'static [&'static str]) -> Field {
-	Field { name, type_: Type::Choice, choices, editable: true, required: true }
+const fn choice(name: &'static str, choices: &'static [&'static str], required: bool) -> Field {
+	Field { name, type_: Type::Choice, choices, editable: true, required }
+}
+
+/// A list of `choices`, each at most once.
+const fn choices(name: &'static str, choices: &'static [&'static str], required: bool) -> Field {
+	Field { name, type_: Type::List, choices, editable: true, required }
 }
 
 pub const NODE: Description = Description {
 	kind: Kind::Node,
 	fields: &[
 		field("address", Type::String, true),
-		choice("tier", node::TIERS),
+		choice("tier", node::TIERS, true),
 		field("domain", Type::String, true),
-		choice("system", node::SYSTEMS),
+		choice("system", node::SYSTEMS, true),
 		field("core", Type::Boolean, false),
 		field("expiry", Type::Integer, false),
 		field("retired", Type::Boolean, false),
+		// RFC 32hd9's, beside the axes they are derived from until `nodes.toml` writes them.
+		choice("hosting", node::HOSTINGS, false),
+		field("account", Type::String, false),
+		choices("roles", node::ROLES, false),
 	],
 	actions: &[],
 	columns: &["address", "tier", "domain", "system"],

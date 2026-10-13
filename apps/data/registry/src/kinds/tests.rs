@@ -22,6 +22,9 @@ fn example(kind: &Description) -> Value {
 			"core": true,
 			"expiry": 2036,
 			"retired": false,
+			"hosting": "datacenter",
+			"account": "oci-2",
+			"roles": ["compute", "core"],
 			"canary": true,
 			"grants": ["database"],
 		}),
@@ -89,13 +92,25 @@ fn a_value_not_of_its_type_is_refused() {
 }
 
 #[test]
-fn every_choice_is_taken_and_only_a_choice_has_them() {
+fn every_choice_is_taken_and_only_a_choice_or_a_list_has_them() {
 	for kind in CATALOG {
 		for field in kind.fields {
-			assert_eq!(field.type_ == Type::Choice, !field.choices.is_empty(), "{}", field.name);
+			let listed = !field.choices.is_empty();
+			match field.type_ {
+				Type::Choice => assert!(listed, "{}", field.name),
+				Type::List => {}
+				_ => assert!(!listed, "{}", field.name),
+			}
 			for choice in field.choices {
-				let spec = with(&example(kind), field.name, json!(choice));
-				assert!(accepts(kind, spec), "{}: {} = {choice}", kind.kind.name(), field.name);
+				let value = if field.type_ == Type::List { json!([choice]) } else { json!(choice) };
+				let spec = with(&example(kind), field.name, value.clone());
+				assert!(accepts(kind, spec), "{}: {} = {value}", kind.kind.name(), field.name);
+			}
+			if field.type_ == Type::List && listed {
+				let outside = with(&example(kind), field.name, json!(["none of them"]));
+				assert!(!accepts(kind, outside), "{}: {}", kind.kind.name(), field.name);
+				let twice = json!([field.choices[0], field.choices[0]]);
+				assert!(!accepts(kind, with(&example(kind), field.name, twice)), "{}", field.name);
 			}
 		}
 	}

@@ -14,6 +14,8 @@ pub struct Registry {
 	pub store: Store,
 	/// What a write's bearer has to be; empty, every write is refused.
 	pub token: String,
+	/// Where a write that changed something is told as a task; none, and it is told nowhere.
+	pub ledger: Option<ledger::Ledger>,
 }
 
 pub type Shared = Arc<Registry>;

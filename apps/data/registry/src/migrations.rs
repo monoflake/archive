@@ -59,6 +59,38 @@ pub const MIGRATIONS: &[Migration] = &[
 			);
 		"#,
 	},
+	// `registry_id()` makes every id: 64 bits of a version 4 UUID, Postgres's strong random source,
+	// the version and variant nibbles left out, as 16 hexadecimal digits. As a default it fills each
+	// row held, and every row an older release inserts; store.rs draws its own, past a collision. A
+	// history row takes the id of the resource holding its name now, unless a delete since parted
+	// the two, and no task, as none was made before. See RFC 2kuvi and RFC cpc2b.
+	Migration {
+		version: 3,
+		name: "an id for every resource, and the resource and task of each change",
+		kind: Kind::Expand,
+		sql: r#"
+			CREATE FUNCTION registry_id() RETURNS text LANGUAGE sql VOLATILE AS $$
+				SELECT substr(u, 1, 12) || substr(u, 14, 3) || substr(u, 18, 1)
+				FROM (SELECT replace(gen_random_uuid()::text, '-', '') AS u) uuid
+			$$;
+			ALTER TABLE nodes ADD COLUMN id text COLLATE "C" NOT NULL DEFAULT registry_id();
+			ALTER TABLE apps ADD COLUMN id text COLLATE "C" NOT NULL DEFAULT registry_id();
+			CREATE UNIQUE INDEX nodes_by_id ON nodes (id);
+			CREATE UNIQUE INDEX apps_by_id ON apps (id);
+			ALTER TABLE changes ADD COLUMN resource text COLLATE "C";
+			ALTER TABLE changes ADD COLUMN task text COLLATE "C";
+			CREATE UNIQUE INDEX changes_by_task ON changes (task);
+			UPDATE changes c SET resource = r.id
+				FROM (
+					SELECT 'node' AS kind, name, id FROM nodes UNION ALL SELECT 'app', name, id FROM apps
+				) r
+				WHERE c.kind = r.kind AND c.name = r.name AND c.id > coalesce(
+					(SELECT max(d.id) FROM changes d
+						WHERE d.kind = c.kind AND d.name = c.name AND d.after IS NULL),
+					0
+				);
+		"#,
+	},
 ];
 
 /// The advisory lock every registry takes before migrating: "registry" in ASCII.

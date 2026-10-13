@@ -71,10 +71,30 @@ def placements():
 	return database.manifest_of(APP)["placements"]
 
 
+def derived(table):
+	"""RFC 32hd9's fields, from the axes nodes.toml declares while it declares no other: `home` is
+	`selfhost`, `domain` is `account`, and every node `compute`, a core `core` too. A key the table
+	carries itself is the table's. See spec/architecture/registry.md."""
+	fields = {
+		"hosting": "selfhost" if table.get("tier") == "home" else "datacenter",
+		"roles": ["compute", "core"] if table.get("core") is True else ["compute"],
+	}
+	if "domain" in table:
+		fields["account"] = table["domain"]
+	return fields
+
+
 def request_body(table, address, revision, by=BY):
 	"""The body of `PUT` or `PATCH /v1/nodes/<name>`: who, the revision read, and the node's table as
-	nodes.toml has it, plus its tailnet IPv4. See spec/architecture/registry.md."""
-	return {"by": by, "revision": revision, "spec": {**table, "address": address}}
+	nodes.toml has it, the fields derived from it beside the old, and its tailnet IPv4. See
+	spec/architecture/registry.md."""
+	return {"by": by, "revision": revision, "spec": {**derived(table), **table, "address": address}}
+
+
+def is_id(key):
+	"""16 lowercase hexadecimal digits: what the registry reads as an id, never a name -- RFC
+	2kuvi."""
+	return len(key) == 16 and all(c in "0123456789abcdef" for c in key)
 
 
 def widened(current, wanted):
@@ -162,6 +182,8 @@ def apps_placed(declarations):
 		name = declaration.get("name")
 		if not isinstance(name, str) or not name:
 			fail(f"{path} names no app")
+		if is_id(name):
+			fail(f"{path} names {name}, which the registry reads as an id, never a name")
 		if name in seen:
 			fail(f"{name} is declared twice, in {seen[name]} and {path}")
 		seen[name] = path

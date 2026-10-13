@@ -20,6 +20,8 @@ pub fn name_is_valid(name: &str) -> bool {
 		&& name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 		&& !name.starts_with('-')
 		&& !name.ends_with('-')
+		// A route would read it as an id -- RFC 2kuvi.
+		&& !crate::kinds::is_id(name)
 }
 
 /// Every key an app's spec may hold.
@@ -108,6 +110,11 @@ mod tests {
 		for name in ["registry", "web", "a", "geo-2", "0x", &"a".repeat(63)] {
 			assert!(name_is_valid(name), "{name}");
 		}
+		// An id's shape is an id, never a name; one digit either way is a name again.
+		let id = "0123456789abcdef";
+		assert!(!name_is_valid(id));
+		assert!(name_is_valid(&id[1..]));
+		assert!(name_is_valid(&format!("{id}0")));
 		for name in ["", "-web", "web-", "Web", "we_b", "we.b", "wéb", &"a".repeat(64)] {
 			assert!(!name_is_valid(name), "{name}");
 		}

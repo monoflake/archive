@@ -1,9 +1,10 @@
 //! The nodes and the apps, each keyed by name, and every change made to them, appended and never
 //! rewritten. See spec/architecture/registry.md, RFC ja5hm and RFC cpc2b.
 
-use crate::kinds::Kind;
+use crate::kinds::{self, Kind};
 use crate::migrations;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
+use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_postgres::{IsolationLevel, NoTls};
@@ -22,6 +23,9 @@ const WRITES: i64 = 0x6e_6f64_6573;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Resource {
 	pub kind: Kind,
+	/// 16 lowercase hexadecimal digits, made when it was first written and never changed -- RFC
+	/// 2kuvi.
+	pub id: String,
 	pub name: String,
 	/// The id of the newest change made to it.
 	pub revision: i64,
@@ -36,14 +40,39 @@ pub struct Listed {
 }
 
 /// What a write did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Set {
 	/// Nothing: the resource changed after the revision given.
 	Stale,
 	/// Nothing: the spec kept is already equal to it.
 	Unchanged,
 	/// The change it appended.
-	Changed(i64),
+	Changed(Written),
+}
+
+/// A change appended: its id, the resource's revision from now on; the resource's id; the task it
+/// is told to the ledger as, whose id the history row keeps; and when it was made. Both ids are 16
+/// lowercase hexadecimal digits -- RFC 2kuvi.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+	pub revision: i64,
+	pub id: String,
+	pub task: String,
+	pub at: Timestamp,
+}
+
+/// How a route names a resource: by its id when the key has an id's shape, by its name otherwise --
+/// RFC 2kuvi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key<'a> {
+	Id(&'a str),
+	Name(&'a str),
+}
+
+impl<'a> Key<'a> {
+	pub fn of(key: &'a str) -> Self {
+		if kinds::is_id(key) { Self::Id(key) } else { Self::Name(key) }
+	}
 }
 
 /// The table a kind is kept in, and the column holding its spec.
@@ -53,6 +82,10 @@ const fn table(kind: Kind) -> (&'static str, &'static str) {
 		Kind::App => ("apps", "spec"),
 	}
 }
+
+/// How many ids are drawn for one write before a collision is taken as a fault: 64 random bits
+/// collide by chance about never, so a second collision says the source is broken, not unlucky.
+const DRAWS: usize = 4;
 
 /// A resource's revision, 0 where it has no change, in a query over its kind's table as `r`.
 const REVISION: &str =
@@ -126,18 +159,38 @@ impl Store {
 			Some(row) => Some(row.get(0)),
 			None => None,
 		};
-		transaction
-			.execute(
-				&format!(
-					"INSERT INTO {table} (name, {column}) VALUES ($1, $2)
-					ON CONFLICT (name) DO UPDATE SET {column} = excluded.{column}, updated_at = now()"
-				),
-				&[&name, &spec],
+		// An id is made by the write that first holds the resource, and an update never names it,
+		// so it never changes.
+		let id: String = if before.is_some() {
+			transaction
+				.query_one(
+					&format!(
+						"UPDATE {table} SET {column} = $2, updated_at = now() WHERE name = $1 RETURNING id"
+					),
+					&[&name, &spec],
+				)
+				.await?
+				.get(0)
+		} else {
+			let id = unused(&transaction, table, "id").await?;
+			transaction
+				.execute(
+					&format!("INSERT INTO {table} (id, name, {column}) VALUES ($1, $2, $3)"),
+					&[&id, &name, &spec],
+				)
+				.await?;
+			id
+		};
+		let task = unused(&transaction, "changes", "task").await?;
+		let row = transaction
+			.query_one(
+				"INSERT INTO changes (kind, by, name, before, after, resource, task)
+				VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, at",
+				&[&kind.name(), &by, &name, &before, &spec, &id, &task],
 			)
 			.await?;
-		let id = append(&transaction, kind, by, name, before, spec).await?;
 		transaction.commit().await?;
-		Ok(Set::Changed(id))
+		Ok(Set::Changed(Written { revision: row.get(0), id, task, at: row.get(1) }))
 	}
 
 	/// Every resource of `kind` in name order, and the newest change to anything, read from one
@@ -153,52 +206,58 @@ impl Store {
 			.await?;
 		let rows = transaction
 			.query(
-				&format!("SELECT r.name, r.{column}, {REVISION} FROM {table} r ORDER BY r.name"),
+				&format!("SELECT r.id, r.name, r.{column}, {REVISION} FROM {table} r ORDER BY r.name"),
 				&[&kind.name()],
 			)
 			.await?;
 		let revision: i64 =
 			transaction.query_one("SELECT coalesce(max(id), 0) FROM changes", &[]).await?.get(0);
 		transaction.commit().await?;
-		let items = rows
-			.into_iter()
-			.map(|row| Resource { kind, name: row.get(0), revision: row.get(2), spec: row.get(1) })
-			.collect();
+		let items = rows.into_iter().map(|row| resource(kind, &row)).collect();
 		Ok(Listed { items, revision })
 	}
 
-	/// The resource `name` of `kind`, if there is one.
-	pub async fn resource(&self, kind: Kind, name: &str) -> anyhow::Result<Option<Resource>> {
+	/// The resource of `kind` that `key` names, if there is one.
+	pub async fn resource(&self, kind: Kind, key: Key<'_>) -> anyhow::Result<Option<Resource>> {
 		let (table, column) = table(kind);
+		let (by, value) = match key {
+			Key::Id(id) => ("id", id),
+			Key::Name(name) => ("name", name),
+		};
 		let row = self
 			.pool
 			.get()
 			.await?
 			.query_opt(
-				&format!("SELECT r.{column}, {REVISION} FROM {table} r WHERE r.name = $2"),
-				&[&kind.name(), &name],
+				&format!("SELECT r.id, r.name, r.{column}, {REVISION} FROM {table} r WHERE r.{by} = $2"),
+				&[&kind.name(), &value],
 			)
 			.await?;
-		Ok(row.map(|row| Resource { kind, name: name.into(), revision: row.get(1), spec: row.get(0) }))
+		Ok(row.map(|row| resource(kind, &row)))
 	}
 }
 
-async fn append(
+/// An id `column` of `table` does not hold yet, drawn from the migration's `registry_id()`, and
+/// drawn again past a collision at most `DRAWS` times. The caller holds `WRITES`, so no other write
+/// of this release takes the same id between the check and the insert.
+async fn unused(
 	transaction: &deadpool_postgres::Transaction<'_>,
-	kind: Kind,
-	by: &str,
-	name: &str,
-	before: Option<Value>,
-	after: Value,
-) -> anyhow::Result<i64> {
-	let row = transaction
-		.query_one(
-			"INSERT INTO changes (kind, by, name, before, after) VALUES ($1, $2, $3, $4, $5)
-			RETURNING id",
-			&[&kind.name(), &by, &name, &before, &after],
-		)
-		.await?;
-	Ok(row.get(0))
+	table: &str,
+	column: &str,
+) -> anyhow::Result<String> {
+	for _ in 0..DRAWS {
+		let id: String = transaction.query_one("SELECT registry_id()", &[]).await?.get(0);
+		let taken = format!("SELECT EXISTS (SELECT 1 FROM {table} WHERE {column} = $1)");
+		if !transaction.query_one(&taken, &[&id]).await?.get::<_, bool>(0) {
+			return Ok(id);
+		}
+	}
+	anyhow::bail!("{DRAWS} ids drawn for {table}.{column} were each taken already")
+}
+
+/// A row selected as `id, name, spec, revision`.
+fn resource(kind: Kind, row: &tokio_postgres::Row) -> Resource {
+	Resource { kind, id: row.get(0), name: row.get(1), spec: row.get(2), revision: row.get(3) }
 }
 
 #[cfg(test)]

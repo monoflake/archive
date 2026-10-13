@@ -16,6 +16,13 @@ fn placed(placements: &[&str]) -> Value {
 	json!({ "placements": placements })
 }
 
+/// The id an answered resource carries, which has to be one -- RFC 2kuvi.
+fn id_of(resource: &Value) -> String {
+	let id = resource["id"].as_str().unwrap_or_default();
+	assert!(crate::kinds::is_id(id), "{resource}");
+	id.to_owned()
+}
+
 #[tokio::test]
 async fn writes_take_the_token_the_old_routes_take() {
 	for path in ["/v1/nodes/sin", "/v1/apps/web"] {
@@ -102,6 +109,19 @@ async fn the_catalog_is_answered_without_the_store() {
 	let names: Vec<&str> = items.iter().map(|kind| kind["name"].as_str().unwrap()).collect();
 	assert_eq!(names, ["node", "app"]);
 	assert_eq!(body["data"]["items"][1]["fields"][0]["name"], "placements");
+	// RFC 32hd9's, so the console draws them.
+	let fields = body["data"]["items"][0]["fields"].as_array().unwrap();
+	let field = |name: &str| fields.iter().find(|field| field["name"] == name).cloned().unwrap();
+	let optional = json!({ "editable": true, "required": false });
+	let hosting =
+		json!({ "name": "hosting", "type": "choice", "choices": ["datacenter", "selfhost"] });
+	let roles = json!({ "name": "roles", "type": "list", "choices": ["compute", "storage", "core"] });
+	let account = json!({ "name": "account", "type": "string" });
+	for (named, expected) in [("hosting", hosting), ("roles", roles), ("account", account)] {
+		let mut expected = expected;
+		expected.as_object_mut().unwrap().extend(optional.as_object().unwrap().clone());
+		assert_eq!(field(named), expected);
+	}
 }
 
 #[tokio::test]
@@ -121,11 +141,13 @@ async fn an_app_is_set_and_read_with_its_revision() {
 	assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_resource"));
 
 	let (status, body) = put(router.clone(), "/v1/apps/web", wanted(0, placed(&["tyo"]))).await;
-	assert_eq!(status, StatusCode::OK);
+	assert_eq!(status, StatusCode::ACCEPTED);
 	let created = body["data"]["revision"].as_i64().unwrap();
 	let (status, body) = ask(router.clone(), "/v1/apps/web").await;
 	assert_eq!(status, StatusCode::OK);
-	let web = json!({ "kind": "app", "name": "web", "revision": created, "spec": placed(&["tyo"]) });
+	let id = id_of(&body["data"]);
+	let spec = placed(&["tyo"]);
+	let web = json!({ "kind": "app", "id": id, "name": "web", "revision": created, "spec": spec });
 	assert_eq!(body["data"], web, "status and drift are absent until a controller reports");
 
 	let (status, body) = put(router.clone(), "/v1/apps/web", wanted(created, placed(&["tyo"]))).await;
@@ -141,7 +163,7 @@ async fn an_app_is_set_and_read_with_its_revision() {
 
 	let (_, body) = ask(router, "/v1/apps").await;
 	let spec = placed(&["sin", "tyo"]);
-	let web = json!({ "kind": "app", "name": "web", "revision": moved, "spec": spec });
+	let web = json!({ "kind": "app", "id": id, "name": "web", "revision": moved, "spec": spec });
 	assert_eq!(body["data"], json!({ "items": [web], "revision": moved }));
 }
 
@@ -174,10 +196,11 @@ async fn a_node_is_set_and_read_with_its_revision() {
 	assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_node"));
 
 	let (status, body) = put(router.clone(), "/v1/nodes/sin", wanted(0, sin())).await;
-	assert_eq!(status, StatusCode::OK);
+	assert_eq!(status, StatusCode::ACCEPTED);
 	let created = body["data"]["revision"].as_i64().unwrap();
 	let (_, body) = ask(router.clone(), "/v1/nodes/sin").await;
-	let node = json!({ "kind": "node", "name": "sin", "revision": created, "spec": sin() });
+	let id = id_of(&body["data"]);
+	let node = json!({ "kind": "node", "id": id, "name": "sin", "revision": created, "spec": sin() });
 	assert_eq!(body["data"], node);
 	let (_, body) = ask(router.clone(), "/v1/nodes").await;
 	assert_eq!(body["data"], json!({ "items": [node], "revision": created }));
@@ -240,7 +263,7 @@ async fn a_patch_sets_what_it_names_and_keeps_the_rest() {
 	let created = body["data"]["revision"].as_i64().unwrap();
 	let (status, body) =
 		patch(router.clone(), "/v1/apps/web", wanted(created, json!({ "release": release(7) }))).await;
-	assert_eq!(status, StatusCode::OK);
+	assert_eq!(status, StatusCode::ACCEPTED);
 	let released = body["data"]["revision"].as_i64().unwrap();
 	let (_, body) = ask(router.clone(), "/v1/apps/web").await;
 	let spec = json!({ "placements": ["tyo"], "release": release(7) });
@@ -321,7 +344,7 @@ async fn a_node_patch_sets_what_it_names_and_keeps_retired() {
 	imported["address"] = json!("100.64.0.10");
 	let rerun = wanted(retired, imported.clone());
 	let (status, body) = patch(router.clone(), "/v1/nodes/sin", rerun).await;
-	assert_eq!(status, StatusCode::OK);
+	assert_eq!(status, StatusCode::ACCEPTED);
 	let moved = body["data"]["revision"].as_i64().unwrap();
 	let (_, body) = ask(router.clone(), "/v1/nodes/sin").await;
 	let mut kept = imported;
@@ -335,3 +358,5 @@ async fn a_node_patch_sets_what_it_names_and_keeps_retired() {
 	let (_, body) = ask(router, "/v1/nodes/sin").await;
 	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(moved), &kept));
 }
+
+mod ids;

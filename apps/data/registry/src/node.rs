@@ -6,6 +6,10 @@ use std::net::Ipv4Addr;
 
 pub const TIERS: &[&str] = &["datacenter", "home", "transient"];
 pub const SYSTEMS: &[&str] = &["debian", "alpine"];
+/// A provider's machine, or one in the author's own hands -- RFC 32hd9.
+pub const HOSTINGS: &[&str] = &["datacenter", "selfhost"];
+/// What a node holds: functions and services, data, the platform's database and schedules.
+pub const ROLES: &[&str] = &["compute", "storage", "core"];
 
 /// Three lowercase ASCII letters, an IATA code.
 pub fn name_is_valid(name: &str) -> bool {
@@ -42,7 +46,28 @@ pub fn record(node: Value) -> Result<Map<String, Value>, String> {
 	if record.get("expiry").is_some_and(|expiry| !expiry.as_u64().is_some_and(is_year)) {
 		return Err("`expiry` is a year, as a whole number".into());
 	}
+	// RFC 32hd9's fields, optional while `nodes.toml` declares the old axes they are derived from.
+	if record
+		.get("hosting")
+		.is_some_and(|hosting| !hosting.as_str().is_some_and(|h| HOSTINGS.contains(&h)))
+	{
+		return Err(format!("`hosting` is one of {}", HOSTINGS.join(", ")));
+	}
+	if record.get("account").is_some_and(|account| !account.as_str().is_some_and(domain_is_valid)) {
+		return Err("`account` is a provider code, as `oci` or `oci-2`".into());
+	}
+	if record.get("roles").is_some_and(|roles| !roles_are_valid(roles)) {
+		return Err(format!("`roles` is a list of one or more of {}, each once", ROLES.join(", ")));
+	}
 	Ok(record)
+}
+
+fn roles_are_valid(roles: &Value) -> bool {
+	let Value::Array(roles) = roles else { return false };
+	!roles.is_empty()
+		&& roles.iter().enumerate().all(|(index, role)| {
+			role.as_str().is_some_and(|role| ROLES.contains(&role)) && !roles[..index].contains(role)
+		})
 }
 
 /// `oci`, `az`, `oci-2`: the provider, and which of its accounts when there is more than one.
@@ -72,6 +97,9 @@ mod tests {
 			"core": true,
 			"expiry": 2036,
 			"retired": false,
+			"hosting": "datacenter",
+			"account": "oci-2",
+			"roles": ["compute", "core"],
 			"canary": true,
 			"grants": ["database"],
 		})
@@ -109,7 +137,9 @@ mod tests {
 	fn the_optional_keys_may_be_left_out() {
 		let mut node = without("core");
 		node.as_object_mut().unwrap().remove("expiry");
-		node.as_object_mut().unwrap().remove("retired");
+		for optional in ["retired", "hosting", "account", "roles"] {
+			node.as_object_mut().unwrap().remove(optional);
+		}
 		assert!(record(node).is_ok());
 	}
 
@@ -151,9 +181,33 @@ mod tests {
 			("expiry", json!(2036.5)),
 			("expiry", json!(-1)),
 			("expiry", json!(36)),
+			("hosting", json!("home")),
+			("hosting", json!("Datacenter")),
+			("hosting", json!(null)),
+			("account", json!("OCI")),
+			("account", json!("oci-")),
+			("account", json!(2)),
+			("roles", json!([])),
+			("roles", json!("compute")),
+			("roles", json!(["compute", "compute"])),
+			("roles", json!(["compute", "edge"])),
+			("roles", json!([1])),
+			("roles", json!(null)),
 		];
 		for (key, value) in wrong {
 			assert!(record(with(key, value.clone())).is_err(), "{key}: {value}");
+		}
+	}
+
+	#[test]
+	fn takes_every_hosting_and_any_roles_once_each() {
+		for hosting in HOSTINGS {
+			assert!(record(with("hosting", json!(hosting))).is_ok(), "{hosting}");
+		}
+		for roles in
+			[json!(["compute"]), json!(["storage", "core"]), json!(["core", "storage", "compute"])]
+		{
+			assert!(record(with("roles", roles.clone())).is_ok(), "{roles}");
 		}
 	}
 

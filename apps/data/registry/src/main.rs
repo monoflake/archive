@@ -35,7 +35,9 @@ async fn main() -> anyhow::Result<()> {
 		eprintln!("registry: REGISTRY_TOKEN is not set; writes are closed");
 	}
 	let listen = std::env::var("LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{PORT}"));
-	let shared: Shared = Arc::new(Registry { store, token });
+	// `LEDGER_URL` when it is set, the platform's ledger otherwise, as every service tells it.
+	let ledger = Some(ledger::Ledger::start());
+	let shared: Shared = Arc::new(Registry { store, token, ledger });
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("registry: listening on {listen}");
 	axum::serve(listener, api::routes(shared)).with_graceful_shutdown(stopped()).await?;

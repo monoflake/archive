@@ -2502,6 +2502,7 @@ dependencies = [
  "deadpool-postgres",
  "http-body-util",
  "jiff",
+ "ledger",
  "mimalloc",
  "response",
  "serde",
