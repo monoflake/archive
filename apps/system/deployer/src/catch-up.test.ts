@@ -391,6 +391,29 @@ describe('a Worker GitHub did not give for a reason of the moment', () => {
 		expect(store.list()[0]).toMatchObject({ run: 7, worker: 'console', stage: 'failed' });
 	});
 
+	it('fails for good once its artifact is no longer kept, and is not taken again', async () => {
+		const downloads: Record<string, Error> = { '7 console': new Transient(UNAVAILABLE) };
+		const built: Record<number, Artifact[] | Error> = {};
+		const { store, asked, took, pass } = await setup({
+			recent: { [WEB]: [5, 7] },
+			built,
+			downloads,
+		});
+		await took(5);
+		await took(7);
+		built[7] = [];
+		await pass();
+		const gone = `artifact worker-console of run 7 of ${WEB} is no longer kept`;
+		expect(store.list()[0]).toMatchObject({
+			run: 7,
+			worker: 'console',
+			stage: 'failed',
+			error: gone,
+		});
+		await pass();
+		expect(asked.filter((line) => line === `artifacts ${WEB} 7`)).toHaveLength(2);
+	});
+
 	it('is passed over once a newer run built it again, and never deployed', async () => {
 		const downloads: Record<string, Error> = { '7 console': new Transient(UNAVAILABLE) };
 		const { store, logs, took, pass } = await setup({ recent: { [WEB]: [5, 7, 8] }, downloads });

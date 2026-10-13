@@ -171,15 +171,13 @@ export class Deployer {
 			store.built(repository, run, commit, built.built, await this.settled(repository, run, built));
 			if (artifacts.length === 0) this.log(`run ${run} of ${repository} built no Worker`);
 		}
-		for (const artifact of artifacts) {
-			if (again && !again.has(artifact.app)) continue;
-			const newer = passedOver?.get(artifact.app);
-			if (newer !== undefined) {
-				this.passOver(repository, run, commit, artifact.app, newer);
-				continue;
-			}
+		for (const worker of again ? [...again] : artifacts.map((artifact) => artifact.app)) {
+			const newer = passedOver?.get(worker);
+			const artifact = artifacts.find((each) => each.app === worker);
+			if (newer !== undefined) this.passOver(repository, run, commit, worker, newer);
+			else if (!artifact) this.gone(repository, run, commit, worker);
 			// oxlint-disable-next-line no-await-in-loop -- one deploy at a time, by design
-			await this.deploy(repository, run, commit, artifact);
+			else await this.deploy(repository, run, commit, artifact);
 		}
 		// Not waited on: the registry never holds up the next deploy. See releases.ts.
 		void this.parts.releases?.flush();
@@ -227,6 +225,18 @@ export class Deployer {
 		const id = store.open(worker, repository, run, commit, isDry(config, worker));
 		store.skipped(id, `run ${newer} built it again, and is the one deployed`);
 		this.log(`${worker} from run ${run} is passed over for run ${newer}`);
+	}
+
+	/**
+	 * Record `worker` of a `run` taken again as failed for good: its artifact is no longer kept, as
+	 * one expired, so nothing will take it again.
+	 */
+	private gone(repository: string, run: number, commit: string | null, worker: string): void {
+		const { config, store } = this.parts;
+		const id = store.open(worker, repository, run, commit, isDry(config, worker));
+		const error = `artifact worker-${worker} of run ${run} of ${repository} is no longer kept`;
+		store.failed(id, error);
+		this.log(`${worker} from run ${run}: ${error}`);
 	}
 
 	private async deploy(

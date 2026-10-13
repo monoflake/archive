@@ -6,8 +6,9 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
+import { Bucket } from './bucket.ts';
 import { CatchUp, every } from './catch-up.ts';
-import { configOf, tokenFor } from './config.ts';
+import { bucketMissing, configOf, tokenFor } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { GitHub } from './github.ts';
 import { Registry, Releases } from './releases.ts';
@@ -19,12 +20,18 @@ const config = configOf(process.env);
 mkdirSync(config.data, { recursive: true });
 const store = new Store(join(config.data, 'deployer.db'));
 const github = new GitHub((repository) => tokenFor(repository, process.env));
+// The run is GitHub's to vouch for either way; only its artifacts move to the bucket, RFC q28g5.
+const source = config.artifacts ? new Bucket(config.artifacts, github) : github;
 const registry = new Registry(config.registries, config.registryToken);
 const releases = new Releases({ store, registry });
-const deployer = new Deployer({ config, store, github, wrangler: run, releases });
+const deployer = new Deployer({ config, store, github: source, wrangler: run, releases });
 
 if (config.sources.length === 0) console.log('deployer: DEPLOY_SOURCES names no repository');
 if (config.owners.size === 0) console.log('deployer: WORKER_OWNERS names no Worker');
+const missing = bucketMissing(process.env);
+if (missing.length > 0) {
+	console.log(`deployer: ${missing.join(', ')} not set, so artifacts are read from GitHub`);
+}
 if (!registry.configured) {
 	console.log('deployer: REGISTRY or REGISTRY_TOKEN is not set, so no release is recorded yet');
 }
@@ -45,5 +52,5 @@ serve({
 console.log(`deployer: listening on ${config.port}${config.dry ? ', every deploy dry' : ''}`);
 
 // A run whose notice never came is taken anyway, at start and every 15 minutes; see catch-up.ts.
-const catchUp = new CatchUp({ sources: config.sources, store, github, deployer, releases });
+const catchUp = new CatchUp({ sources: config.sources, store, github: source, deployer, releases });
 every(() => catchUp.pass());

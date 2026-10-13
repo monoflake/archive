@@ -63,6 +63,16 @@ its sources' `.github/workflows/deploy.yml`, on `main`, completed and successful
 -- then downloads the artifacts named `worker-<app>` and checks each digest GitHub recorded. host
 takes only `deploy-` artifacts and the deployer only `worker-` ones, so neither sees the other's.
 
+**A run the bucket holds is read from the bucket** -- RFC q28g5. With `ARTIFACTS_ENDPOINT`,
+`_REGION`, `_BUCKET`, `_READ_KEY_ID` and `_READ_SECRET` all set, the deployer still asks GitHub
+whether the run is one to deploy, then lists `<owner>/<repo>/<run>/` and downloads from there: an
+artifact counts only with `<artifact>.json` beside its zip, and a Worker is held to the `sha256` and
+`size` it records. A run the bucket holds nothing of -- `canmi21/web`'s, which still uploads to
+GitHub -- is read from GitHub as before. A zip no longer kept, since only two runs of each are, is a
+failure for good, as an expired artifact was, and is not taken again; a bucket answering 5xx or 429,
+or not reached, is a reason of the moment, so the Worker is taken again. Some of the five set and
+not all is said in the log, and GitHub is read.
+
 ## What a Worker artifact is
 
 **CI packages a Worker without a credential; the deployer deploys it without the source.** An app
@@ -130,7 +140,9 @@ console's on 2026-10-07, was refused with code 10196 until it was replaced. D1 a
 granted. **An artifact of a repository the
 monoflake organization does not own is fetched with a token of that owner's** --
 `GITHUB_ACTIONS_TOKEN_CANMI21`, read access to Actions on `canmi21/web` and `canmi21/cue` -- picked by the
-source's owner, here and in host.
+source's owner, here and in host. **The bucket's key reads and lists it, nothing more**, and sits in the
+deployer's `secret.env`, as `ARTIFACTS_READ_KEY_ID` and `ARTIFACTS_READ_SECRET` in the platform's
+sops file.
 
 ## Admitting a repository
 

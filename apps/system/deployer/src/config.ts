@@ -40,11 +40,50 @@ export interface Config {
 	readonly registries: readonly string[];
 	/** What a release is written with: `REGISTRY_TOKEN`; none writes no release. */
 	readonly registryToken: string | undefined;
+	/**
+	 * The bucket a run's artifacts are read from, RFC q28g5: `ARTIFACTS_ENDPOINT`, `_REGION` and
+	 * `_BUCKET`, read with `ARTIFACTS_READ_KEY_ID` and `_SECRET`. Unless all five are set, they are
+	 * read from GitHub, as before.
+	 */
+	readonly artifacts: BucketAccess | undefined;
 	readonly data: string;
 	readonly port: number;
 }
 
+/** How the bucket is reached, by the S3 API alone; see bucket.ts. */
+export interface BucketAccess {
+	readonly endpoint: string;
+	readonly region: string;
+	readonly bucket: string;
+	readonly keyId: string;
+	readonly secret: string;
+	/** `<bucket>.<endpoint>` rather than `<endpoint>/<bucket>`: `ARTIFACTS_VIRTUAL_HOST=1`. */
+	readonly virtualHost: boolean;
+}
+
 export type Env = Readonly<Record<string, string | undefined>>;
+
+/** What the bucket is reached with, each required. */
+export const BUCKET_VARIABLES = [
+	'ARTIFACTS_ENDPOINT',
+	'ARTIFACTS_REGION',
+	'ARTIFACTS_BUCKET',
+	'ARTIFACTS_READ_KEY_ID',
+	'ARTIFACTS_READ_SECRET',
+] as const;
+
+/** Of `BUCKET_VARIABLES`, those unset where some are set: a bucket configured in part. */
+export function bucketMissing(env: Env): string[] {
+	const missing = BUCKET_VARIABLES.filter((key) => value(env, key) === undefined);
+	return missing.length === BUCKET_VARIABLES.length ? [] : missing;
+}
+
+function bucketOf(env: Env): BucketAccess | undefined {
+	const [endpoint, region, bucket, keyId, secret] = BUCKET_VARIABLES.map((key) => value(env, key));
+	if (!endpoint || !region || !bucket || !keyId || !secret) return undefined;
+	const virtualHost = ['1', 'true'].includes(value(env, 'ARTIFACTS_VIRTUAL_HOST') ?? '');
+	return { endpoint, region, bucket, keyId, secret, virtualHost };
+}
 
 function value(env: Env, key: string): string | undefined {
 	const found = env[key]?.trim();
@@ -98,6 +137,7 @@ export function configOf(env: Env): Config {
 		},
 		registries: registries(value(env, 'REGISTRY') ?? ''),
 		registryToken: value(env, 'REGISTRY_TOKEN'),
+		artifacts: bucketOf(env),
 		data: value(env, 'DEPLOYER_DATA') ?? '/data',
 		port: Number(value(env, 'PORT') ?? PORT),
 	};

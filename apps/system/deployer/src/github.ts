@@ -89,8 +89,33 @@ export interface Run {
 /** One Worker as a run left it. */
 export interface Artifact {
 	readonly app: string;
-	readonly id: number;
+	/** GitHub's id of it; absent on one read from the bucket, which names it by its key. */
+	readonly id?: number;
+	/** `sha256:<hex>`, of the zip as it is downloaded. */
 	readonly digest: string;
+	/** Its size in bytes, where the bucket recorded one. */
+	readonly size?: number;
+}
+
+/** The name a run gave `artifact`: `worker-<app>`, or the declarations' own. */
+export function nameOf(artifact: Artifact): string {
+	return artifact.app === DECLARATIONS ? DECLARATIONS : `${PREFIX}${artifact.app}`;
+}
+
+/** Write `body` to `zip`, and what was written: its digest as GitHub records one, and its size. */
+export async function save(
+	body: globalThis.ReadableStream<Uint8Array>,
+	zip: string,
+): Promise<{ digest: string; size: number }> {
+	const hash = createHash('sha256');
+	let size = 0;
+	const read = Readable.fromWeb(body as ReadableStream<Uint8Array>);
+	read.on('data', (chunk: Buffer) => {
+		hash.update(chunk);
+		size += chunk.length;
+	});
+	await pipeline(read, createWriteStream(zip));
+	return { digest: `sha256:${hash.digest('hex')}`, size };
 }
 
 /** Throws unless `record` is a finished, successful run of `repository`'s deploy.yml on `main`. */
@@ -155,9 +180,12 @@ export const DECLARATIONS = 'declarations';
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 /** An error and what it was caused by, as fetch throws `fetch failed` over the reason. */
-function causeOf(error: unknown): string {
+export function causeOf(error: unknown): string {
 	if (!(error instanceof Error)) return String(error);
-	return error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message;
+	if (!(error.cause instanceof Error)) return error.message;
+	// A refused connection is an AggregateError with no message of its own, only a code.
+	const cause = error.cause.message || (error.cause as { code?: string }).code || error.cause.name;
+	return `${error.message}: ${cause}`;
 }
 
 /** The query that lists `workflow`'s successful runs on `main` created at `since` or later. */
@@ -272,11 +300,21 @@ export class GitHub {
 		return deployable(listed.workflow_runs, repository);
 	}
 
+	/** `repository`'s `run`, once its record says it is one to deploy; see `check`. */
+	async run(repository: string, run: number): Promise<Run> {
+		const record = await this.json<Run>(
+			repository,
+			`/actions/runs/${run}`,
+			`run ${run} of ${repository}`,
+		);
+		check(run, record, repository);
+		return record;
+	}
+
 	/** The `worker-` artifacts of `repository`'s `run`, once its record says it is one to deploy. */
 	async artifacts(repository: string, run: number): Promise<Built> {
 		const of = `run ${run} of ${repository}`;
-		const record = await this.json<Run>(repository, `/actions/runs/${run}`, of);
-		check(run, record, repository);
+		const record = await this.run(repository, run);
 		const listed = await this.json<Listed>(
 			repository,
 			`/actions/runs/${run}/artifacts?per_page=100`,
@@ -313,9 +351,10 @@ export class GitHub {
 	 * Worker's is `worker-<app>`; the declarations are named as they are.
 	 */
 	async download(repository: string, run: number, artifact: Artifact, zip: string): Promise<void> {
-		const url = `${URLS.external.github.api}/repos/${repository}/actions/artifacts/${artifact.id}/zip`;
-		const name = artifact.app === DECLARATIONS ? DECLARATIONS : `worker-${artifact.app}`;
+		const name = nameOf(artifact);
 		const what = `artifact ${name} of run ${run} of ${repository}`;
+		if (artifact.id === undefined) throw new Refused(`GitHub holds no id of ${what}`);
+		const url = `${URLS.external.github.api}/repos/${repository}/actions/artifacts/${artifact.id}/zip`;
 		// GitHub answers with a redirect to storage, which is signed and must not be sent the token.
 		const redirect = await this.get(url, what, this.token(repository));
 		const location = redirect.headers.get('location');
@@ -325,12 +364,8 @@ export class GitHub {
 			const Kind = answer.status >= 500 ? Transient : Unread;
 			throw new Kind(`storage answered ${answer.status} for ${what}`);
 		}
-		const hash = createHash('sha256');
-		const body = Readable.fromWeb(answer.body as ReadableStream<Uint8Array>);
-		body.on('data', (chunk: Buffer) => hash.update(chunk));
-		await pipeline(body, createWriteStream(zip));
 		// GitHub's digest is the SHA-256 of the zip as downloaded, as infra's github.rs measured.
-		const digest = `sha256:${hash.digest('hex')}`;
+		const { digest } = await save(answer.body, zip);
 		if (digest.toLowerCase() !== artifact.digest.toLowerCase()) {
 			throw new Refused(`artifact ${name} does not match its recorded digest`);
 		}
