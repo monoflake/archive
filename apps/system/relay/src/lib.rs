@@ -11,6 +11,7 @@ pub mod live;
 pub mod mesh;
 pub mod own;
 pub mod presence;
+pub mod registry;
 pub mod relay;
 pub mod runs;
 pub mod socket;

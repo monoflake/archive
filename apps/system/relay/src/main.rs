@@ -17,7 +17,12 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 async fn main() -> anyhow::Result<()> {
 	let config = Config::from_env()?;
 	let store = Store::open(&config.data.join(relay::runs::FILE))?;
-	let peers = config.peers.iter().map(|peer| peer.name.clone()).collect();
+	let cached = relay::registry::cached(&config.data).unwrap_or_else(|error| {
+		eprintln!("relay: reading {}: {error}", relay::registry::FILE);
+		None
+	});
+	let seed = relay::registry::seeded(&config.peers, cached.as_ref(), &config.node);
+	let peers = seed.iter().map(|peer| peer.name.clone()).collect();
 	let relay = Relay::new(config.node.clone(), config.secret.clone(), peers, store)?;
 
 	let host = Arc::new(Host::new(monoflake::INTERNAL_HOST, config.read_token.clone()));
@@ -25,12 +30,10 @@ async fn main() -> anyhow::Result<()> {
 	tokio::spawn(recall(relay.clone(), host.clone()));
 	tokio::spawn(write(relay.clone(), relay::runs::WRITE));
 	tokio::spawn(sweep(relay.clone(), relay::presence::SWEEP));
-	for peer in config.peers.iter().cloned() {
-		tokio::spawn(relay::mesh::keep(relay.clone(), peer));
-	}
+	let named: Vec<String> = seed.iter().map(|peer| peer.name.clone()).collect();
+	tokio::spawn(relay::registry::follow(relay.clone(), config.data.clone(), seed, cached));
 
 	let listener = tokio::net::TcpListener::bind(&config.listen).await?;
-	let named: Vec<&str> = config.peers.iter().map(|peer| peer.name.as_str()).collect();
 	eprintln!("relay: {} listening on {}, holding {}", config.node, config.listen, named.join(" "));
 	let routes = relay::api::routes(relay.clone());
 	// Said while the mesh and the routes still run; see spec/architecture/relay.md, "A node says
@@ -73,6 +76,13 @@ mod tests {
 	fn the_port_is_the_one_the_declaration_states() {
 		let declaration = include_str!("../service.toml");
 		let port = relay::config::PORT;
+		assert!(declaration.lines().any(|line| line.trim() == format!("port = {port}")));
+	}
+
+	#[test]
+	fn the_registry_is_asked_on_the_port_its_declaration_states() {
+		let declaration = include_str!("../../../data/registry/service.toml");
+		let port = relay::registry::PORT;
 		assert!(declaration.lines().any(|line| line.trim() == format!("port = {port}")));
 	}
 }

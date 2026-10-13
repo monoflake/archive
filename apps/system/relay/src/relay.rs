@@ -62,19 +62,35 @@ pub struct Runs {
 	pub runs: Vec<Shown>,
 }
 
-/// What is held of every node, and the state each was last shown in, kept under one lock so a
-/// browser is sent one node's changes in the order they happened.
+/// What is held of every node, the state each was last shown in, and the peers dialed, kept under
+/// one lock so a browser is sent one node's changes in the order they happened.
 #[derive(Debug, Default)]
 struct Holding {
 	cluster: Cluster,
 	shown: BTreeMap<String, Presence>,
+	/// The neighbors dialed, shown as waiting until they are heard; changed as the registry is, see
+	/// `registry::follow`.
+	peers: BTreeSet<String>,
+}
+
+impl Holding {
+	/// Every node held, and every peer not yet heard, with its state at `now`.
+	fn entries(&self, now: Timestamp, uptime: Duration) -> BTreeMap<String, Entry> {
+		let held = self.cluster.nodes().iter().map(|(node, held)| (node, Some(held)));
+		let unheard = self.peers.iter().filter(|peer| !self.cluster.nodes().contains_key(*peer));
+		held
+			.chain(unheard.map(|peer| (peer, None)))
+			.map(|(node, held)| {
+				let state = presence(held, now, uptime);
+				(node.clone(), Entry { held: held.cloned(), state })
+			})
+			.collect()
+	}
 }
 
 pub struct Relay {
 	node: String,
 	secret: String,
-	/// The neighbors named in `RELAY_PEERS`, shown as waiting until they are heard.
-	peers: BTreeSet<String>,
 	holding: Mutex<Holding>,
 	own: Mutex<Own>,
 	updates: broadcast::Sender<Update>,
@@ -115,8 +131,7 @@ impl Relay {
 			minutes: broadcast::channel(BACKLOG).0,
 			node,
 			secret,
-			peers,
-			holding: Mutex::new(Holding { cluster: Cluster::default(), shown }),
+			holding: Mutex::new(Holding { cluster: Cluster::default(), shown, peers }),
 			own: Mutex::default(),
 			updates: broadcast::channel(BACKLOG).0,
 			changes: broadcast::channel(BACKLOG).0,
@@ -309,27 +324,24 @@ impl Relay {
 	}
 
 	pub fn state(&self) -> State {
-		let nodes =
-			self.entries(&lock(&self.holding).cluster, Timestamp::now(), self.started.elapsed());
+		let nodes = lock(&self.holding).entries(Timestamp::now(), self.started.elapsed());
 		State { version: VERSION, node: self.node.clone(), nodes }
 	}
 
-	/// Every node held, and every peer not yet heard, with its state at `now`.
-	fn entries(
-		&self,
-		cluster: &Cluster,
-		now: Timestamp,
-		uptime: Duration,
-	) -> BTreeMap<String, Entry> {
-		let held = cluster.nodes().iter().map(|(node, held)| (node, Some(held)));
-		let unheard = self.peers.iter().filter(|peer| !cluster.nodes().contains_key(*peer));
-		held
-			.chain(unheard.map(|peer| (peer, None)))
-			.map(|(node, held)| {
-				let state = presence(held, now, uptime);
-				(node.clone(), Entry { held: held.cloned(), state })
-			})
-			.collect()
+	/// The neighbors dialed from now on. A new one is shown waiting at once; one no longer dialed
+	/// stops being shown waiting, and what is held of it ages as any silent node's does.
+	pub fn set_peers(&self, peers: BTreeSet<String>) {
+		{
+			let mut holding = lock(&self.holding);
+			let Holding { cluster, shown, peers: held } = &mut *holding;
+			for gone in held.difference(&peers) {
+				if !cluster.nodes().contains_key(gone) {
+					shown.remove(gone);
+				}
+			}
+			*held = peers;
+		}
+		self.sweep();
 	}
 
 	/// Every node whose state time alone has changed since it was last shown, sent again.
@@ -339,7 +351,7 @@ impl Relay {
 
 	fn swept(&self, now: Timestamp, uptime: Duration) {
 		let mut holding = lock(&self.holding);
-		for (node, entry) in self.entries(&holding.cluster, now, uptime) {
+		for (node, entry) in holding.entries(now, uptime) {
 			if holding.shown.get(&node) != Some(&entry.state) {
 				holding.shown.insert(node.clone(), entry.state);
 				let _ = self.changes.send(Change { node, entry });
@@ -559,5 +571,21 @@ mod tests {
 		// buf, never heard, is given up on once the relay has run a minute.
 		let gone = [("buf".to_owned(), Presence::Gone), ("tyo".to_owned(), Presence::Gone)];
 		assert_eq!(swept(61, 61), gone);
+	}
+
+	#[test]
+	fn a_peer_named_is_shown_waiting_and_one_dropped_unheard_is_not_shown() {
+		let peers = BTreeSet::from(["tyo".to_owned(), "buf".to_owned()]);
+		let relay = Relay::new("rdu".into(), "s3cret".into(), peers, Store::memory().unwrap()).unwrap();
+		let version = u64::try_from(Timestamp::now().as_millisecond()).unwrap();
+		relay.take("tyo", Carried { version, snapshot: Arc::new(serde_json::json!({})) }, None);
+		let mut changes = relay.subscribe_changes();
+		relay.set_peers(BTreeSet::from(["sin".to_owned()]));
+		let sent: Vec<_> = std::iter::from_fn(|| changes.try_recv().ok()).map(|c| c.node).collect();
+		assert_eq!(sent, ["sin"]);
+		let nodes = relay.state().nodes;
+		assert_eq!(nodes["sin"], Entry { held: None, state: Presence::Waiting });
+		// tyo, heard, is held until it ages; buf, never heard, is no longer listed.
+		assert!(nodes.contains_key("tyo") && !nodes.contains_key("buf"));
 	}
 }

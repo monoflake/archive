@@ -49,8 +49,9 @@ across a full mesh of seven every three seconds; comparing costs a hop up to two
 node that cannot reach a third directly still hears it through a neighbor.
 
 **The mesh is `/mesh`, a WebSocket each relay dials on every other**, admitted by a secret the
-relays share, `RELAY_SECRET`. The peers are one value every node is given alike, `RELAY_PEERS`,
-`name=address:port` by tailnet address, a relay skipping its own. Each stream's first message
+relays share, `RELAY_SECRET`. The peers are the nodes the registry lists, followed while the relay runs and
+kept on its disk -- [registry.md](registry.md), "Every relay follows it" -- with `RELAY_PEERS`,
+`name=address:port` by tailnet address, the seed a relay starts from; a relay skips its own. Each stream's first message
 carries the contract's version, and a neighbor speaking another is dropped. Both ends ping every
 three seconds -- the round trip below -- and drop a socket silent for ninety, and redial from one
 second, doubling to a minute. A browser's socket is pinged every thirty.
@@ -61,8 +62,8 @@ every change; `/state` answers the same once, for the console's polling. **`/liv
 WebSocket, so without the check any site the reader visits could open it as them. A request with no
 `Origin` comes from no browser and carries no reader's cookie, and passes; the private mirror's
 pages are refused, since the console is served on `.app`. Each node's entry carries `heard_at`, when
-its origin took the version held, never later than this relay's clock, and `state`; a peer in
-`RELAY_PEERS` never heard is an entry carrying `state` alone. A state that time alone changes is
+its origin took the version held, never later than this relay's clock, and `state`; a peer
+never heard is an entry carrying `state` alone. A state that time alone changes is
 sent again on `/live` at the same version, so a reader keeps dropping an older version but takes the
 same one with another `state`.
 
@@ -95,7 +96,7 @@ before.
   the push takes it by comparison, after its origin has gone. - **Each node's entry carries `state`,
   the relay's own reading of it**, which the console draws and never computes: `live` heard within
   10 seconds, `late` within 60, `upgrading` or `restarting` while an announced `leaving` is within
-  its `within` of `heard_at`, `waiting` for a peer in `RELAY_PEERS` not yet heard in the relay's
+  its `within` of `heard_at`, `waiting` for a peer not yet heard in the relay's
   first 60 seconds, and `gone` otherwise. A newer version without `leaving` is the node back. A
   state that time alone changes is sent again on `/live`, by a sweep every second. - **A node's own
   snapshot is a new version every round**, whether or not what it says changed, so a node is heard

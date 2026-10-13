@@ -1,5 +1,6 @@
-//! What a relay is told by its environment: which node it is, which relays it holds a socket to,
-//! the secret they share, the token that reads its own host, and where its runs' file is.
+//! What a relay is told by its environment: which node it is, the relays it holds a socket to until
+//! the registry names them, the secret they share, the token that reads its own host, and where its
+//! data directory is. See spec/architecture/registry.md and RFC ja5hm.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -29,6 +30,7 @@ pub enum Invalid {
 pub struct Config {
 	/// Given by host, over whatever the app's own files say.
 	pub node: String,
+	/// `RELAY_PEERS`, the seed `registry::seeded` starts from.
 	pub peers: Vec<Peer>,
 	pub secret: String,
 	pub read_token: String,
