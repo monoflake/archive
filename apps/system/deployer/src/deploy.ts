@@ -9,7 +9,7 @@ import { admit } from './admission.ts';
 import { unpack as unpackZip } from './artifact.ts';
 import { type Config, isDry } from './config.ts';
 import { manualIn } from './declarations.ts';
-import { type Artifact, type Built, type GitHub, Refused } from './github.ts';
+import { type Artifact, type Built, type GitHub, Refused, Transient } from './github.ts';
 import type { Releases } from './releases.ts';
 import type { Store } from './store.ts';
 import {
@@ -153,9 +153,13 @@ export class Deployer {
 		try {
 			built = await github.artifacts(repository, run);
 		} catch (error) {
-			// A run it could not read is a failed deploy, recorded as one; a run GitHub gave and the
+			// A run it could not read is a failed deploy, recorded as one, and one not read for a reason
+			// of the moment is marked so, for catching up to take again; a run GitHub gave and the
 			// check refused is not one to deploy, and is left to the log as host leaves it.
-			if (!(error instanceof Refused)) store.unread(repository, run, config.dry, messageOf(error));
+			if (!(error instanceof Refused)) {
+				const transient = error instanceof Transient;
+				store.unread(repository, run, config.dry, messageOf(error), transient);
+			}
 			throw error;
 		}
 		const { commit, artifacts } = built;

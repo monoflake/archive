@@ -45,6 +45,8 @@ export interface Deploy {
 export interface Taken {
 	readonly run: number;
 	readonly worker: string;
+	/** A row of a run GitHub did not give for a reason of the moment: seen, and not taken. */
+	readonly transient?: boolean;
 }
 
 /** An app's release a run built, not yet written to the registry. */
@@ -70,7 +72,8 @@ CREATE TABLE IF NOT EXISTS deploys (
 	error TEXT,
 	output TEXT,
 	started_at TEXT NOT NULL,
-	finished_at TEXT
+	finished_at TEXT,
+	transient INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS releases (
 	repository TEXT NOT NULL,
@@ -82,6 +85,30 @@ CREATE TABLE IF NOT EXISTS releases (
 	PRIMARY KEY (repository, run, app)
 );
 `;
+
+/**
+ * How a run left unread for a reason of the moment was told before rows said so: what the deployer
+ * logged of GitHub not reached, its rate limit spent, or a 5xx. Read once, by `transiently`.
+ */
+const TRANSIENT_BEFORE = [
+	'% could not be reached for %',
+	'%: the rate limit of % is spent%',
+	'GitHub answered 5__ for %',
+];
+
+/**
+ * A `deployer.db` from before rows said a run was unread for a reason of the moment gains the
+ * column, each such row already there marked by what it says.
+ */
+function transiently(db: DatabaseSync): void {
+	const columns = db.prepare(`SELECT name FROM pragma_table_info('deploys')`).all();
+	if (columns.some((column) => column.name === 'transient')) return;
+	db.exec('ALTER TABLE deploys ADD COLUMN transient INTEGER NOT NULL DEFAULT 0');
+	const like = TRANSIENT_BEFORE.map(() => 'error LIKE ?').join(' OR ');
+	db.prepare(`UPDATE deploys SET transient = 1 WHERE worker = '' AND (${like})`).run(
+		...TRANSIENT_BEFORE,
+	);
+}
 
 /** Still moving: a row in one of these when the deployer starts was left by one that stopped. */
 const OPEN = ['downloading', 'admitting', 'uploading'];
@@ -110,6 +137,11 @@ export class Store {
 	constructor(path: string, now: () => Date = () => new Date()) {
 		this.now = now;
 		this.db = new DatabaseSync(path);
+		// The column first, so a table from before it is given it before anything reads it.
+		const existed = this.db
+			.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deploys'`)
+			.get();
+		if (existed) transiently(this.db);
 		this.db.exec(SCHEMA);
 		// Nothing will finish a row a stopped deployer left open, so it is closed as failed.
 		const open = OPEN.map(() => '?').join(', ');
@@ -138,17 +170,18 @@ export class Store {
 
 	/**
 	 * A run whose record or artifacts GitHub did not give, closed as failed where it was fetching:
-	 * no Worker is known, so it names none and stores the empty name.
+	 * no Worker is known, so it names none and stores the empty name. `transient` where it was not
+	 * given for a reason of the moment, so the run is not taken and catching up takes it again.
 	 */
-	unread(repository: string, run: number, dry: boolean, error: string): number {
+	unread(repository: string, run: number, dry: boolean, error: string, transient = false): number {
 		const now = this.stamp();
 		const result = this.db
 			.prepare(
 				`INSERT INTO deploys (action, worker, repository, run, dry, stage, failed_in, error,
-					started_at, finished_at)
-					VALUES ('deploy', '', ?, ?, ?, 'failed', 'downloading', ?, ?, ?)`,
+					started_at, finished_at, transient)
+					VALUES ('deploy', '', ?, ?, ?, 'failed', 'downloading', ?, ?, ?, ?)`,
 			)
-			.run(repository, run, dry ? 1 : 0, error, now, now);
+			.run(repository, run, dry ? 1 : 0, error, now, now, transient ? 1 : 0);
 		return Number(result.lastInsertRowid);
 	}
 
@@ -180,16 +213,24 @@ export class Store {
 	/**
 	 * Each run of `repository` it has a deploy or a release row of, with the Worker a deploy row
 	 * names -- empty for a release, or a run GitHub never gave. A run with any row was taken,
-	 * whatever came of it: catching up recovers notices, not deploys.
+	 * whatever came of it: catching up recovers notices, not deploys. A run GitHub did not give for
+	 * a reason of the moment is answered `transient`: seen, and not taken.
 	 */
 	taken(repository: string): Taken[] {
-		return this.db
+		const rows = this.db
 			.prepare(
-				`SELECT DISTINCT run, worker FROM deploys
+				`SELECT DISTINCT run, worker, transient FROM deploys
 					WHERE repository = ? AND action = 'deploy' AND run IS NOT NULL
-				UNION SELECT DISTINCT run, '' FROM releases WHERE repository = ?`,
+				UNION SELECT DISTINCT run, '', 0 FROM releases WHERE repository = ?`,
 			)
-			.all(repository, repository) as unknown as Taken[];
+			.all(repository, repository) as unknown as {
+			run: number;
+			worker: string;
+			transient: number;
+		}[];
+		return rows.map(({ run, worker, transient }) =>
+			transient ? { run, worker, transient: true } : { run, worker },
+		);
 	}
 
 	/**

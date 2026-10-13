@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { Store } from './store.ts';
 
@@ -102,5 +103,47 @@ describe('the records', () => {
 		expect(store.list().map((row) => row.id)).toEqual(ids.toReversed());
 		expect(store.list(1).map((row) => row.id)).toEqual([ids[2]]);
 		expect(store.list(50, ids[2]).map((row) => row.id)).toEqual([ids[1], ids[0]]);
+	});
+});
+
+describe('a run GitHub did not give for a reason of the moment', () => {
+	it('is seen and not taken, where a run refused for good is taken', () => {
+		const store = new Store(join(mkdtempSync(join(tmpdir(), 'deployer-')), 'deployer.db'));
+		store.unread('monoflake/infra', 8, false, 'GitHub answered 403 for run 8: spent', true);
+		store.unread('monoflake/infra', 9, false, 'GitHub answered 401 for run 9: refused');
+		expect(store.taken('monoflake/infra')).toEqual([
+			{ run: 8, worker: '', transient: true },
+			{ run: 9, worker: '' },
+		]);
+	});
+
+	it('is marked so in a deployer.db from before the column, by what its row says', () => {
+		const file = path();
+		const old = new DatabaseSync(file);
+		old.exec(`CREATE TABLE deploys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, worker TEXT NOT NULL,
+			repository TEXT NOT NULL, run INTEGER, commit_sha TEXT, dry INTEGER NOT NULL,
+			stage TEXT NOT NULL, failed_in TEXT, version TEXT, error TEXT, output TEXT,
+			started_at TEXT NOT NULL, finished_at TEXT)`);
+		const insert = old.prepare(
+			`INSERT INTO deploys (action, worker, repository, run, dry, stage, error, started_at)
+				VALUES ('deploy', ?, 'monoflake/infra', ?, 0, 'failed', ?, 'then')`,
+		);
+		const of = 'for run 1 of monoflake/infra';
+		insert.run('', 1, `GitHub answered 403 ${of}: the rate limit of GITHUB_ACTIONS_TOKEN is spent`);
+		insert.run('', 2, `GitHub could not be reached ${of}: fetch failed`);
+		insert.run('', 3, `GitHub answered 502 ${of}`);
+		insert.run(
+			'',
+			4,
+			`GitHub answered 401 ${of}: GITHUB_ACTIONS_TOKEN, the token for x, was refused`,
+		);
+		insert.run('console', 5, `GitHub answered 502 for artifact worker-console`);
+		old.close();
+		const transient = new Store(file)
+			.taken('monoflake/infra')
+			.filter((each) => each.transient)
+			.map((each) => each.run);
+		expect(transient).toEqual([1, 2, 3]);
 	});
 });

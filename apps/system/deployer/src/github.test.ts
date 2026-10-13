@@ -4,7 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { tokenFor } from './config.ts';
-import { GitHub, Refused, type Run, Unread, WORKFLOW, appOf, check, imageOf } from './github.ts';
+import {
+	GitHub,
+	RateLimited,
+	Refused,
+	type Run,
+	Transient,
+	Unread,
+	WORKFLOW,
+	appOf,
+	check,
+	imageOf,
+} from './github.ts';
 
 function run(overrides: Partial<Run> = {}): Run {
 	return {
@@ -79,6 +90,16 @@ function github(routes: Record<string, () => Response>, token = 'secret') {
 		return route ? route[1]() : new Response(null, { status: 404 });
 	};
 	return { asked, client: new GitHub(() => token, fetch) };
+}
+
+/** What asking for run 7 fails with when GitHub answers `answer`, or throws it. */
+async function failureOf(answer: Response | Error) {
+	const fetch = async () => {
+		if (answer instanceof Error) throw answer;
+		return answer;
+	};
+	const client = new GitHub(() => 't', fetch);
+	return client.artifacts('monoflake/platform', 7).catch((error: Error) => error);
 }
 
 describe('GitHub', () => {
@@ -188,6 +209,30 @@ describe('GitHub', () => {
 		expect(await reason(new Response('<html>'))).toMatch(
 			/^GitHub's answer for run 7 of monoflake\/platform could not be read: /,
 		);
+	});
+
+	it('tells a failure of the moment from a refusal, and when a spent rate limit is given back', async () => {
+		const spent = await failureOf(
+			new Response(null, {
+				status: 403,
+				headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1791867635' },
+			}),
+		);
+		expect(spent).toBeInstanceOf(RateLimited);
+		expect((spent as RateLimited).reset).toEqual(new Date(1791867635 * 1000));
+		expect((spent as Error).message).toMatch(/is spent until 2026-10-13T05:00:35\.000Z$/);
+		const secondary = await failureOf(
+			new Response(null, { status: 429, headers: { 'retry-after': '60' } }),
+		);
+		expect(secondary).toBeInstanceOf(RateLimited);
+		expect(await failureOf(new Response(null, { status: 502 }))).toBeInstanceOf(Transient);
+		expect(await failureOf(new TypeError('fetch failed'))).toBeInstanceOf(Transient);
+		for (const status of [401, 403, 404]) {
+			// oxlint-disable-next-line no-await-in-loop -- one status at a time
+			const answered = await failureOf(new Response(null, { status }));
+			expect(answered).toBeInstanceOf(Unread);
+			expect(answered).not.toBeInstanceOf(Transient);
+		}
 	});
 
 	it('names the storage that failed a download', async () => {

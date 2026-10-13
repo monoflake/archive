@@ -18,6 +18,14 @@ same `{run, repository}` to `deployer.<suffix>/notice` through the bindings of t
 deployer's `service.toml` places it on, a list generated into the hook from that declaration as the
 gateway's table is from its services.
 
+**A run GitHub did not give for a reason of the moment is not taken.** GitHub not reached, its rate
+limit spent, or a 5xx leaves the run's row marked transient: it dates what the deployer holds of the
+repository, and the next pass takes the run again, for as long as CI keeps it. A run GitHub refused
+for good -- a token refused, a run gone -- is taken, as before. A spent rate limit ends the pass at
+once, logging when GitHub gives it back, since every call after it would be refused. GitHub's limit
+is shared with every other caller of the same user, and the deployer's first pass on 2026-10-13 lost
+infra's run 38348714781 to it.
+
 **Each app's release is written to the registry by the deployer** -- RFC jln34. Every run it takes,
 by notice or by catching up, records each app it has an artifact of -- an image for host,
 `deploy-<app>-<arch>`, or a Worker, `worker-<app>` -- in its `deployer.db` before any deploy, and

@@ -6,7 +6,7 @@ import { CatchUp, WITHIN_MS, missed, plan } from './catch-up.ts';
 import { configOf } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { PACKAGED, zipOf } from './fixtures.ts';
-import { type Artifact, DECLARATIONS, Unread } from './github.ts';
+import { type Artifact, DECLARATIONS, RateLimited, Unread } from './github.ts';
 import { type Registry, Releases } from './releases.ts';
 import { Store } from './store.ts';
 
@@ -135,6 +135,12 @@ describe('missed', () => {
 	it('is every recent run with no row, newer than the oldest held', () => {
 		const taken = [5, 8].map((run) => ({ run, worker: 'console' }));
 		expect(missed([3, 5, 6, 7, 8, 9], taken)).toEqual([6, 7, 9]);
+	});
+
+	it('is a run GitHub did not give for a reason of the moment, the only one held among them', () => {
+		const unread = [{ run: 8, worker: '', transient: true }];
+		expect(missed([3, 8, 9], unread)).toEqual([8, 9]);
+		expect(missed([8], [...unread, { run: 8, worker: 'console' }])).toEqual([]);
 	});
 
 	it('is nothing while nothing of the repository is held', () => {
@@ -371,5 +377,67 @@ describe('releases', () => {
 		expect(logs).toContain(
 			"deployer: run 5: its images' releases are not recorded: it carries no declarations",
 		);
+	});
+});
+
+describe('a run GitHub did not give', () => {
+	const SPENT = 'GitHub answered 403 for run 7 of canmi21/web: the rate limit of X is spent';
+
+	it('is taken again on the next pass when its rate limit was spent', async () => {
+		const built: Record<number, Artifact[] | Error> = {
+			7: new RateLimited(SPENT, new Date('2026-10-13T06:00:35Z')),
+		};
+		const { store, logs, took, pass } = await setup({ recent: { [WEB]: [5, 7] }, built });
+		await took(5);
+		await took(7);
+		expect(store.list()[0]).toMatchObject({ run: 7, stage: 'failed', error: SPENT });
+
+		built[7] = [CONSOLE];
+		await pass();
+		expect(logs).toContain(`deployer: run 7 of ${WEB} was not read from GitHub; taking it now`);
+		expect(store.list()[0]).toMatchObject({ run: 7, worker: 'console', stage: 'deployed' });
+		await pass();
+		expect(store.list().filter((row) => row.run === 7)).toHaveLength(2);
+	});
+
+	it('stays taken when GitHub refused it for good', async () => {
+		const refused = new Unread('GitHub answered 401 for run 7 of canmi21/web: X was refused');
+		const built: Record<number, Artifact[] | Error> = { 7: refused };
+		const { store, asked, took, pass } = await setup({ recent: { [WEB]: [5, 7] }, built });
+		await took(5);
+		await took(7);
+		built[7] = [CONSOLE];
+		await pass();
+		expect(asked.filter((line) => line === `artifacts ${WEB} 7`)).toHaveLength(1);
+		expect(store.list()[0]).toMatchObject({ run: 7, stage: 'failed' });
+	});
+
+	it('ends a pass at the first spent rate limit, queueing nothing after it', async () => {
+		const spent = new RateLimited(SPENT, undefined);
+		const { store, asked, logs, took, pass } = await setup({
+			recent: { [WEB]: [5, 6, 7, 8] },
+			built: { 7: spent },
+		});
+		await took(5);
+		await pass();
+		expect(asked.filter((line) => line.startsWith('artifacts'))).toEqual([
+			`artifacts ${WEB} 5`,
+			`artifacts ${WEB} 6`,
+			`artifacts ${WEB} 7`,
+		]);
+		expect(store.list().map((row) => row.run)).toEqual([5]);
+		expect(logs).toContain(`deployer: catching up stops until the next pass: ${SPENT}`);
+	});
+
+	it('asks no other source once the list of one is refused for its rate limit', async () => {
+		const { asked, logs, pass, took } = await setup({
+			recent: { 'monoflake/platform': new RateLimited(SPENT, undefined), [WEB]: [5, 7] },
+		});
+		await took(5);
+		await pass();
+		expect(asked.filter((line) => line.startsWith('recent'))).toEqual([
+			`recent monoflake/platform ${WITHIN_MS}`,
+		]);
+		expect(logs.some((line) => line.includes('stops until the next pass'))).toBe(true);
 	});
 });

@@ -34,6 +34,47 @@ export class Unread extends Error {
 	override name = 'Unread';
 }
 
+/**
+ * What was not read for a reason of the moment rather than of the run: GitHub not reached, its rate
+ * limit spent, or a 5xx. A run left unread so is not taken, and catching up takes it again.
+ */
+export class Transient extends Unread {
+	override name = 'Transient';
+}
+
+/** GitHub's rate limit spent, and when it is given back, where GitHub said. */
+export class RateLimited extends Transient {
+	override name = 'RateLimited';
+	readonly reset: Date | undefined;
+
+	constructor(message: string, reset: Date | undefined) {
+		super(message);
+		this.reset = reset;
+	}
+}
+
+/**
+ * When a spent rate limit is given back: `x-ratelimit-reset`, in epoch seconds, or `retry-after`,
+ * in seconds from `now`; undefined where the answer says neither, or is no rate limit at all.
+ */
+export function resetOf(answer: Response, now = new Date()): Date | undefined {
+	const reset = Number(answer.headers.get('x-ratelimit-reset'));
+	if (answer.headers.get('x-ratelimit-remaining') === '0' && reset > 0)
+		return new Date(reset * 1000);
+	const after = Number(answer.headers.get('retry-after'));
+	return after > 0 ? new Date(now.getTime() + after * 1000) : undefined;
+}
+
+/** Whether `answer` says GitHub's rate limit is spent, the primary one or a secondary one. */
+function limited(answer: Response): boolean {
+	if (answer.status !== 403 && answer.status !== 429) return false;
+	return (
+		answer.status === 429 ||
+		answer.headers.get('x-ratelimit-remaining') === '0' ||
+		answer.headers.has('retry-after')
+	);
+}
+
 /** The fields of GitHub's run record a deploy is decided on. */
 export interface Run {
 	readonly repository: { readonly full_name: string };
@@ -172,7 +213,7 @@ export class GitHub {
 			return await this.fetch(url, { headers, redirect: 'manual' });
 		} catch (error) {
 			const who = token ? 'GitHub' : 'storage';
-			throw new Unread(`${who} could not be reached for ${what}: ${causeOf(error)}`);
+			throw new Transient(`${who} could not be reached for ${what}: ${causeOf(error)}`);
 		}
 	}
 
@@ -188,16 +229,21 @@ export class GitHub {
 	private unread(repository: string, what: string, answer: Response): Unread {
 		const variable = tokenVariable(repository);
 		const owner = repository.split('/')[0];
+		const answered = `GitHub answered ${answer.status} for ${what}`;
+		if (limited(answer)) {
+			const reset = resetOf(answer);
+			const until = reset ? ` until ${reset.toISOString()}` : '';
+			return new RateLimited(`${answered}: the rate limit of ${variable} is spent${until}`, reset);
+		}
+		if (answer.status >= 500) return new Transient(answered);
 		let why = '';
-		if (answer.headers.get('x-ratelimit-remaining') === '0') {
-			why = `: the rate limit of ${variable} is spent`;
-		} else if (answer.status === 401 || answer.status === 403) {
+		if (answer.status === 401 || answer.status === 403) {
 			why = `: ${variable}, the token for ${owner}, was refused`;
 		} else if (answer.status === 404) {
 			// GitHub answers 404, not 403, for a repository the token may not see.
 			why = `: it is gone, or ${variable} may not read it`;
 		}
-		return new Unread(`GitHub answered ${answer.status} for ${what}${why}`);
+		return new Unread(`${answered}${why}`);
 	}
 
 	private async json<T>(repository: string, path: string, what: string): Promise<T> {
@@ -276,7 +322,8 @@ export class GitHub {
 		if (!location) throw this.unread(repository, what, redirect);
 		const answer = await this.get(location, what);
 		if (!answer.ok || !answer.body) {
-			throw new Unread(`storage answered ${answer.status} for ${what}`);
+			const Kind = answer.status >= 500 ? Transient : Unread;
+			throw new Kind(`storage answered ${answer.status} for ${what}`);
 		}
 		const hash = createHash('sha256');
 		const body = Readable.fromWeb(answer.body as ReadableStream<Uint8Array>);
