@@ -24,8 +24,8 @@ primary by its tailnet address.
 
 ## Where it runs, and which one writes
 
-**`apps/data/database` runs on five members, `tyo`, `rdu`, `buf`, `gvx` and `sha`, and Patroni
-chooses which one writes, its lease kept in etcd on the same five.** Since 2026-10-08; before it,
+**`apps/data/database` runs on six members, `tyo`, `sin`, `rdu`, `buf`, `gvx` and `sha`, and
+Patroni chooses which one writes, its lease kept in etcd on five of them.** Since 2026-10-08; before it,
 `tyo` was named primary by hand and a failover was the operator's command. The cluster cannot be
 placed by the platform's scheduler, whose leases are kept in it, so its members are named in its
 `service.toml`, apart from the core -- infra's `spec/architecture/nodes.md`, "Three nodes are the
@@ -34,16 +34,20 @@ core, named by the author".
 - **Replication is streaming and asynchronous.** A commit waits for no standby: `tyo` to the eastern
   US is about 150 ms, which a synchronous standby would add to every write. A failover can lose the
   last seconds of writes, and that is accepted.
-- **Three may lead, in order: `tyo`, then `rdu`, then `buf`**, as Patroni's failover priorities,
-  which `database env` writes. `gvx` in Sweden and `sha` in Shanghai are standbys tagged
-  `nofailover`. `rdu` replays natively and holds the most memory after `tyo`; `buf`'s emulated
-  queries run twenty to thirty times slower than `tyo`'s, so it is the primary of last resort.
-  Patroni does not fail back by itself: `tyo` is made primary again by `database switchover tyo`.
-  `sha` holds the whole cluster in plain text inside mainland China, which the author accepted.
+- **Three may lead, in order: `tyo`, then `sin`, then `rdu`**, the core, as Patroni's failover
+  priorities, which `database env` writes. One member writes at a time, and the three are what may
+  take over. `sin` is `tyo`'s twin 73 ms away, so a failover inside Asia keeps the primary near
+  where it is written; `rdu` is the copy in the US, which leads when Asia is gone. `buf`, `gvx` and
+  `sha` are standbys tagged `nofailover`; `buf` led third until 2026-10-12, its emulated queries
+  twenty to thirty times slower than `tyo`'s. Patroni does not fail back by itself: `tyo` is made
+  primary again by `database switchover tyo`. `sha` holds the whole cluster in plain text inside
+  mainland China, which the author accepted.
 - **A standby more than 1 MiB of WAL behind is never promoted** (`maximum_lag_on_failover`), so a
   failover loses at most what the newest standby had not received.
-- **etcd, `apps/data/quorum`, runs on all five, each a voter**, so a quorum of three outlives any one
-  region going -- Asia `tyo` and `sha`, the US `rdu` and `buf`, Europe `gvx`. Its heartbeat and
+- **etcd, `apps/data/quorum`, runs on five, `tyo`, `sin`, `rdu`, `buf` and `gvx`, each a voter**,
+  so a quorum of three outlives any one region going -- Asia `tyo` and `sin`, the US `rdu` and
+  `buf`, Europe `gvx` -- and Oracle taking `tyo` and `sin` at once, when `rdu`, `buf` and `gvx`
+  still elect. `sha` gave its vote to `sin` on 2026-10-12 and stays a standby. Its heartbeat and
   election, 500 ms and 5 s, are set for a quorum on three continents, the farthest pair about
   380 ms apart. Clients answer only to a password, Patroni's, since every container reaches the
   tailnet and a key written there moves the primary; `database quorum-auth` turned it on once.
@@ -68,7 +72,7 @@ core, named by the author".
   taking writes 28 to 32 s later; a partition failing over in 31 to 45 s; a frozen Patroni of
   4.6 s causing none. The running cluster was then taken over in place, `tyo`'s data directory
   becoming the first leader's, on timeline 6.
-- **Every member runs it as arm64**, `arch = "arm64"`: `tyo`, `rdu` and `gvx` natively, `buf` and
+- **Every member runs it as arm64**, `arch = "arm64"`: `tyo`, `sin`, `rdu` and `gvx` natively, `buf` and
   `sha`, x86 machines, by emulation -- infra's `spec/architecture/nodes.md`, "An x86 node may run
   arm64 images, emulated, and never the other way". Physical replication is between machines of one
   architecture, and an emulated arm64 Postgres writes exactly the bytes a native one does, so the
@@ -93,7 +97,7 @@ core, named by the author".
   report. A failover or a major's switch rewrites no URL and restarts no app. Since 2026-10-08.
 - **Each member sizes itself.** The keeper reads the lesser of its container's memory ceiling,
   8 GiB, and half the node's memory, since every node runs more than the database, and its cores and
-  disk, and sets Postgres from them by Pigsty's formulas: `tyo` is tuned for 8 GiB, `sha` 7.5,
+  disk, and sets Postgres from them by Pigsty's formulas: `tyo` and `sin` are tuned for 8 GiB, `sha` 7.5,
   `rdu` 3.8, `buf` 1.6 and `gvx` 485 MiB. The WAL and temporary files sized from the disk are capped
   -- `min_wal_size` 2 GB, `max_wal_size` 8 GB, `temp_file_limit` 20 GB -- since `/data` is shared,
   where Pigsty assumes a disk of the database's own. `max_connections` is 50 on every member, since

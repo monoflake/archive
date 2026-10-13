@@ -3,10 +3,11 @@
 version = 1
 name = "database"
 display_name = "Database"
-# Patroni's members: tyo, rdu and buf may lead, in that order, and gvx and sha are standbys that
-# never do. See spec/architecture/databases.md, "Where it runs, and which one writes".
-placements = ["tyo", "buf", "rdu", "gvx", "sha"]
-# One cluster replicates between machines of one architecture: arm64 everywhere, buf by emulation.
+# Patroni's members: tyo, sin and rdu may lead, in that order, and buf, gvx and sha are standbys
+# that never do. See spec/architecture/databases.md, "Where it runs, and which one writes".
+placements = ["tyo", "sin", "rdu", "buf", "gvx", "sha"]
+# One cluster replicates between machines of one architecture: arm64 everywhere, buf and sha by
+# emulation.
 # See spec/architecture/databases.md, "Where it runs, and which one writes".
 arch = "arm64"
 # A run deploys nothing of it; standbys first, the primary last. See spec/architecture/databases.md,

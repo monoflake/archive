@@ -32,9 +32,10 @@ SERVICE = ROOT / "apps/data/database/service.toml"
 # Where its image is built, which a deploy by hand names. See spec/architecture/databases.md,
 # "Upgrades are pinned, reported, and rolled by hand".
 REPOSITORY = "monoflake/platform"
-# Patroni's failover priorities, first highest, each named by hand; a member not named here, `gvx`
-# or `sha`, never leads. See spec/architecture/databases.md, "Where it runs, and which one writes".
-ORDER = ["tyo", "rdu", "buf"]
+# Patroni's failover priorities, first highest, each named by hand; a member not named here, `buf`,
+# `gvx` or `sha`, never leads. See spec/architecture/databases.md, "Where it runs, and which one
+# writes".
+ORDER = ["tyo", "sin", "rdu"]
 PORT = 5432
 # Patroni's REST on each member, and etcd's client and peer ports on each core.
 REST = 8008
