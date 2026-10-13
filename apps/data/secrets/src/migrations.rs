@@ -21,12 +21,13 @@ pub struct Migration {
 
 /// In order, never edited once released: a change is a new one. A secret's row holds ciphertext
 /// alone, and a change row says who wrote which secret and when, never what; it is appended and
-/// never updated or deleted. See RFC 231yq.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-	version: 1,
-	name: "secrets and their changes",
-	kind: Kind::Expand,
-	sql: r#"
+/// never updated or deleted, as a comparison's row is. See RFC 231yq.
+pub const MIGRATIONS: &[Migration] = &[
+	Migration {
+		version: 1,
+		name: "secrets and their changes",
+		kind: Kind::Expand,
+		sql: r#"
 		CREATE TABLE secrets (
 			scope text COLLATE "C" NOT NULL,
 			app text COLLATE "C" NOT NULL,
@@ -46,7 +47,32 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
 		);
 		CREATE INDEX changes_by_secret ON changes (scope, app, name, id);
 	"#,
-}];
+	},
+	// Every value written before it is a secret, which the default says; a change row's class is
+	// the one it set, absent on the rows before it. A comparison is no change: it is kept apart, so
+	// it moves no revision. See spec/architecture/secrets.md.
+	Migration {
+		version: 2,
+		name: "classes, and comparisons",
+		kind: Kind::Expand,
+		sql: r#"
+			ALTER TABLE secrets ADD COLUMN class text COLLATE "C" NOT NULL DEFAULT 'secret'
+				CHECK (class IN ('config', 'secret'));
+			ALTER TABLE changes ADD COLUMN class text COLLATE "C"
+				CHECK (class IN ('config', 'secret'));
+			CREATE TABLE comparisons (
+				id bigserial PRIMARY KEY,
+				at timestamptz NOT NULL DEFAULT now(),
+				by text NOT NULL,
+				scope text COLLATE "C" NOT NULL,
+				app text COLLATE "C" NOT NULL,
+				name text COLLATE "C" NOT NULL,
+				matches boolean NOT NULL
+			);
+			CREATE INDEX comparisons_by_secret ON comparisons (scope, app, name, id);
+		"#,
+	},
+];
 
 /// The advisory lock every copy takes before migrating: "secrets" in ASCII.
 const LOCK: i64 = 0x73_6563_7265_7473;
@@ -61,6 +87,14 @@ const RECORDED: &str = "CREATE TABLE IF NOT EXISTS secrets_migrations (
 /// its own: the lock is the session's, so it goes when the connection does, whatever happens.
 /// Answers the versions applied now.
 pub async fn run(client: &mut Client) -> Result<Vec<i32>, tokio_postgres::Error> {
+	apply(client, MIGRATIONS).await
+}
+
+/// `run` over `migrations` alone, so a test can stand a schema as an older release left it.
+pub(crate) async fn apply(
+	client: &mut Client,
+	migrations: &[Migration],
+) -> Result<Vec<i32>, tokio_postgres::Error> {
 	client.execute("SELECT pg_advisory_lock($1)", &[&LOCK]).await?;
 	client.batch_execute(RECORDED).await?;
 	let applied: Vec<i32> = client
@@ -70,7 +104,7 @@ pub async fn run(client: &mut Client) -> Result<Vec<i32>, tokio_postgres::Error>
 		.map(|row| row.get(0))
 		.collect();
 	let mut now = Vec::new();
-	for migration in MIGRATIONS.iter().filter(|m| !applied.contains(&m.version)) {
+	for migration in migrations.iter().filter(|m| !applied.contains(&m.version)) {
 		let transaction = client.transaction().await?;
 		transaction.batch_execute(migration.sql).await?;
 		transaction
@@ -118,10 +152,14 @@ mod tests {
 	}
 
 	#[test]
-	fn no_change_row_can_hold_a_value() {
-		let changes = MIGRATIONS[0].sql.split("CREATE TABLE changes").nth(1).unwrap();
-		let changes = changes.split(");").next().unwrap();
-		assert!(!changes.contains("value") && !changes.contains("bytea"), "{changes}");
+	fn no_change_or_comparison_row_can_hold_a_value() {
+		for (version, table) in [(0, "changes"), (1, "comparisons")] {
+			let body = MIGRATIONS[version].sql.split(&format!("CREATE TABLE {table}")).nth(1).unwrap();
+			let body = body.split(");").next().unwrap();
+			assert!(!body.contains("value") && !body.contains("bytea"), "{body}");
+		}
+		let added = MIGRATIONS[1].sql.to_lowercase();
+		assert!(!added.contains("bytea"), "{added}");
 	}
 
 	#[test]

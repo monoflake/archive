@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-#MISE description="Set the secret service's lock: `seal init [--recipient age1pq1...]` splits a new root key among the cores once, to recovery.pub's post-quantum recipient unless another is given; `seal token` gives every core the service's tokens; `seal prepare [core...]` makes each core's empty /data/seal before the first deploy; `seal unseal <node> <identity>` opens a lone core with the recovery key, each with --dry-run"
+#MISE description="Set the secret service's lock: `seal init [--recipient age1pq1...]` splits a new root key among the cores once, to recovery.pub's post-quantum recipient unless another is given; `seal token` gives every core the service's tokens; `seal prepare [core...]` makes each core's empty /data/seal before the first deploy; `seal scope <scope> <app> [--app <app>]` makes a token writing one app of one scope alone and gives its digest to every core, and the token to the app named by --app; `seal unseal <node> <identity>` opens a lone core with the recovery key, each with --dry-run"
 """The operator's half of the secret service's lock -- spec/architecture/secrets.md, RFC 231yq.
 
 `init` sets the lock once from `tyo`, the operator's agent forwarded for that run alone, accepted
 since `tyo` holds a share anyway; only the recovery ciphertext comes back here. `token` gives every
 core the service's tokens, each node's as the digest of what it derives from its `HOST_TOKEN` with
 `NODE_TOKEN_MESSAGE`. `prepare` makes the directory host mounts, which must exist before the
-service is deployed. `unseal` opens a lone core with the offline key. `--dry-run` touches no machine
-and prints no secret. The order a first run takes is in the spec.
+service is deployed. `scope` makes a token that writes one app of one scope alone, every core given
+only the digests of them all. `unseal` opens a lone core with the offline key. `--dry-run` touches
+no machine and prints no secret. The order a first run takes is in the spec.
 """
 
 import hashlib
@@ -54,6 +55,8 @@ PEER_TOKEN = "SECRETS_PEER_TOKEN"
 # its own with the same bytes, so the two must never drift apart.
 NODE_TOKEN_MESSAGE = b"platform secrets read"
 INFRA = database.REPOS / "infra"
+# The scopes a node is given values of; every other scope is held. See spec/architecture/secrets.md.
+NODE_SCOPES = "platform"
 ARMOR = ("-----BEGIN AGE ENCRYPTED FILE-----", "-----END AGE ENCRYPTED FILE-----")
 # The post-quantum hybrid age recipient alone, ML-KEM-768 and X25519, `age1pq1` and its key in
 # bech32: a plain X25519 key, `age1` and 58 characters, is refused, so one cannot be passed by
@@ -308,14 +311,100 @@ def token(arguments, dry):
 				f"seal: {node}: would set, keeping every other line, mode 600, in /data/apps/{APP}/secret.env:"
 				f" {TOKEN}=<redacted> {PEER_TOKEN}=<redacted> SECRETS_NODE_TOKENS=<digests of {', '.join(read)}>"
 			)
-			print(f"seal: {node}: would set in /data/apps/{APP}/config.env: CORES={addresses}")
+			print(
+				f"seal: {node}: would set in /data/apps/{APP}/config.env: CORES={addresses}"
+				f" SECRETS_NODE_SCOPES={NODE_SCOPES}"
+			)
 			continue
 		secret = {TOKEN: write, PEER_TOKEN: peer, "SECRETS_NODE_TOKENS": digests}
 		if not database.upsert(node, APP, "secret.env", secret):
 			fail(f"writing the tokens failed on {node}")
-		if not database.upsert(node, APP, "config.env", {"CORES": addresses}):
-			fail(f"writing CORES failed on {node}")
+		config = {"CORES": addresses, "SECRETS_NODE_SCOPES": NODE_SCOPES}
+		if not database.upsert(node, APP, "config.env", config):
+			fail(f"writing CORES and SECRETS_NODE_SCOPES failed on {node}")
 	print(f"seal: {APP} reads them on its next deploy; `mise run //repos/infra:node redeploy <node> {APP}`")
+
+
+# A scope token in secrets.json is SECRETS_SCOPE_TOKEN_, the scope, `__`, then the app, each in
+# capitals with its hyphens as underscores; a scope or app holding `--` is refused, so the name
+# reads back as one scope and one app.
+SCOPE_TOKEN = "SECRETS_SCOPE_TOKEN_"
+# What the app given a scope's token reads it as.
+APP_SCOPE_TOKEN = "SECRETS_SCOPE_TOKEN"
+LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def held_label(name):
+	"""One DNS label that a scope token's key can carry: no `--`."""
+	return bool(LABEL.match(name)) and "--" not in name
+
+
+def scope_key(scope, app):
+	return f"{SCOPE_TOKEN}{scope.upper().replace('-', '_')}__{app.upper().replace('-', '_')}"
+
+
+def held_of_key(key):
+	"""The scope and app a key names, or None for a key that names none."""
+	scope, separator, app = key[len(SCOPE_TOKEN) :].partition("__")
+	scope, app = scope.lower().replace("_", "-"), app.lower().replace("_", "-")
+	return (scope, app) if separator and held_label(scope) and held_label(app) else None
+
+
+def scope_tokens(made):
+	"""`SECRETS_SCOPE_TOKENS`: `scope/app:digest` for every scope token in secrets.json, as mise
+	gives it, and `made`, a scope and app and the token just made for them, the digest each token's
+	SHA-256."""
+	found = {}
+	for key, value in os.environ.items():
+		held = held_of_key(key) if key.startswith(SCOPE_TOKEN) else None
+		if held and value:
+			found[held] = value
+	found.update(made)
+	return " ".join(
+		f"{scope}/{app}:{hashlib.sha256(value.encode()).hexdigest()}"
+		for (scope, app), value in sorted(found.items())
+	)
+
+
+def scope(arguments, dry):
+	target = None
+	if len(arguments) == 4 and arguments[2] == "--app":
+		target = arguments[3]
+	elif len(arguments) != 2:
+		fail(
+			"scope takes a scope and the one app of it the token writes, and --app <app> to give an app"
+			" the token"
+		)
+	name, app = arguments[0], arguments[1]
+	for label in (name, app):
+		if not held_label(label):
+			fail(f"`{label}` is not a scope or an app a token can be held to: one DNS label, no `--`")
+	placements = []
+	if target is not None:
+		placements = database.manifest_of(target)["placements"]
+		if not placements or not all(NODE.match(node) for node in placements):
+			fail(f"{target} is not placed on nodes alone, so no node can be given its token")
+	value = database.stored_secret(scope_key(name, app), dry)
+	digests = scope_tokens({(name, app): value} if value else {})
+	held = sorted({pair.split(":")[0] for pair in digests.split()} | {f"{name}/{app}"})
+	for node in cores():
+		if dry:
+			print(
+				f"seal: {node}: would set in /data/apps/{APP}/secret.env: SECRETS_SCOPE_TOKENS=<digests of"
+				f" {', '.join(held)}>"
+			)
+		elif not database.upsert(node, APP, "secret.env", {"SECRETS_SCOPE_TOKENS": digests}):
+			fail(f"writing the scope tokens failed on {node}")
+	for node in placements:
+		if dry:
+			print(
+				f"seal: {node}: would set in /data/apps/{target}/secret.env: {APP_SCOPE_TOKEN}=<redacted>"
+			)
+		elif not database.upsert(node, target, "secret.env", {APP_SCOPE_TOKEN: value}):
+			fail(f"writing {name}/{app}'s token failed on {node}")
+	print(f"seal: {APP} reads them on its next deploy; `mise run //repos/infra:node redeploy <node> {APP}`")
+	if target is not None:
+		print(f"seal: {target} reads its token, writing {name}/{app}, as {APP_SCOPE_TOKEN} on its next deploy")
 
 
 def unseal(arguments, dry):
@@ -359,11 +448,11 @@ def main():
 	arguments = sys.argv[1:]
 	dry = "--dry-run" in arguments or "-n" in arguments
 	rest = [a for a in arguments[1:] if a not in ("--dry-run", "-n")]
-	verbs = {"init": init, "token": token, "prepare": prepare, "unseal": unseal}
+	verbs = {"init": init, "token": token, "prepare": prepare, "scope": scope, "unseal": unseal}
 	if not arguments or arguments[0] not in verbs:
 		fail(
-			"name one of init [--recipient age1pq1...], token, prepare [core...] or unseal <node>"
-			" <identity>, and --dry-run to only say what"
+			"name one of init [--recipient age1pq1...], token, prepare [core...], scope <scope> <app>"
+			" [--app <app>] or unseal <node> <identity>, and --dry-run to only say what"
 		)
 	verbs[arguments[0]](rest, dry)
 

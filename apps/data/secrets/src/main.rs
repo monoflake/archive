@@ -6,7 +6,7 @@ use secrets_service::ceremony;
 use secrets_service::peers::{self, Cores, PORT};
 use secrets_service::seal::Seal;
 use secrets_service::store::Store;
-use secrets_service::tokens::NodeTokens;
+use secrets_service::tokens::{NodeTokens, ScopeTokens};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,8 +40,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Brings the schema up to date, then answers, sealed until two cores' shares or the operator's key
-/// open it. Without `SECRETS_TOKEN` it refuses every write, and without `SECRETS_PEER_TOKEN` it
-/// neither gives its share nor asks for another.
+/// open it. Without `SECRETS_TOKEN` or `SECRETS_SCOPE_TOKENS` it refuses every write, and without
+/// `SECRETS_PEER_TOKEN` it neither gives its share nor asks for another.
 async fn serve() -> anyhow::Result<()> {
 	let url = std::env::var("DATABASE_URL")
 		.map_err(|_| anyhow::anyhow!("DATABASE_URL is not set; `mise run database grant` writes it"))?;
@@ -51,6 +51,16 @@ async fn serve() -> anyhow::Result<()> {
 		.map_err(|pair| {
 			anyhow::anyhow!("SECRETS_NODE_TOKENS holds `{pair}`, which is not node:digest")
 		})?;
+	let scopes = ScopeTokens::parse(&std::env::var("SECRETS_SCOPE_TOKENS").unwrap_or_default())
+		.map_err(|pair| {
+			anyhow::anyhow!(
+				"SECRETS_SCOPE_TOKENS holds `{pair}`, which is not scope/app:digest, or is two"
+			)
+		})?;
+	let node_scopes = api::node_scopes(&std::env::var("SECRETS_NODE_SCOPES").unwrap_or_default())
+		.map_err(|scope| {
+			anyhow::anyhow!("SECRETS_NODE_SCOPES holds `{scope}`, which is not a scope")
+		})?;
 	let store = Store::connect(&url, None)?;
 	let applied = store.migrate().await?;
 	if !applied.is_empty() {
@@ -59,8 +69,9 @@ async fn serve() -> anyhow::Result<()> {
 
 	let token = std::env::var("SECRETS_TOKEN").unwrap_or_default();
 	if token.is_empty() {
-		eprintln!("secrets: SECRETS_TOKEN is not set; writes are closed");
+		eprintln!("secrets: SECRETS_TOKEN is not set; only a scope's token writes");
 	}
+	eprintln!("secrets: {} scope token(s) may write", scopes.len());
 	let peer_token = std::env::var("SECRETS_PEER_TOKEN").unwrap_or_default();
 	if peer_token.is_empty() {
 		eprintln!("secrets: SECRETS_PEER_TOKEN is not set; no share is given or asked for");
@@ -69,6 +80,7 @@ async fn serve() -> anyhow::Result<()> {
 		eprintln!("secrets: CORES is not set; only the operator's key opens it");
 	}
 	eprintln!("secrets: {} node(s) may read", nodes.len());
+	eprintln!("secrets: nodes are given the scopes {}, and no other", node_scopes.join(" "));
 	let share = std::env::var("SECRETS_SHARE").unwrap_or_else(|_| SHARE.into());
 
 	let seal = Arc::new(Seal::default());
@@ -86,8 +98,10 @@ async fn serve() -> anyhow::Result<()> {
 		store,
 		seal,
 		token,
+		scopes,
 		peer_token,
 		nodes,
+		node_scopes,
 		registries: cores.registries,
 		client,
 	});

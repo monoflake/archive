@@ -12,17 +12,49 @@ its own node's `primary`. It is deployed by hand, a core at a time, as the regis
 restarted finds the other two holding the key. Its port, 12014, is published to the tailnet alone.
 
 **A secret is its scope, its app and its name, and its value is encrypted twice over.** The value is
-under a data key of its own, and the data key under the root key, both XChaCha20-Poly1305, both bound
-to the secret's identity as associated data, so ciphertext moved to another row does not open. A
-change is a row appended: who, when and which, never the value.
+under a data key of its own, and the data key under the root key, both XChaCha20-Poly1305, both
+bound to the secret's identity as associated data, so ciphertext moved to another row does not open.
+A change is a row appended: who, when and which, never the value.
+
+## Two classes of value, and a secret compared unread
+
+**A value is of one of two classes, and `secret` unless its write declares `config`** -- RFC 231yq.
+The service holds an app's whole environment, as a node splits it into `config.env` and
+`secret.env`.
+
+- **`config` is answered to anyone who may read the app's values**, whenever asked, as written:
+  for now whoever may write its scope, and the node the app is placed on.
+- **`secret` is answered to nobody**, but to the node it is placed on, which writes it into
+  `secret.env`. A list says that it exists, its class and when it changed, never its value.
+  The node's read carries each value's class; host writing a `config` to `config.env` instead is
+  infra's to build.
+- **A `secret` becomes `config` only by being written again with its value**, never by its class
+  alone changed; a `config` may be made `secret` by its class alone.
+- **A secret is compared without being read**: `POST` the value offered to its `compare` route, and
+  the answer is `{"matches": true}` or `false`, the value held never replaced. The comparison is in
+  constant time; it takes the right to write that secret; each secret answers five comparisons a
+  minute across every core, counted in the history, and refuses the rest `429`; and each one is a
+  row of the history -- who, when, which and the answer -- never the value offered. A `config` is
+  read, not compared.
+
+**Writing is granted by scope and app.** Besides `SECRETS_TOKEN`, which writes everywhere, a token
+may be made for one app of one scope and writes only there, so a service that keeps values for its
+resources -- the registry for an account's identities -- reaches its own and nothing else. A value
+an app is given becomes its environment, so a scope token writing another app's would be code run
+there: hence the app, and a write by a scope token is refused a name that changes how a process
+starts -- `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHON*`, `BASH_ENV`, `PATH` and their kind. **A node
+is given values from the scopes `SECRETS_NODE_SCOPES` names alone**, `platform` when it names none,
+so a scope that holds a resource's values -- the registry's `accounts` -- is never written into any
+app's environment, whatever its apps are called: the node read once matched values by app name
+alone, across every scope.
 
 ## The lock
 
 **The root key is split two of three among the cores by Shamir's scheme**, each share on its core's
 disk at `/data/seal/share`, outside every app's directory and every snapshot, mounted read-only at
 `/seal` by host's `seal` role, which the cores alone grant -- infra's `spec/architecture/host.md`.
-Each share carries a digest of the key it rebuilds, so a wrong share or a wrong key is refused rather
-than used.
+Each share carries a digest of the key it rebuilds, so a wrong share or a wrong key is refused
+rather than used.
 
 - **A copy starts sealed** and answers `503 service_unavailable` to every route that touches a
   secret, while `/health` answers, so a sealed deploy is not rolled back. Every five seconds it asks
@@ -32,10 +64,10 @@ than used.
   with the offline recovery identity and sends the key, checked against the core's share, with the
   write token.
 - **The lock is set once**, by `mise run seal init`. It makes the key on `tyo`, in the service's
-  image with no network, and hands each core its share core to core. The only thing it returns is the
-  key encrypted to `recovery.pub`'s post-quantum recipient, written as `recovery.age` to commit. It
-  uses age's own program, pinned in the image, since the `age` crate cannot encrypt to an `age1pq1`
-  recipient.
+  image with no network, and hands each core its share core to core. The only thing it returns is
+  the key encrypted to `recovery.pub`'s post-quantum recipient, written as `recovery.age` to commit.
+  It uses age's own program, pinned in the image, since the `age` crate cannot encrypt to an
+  `age1pq1` recipient.
 
 ## The first run
 

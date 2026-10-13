@@ -1,7 +1,8 @@
-//! Who may ask what: the write token, the token the cores show each other, and each node's own read
-//! token, which this service keeps only as a SHA-256 digest, so what it holds reads no node's
-//! secrets. A node's read token is the HMAC of a fixed message keyed by its host's token, which
-//! host and `mise run seal token` both derive; this service never sees either. See RFC 231yq.
+//! Who may ask what: the write token, the tokens that each write one scope alone, the token the
+//! cores show each other, and each node's own read token. A scope's and a node's are kept only as a
+//! SHA-256 digest, so what this service holds writes and reads nothing. A node's read token is the
+//! HMAC of a fixed message keyed by its host's token, which host and `mise run seal token` both
+//! derive; this service never sees either. See RFC 231yq.
 
 use axum::http::HeaderMap;
 use axum::http::header::AUTHORIZATION;
@@ -27,36 +28,113 @@ pub fn digest(token: &str) -> [u8; 32] {
 	Sha256::digest(token.as_bytes()).into()
 }
 
+/// `name:digest` pairs separated by whitespace, each name one `valid` takes and each digest a
+/// token's SHA-256 in lowercase hex. The first pair that is not one is the error.
+fn pairs(value: &str, valid: fn(&str) -> bool) -> Result<Vec<(String, [u8; 32])>, String> {
+	value
+		.split_whitespace()
+		.map(|pair| {
+			let (name, digest) = pair.split_once(':').ok_or_else(|| pair.to_owned())?;
+			let digest = hex::decode(digest)
+				.ok()
+				.and_then(|digest| <[u8; 32]>::try_from(digest).ok())
+				.ok_or_else(|| pair.to_owned())?;
+			if valid(name) { Ok((name.to_owned(), digest)) } else { Err(pair.to_owned()) }
+		})
+		.collect()
+}
+
 /// Each node's read token, by the node's name, as the digest of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeTokens(BTreeMap<String, [u8; 32]>);
 
 impl NodeTokens {
-	/// `SECRETS_NODE_TOKENS` read: `node:digest` pairs separated by whitespace, the digest the
-	/// token's SHA-256 in lowercase hex. The first pair that is not one is the error.
+	/// `SECRETS_NODE_TOKENS` read: `node:digest` pairs, see `pairs`.
 	pub fn parse(value: &str) -> Result<Self, String> {
-		value
-			.split_whitespace()
-			.map(|pair| {
-				let (node, digest) = pair.split_once(':').ok_or_else(|| pair.to_owned())?;
-				let digest = hex::decode(digest)
-					.ok()
-					.and_then(|digest| <[u8; 32]>::try_from(digest).ok())
-					.ok_or_else(|| pair.to_owned())?;
-				if crate::api::node_name_is_valid(node) {
-					Ok((node.to_owned(), digest))
-				} else {
-					Err(pair.to_owned())
-				}
-			})
-			.collect::<Result<_, _>>()
-			.map(NodeTokens)
+		Ok(NodeTokens(pairs(value, crate::api::node_name_is_valid)?.into_iter().collect()))
 	}
 
 	/// Whether `token` is `node`'s own. A node with no token admits nobody.
 	pub fn admits(&self, node: &str, token: &str) -> bool {
 		let given = digest(token);
 		self.0.get(node).is_some_and(|kept| equal(&given, kept))
+	}
+
+	pub fn len(&self) -> usize {
+		self.0.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
+}
+
+/// What a writer's token reaches: every scope and app, `SECRETS_TOKEN`'s, or one app of one scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Grant {
+	Every,
+	Held { scope: String, app: String },
+}
+
+impl Grant {
+	pub fn reaches(&self, scope: &str, app: &str) -> bool {
+		match self {
+			Grant::Every => true,
+			Grant::Held { scope: own_scope, app: own_app } => own_scope == scope && own_app == app,
+		}
+	}
+
+	/// The one scope and app it is held to; None when it reaches every one.
+	pub fn held(&self) -> Option<(&str, &str)> {
+		match self {
+			Grant::Every => None,
+			Grant::Held { scope, app } => Some((scope, app)),
+		}
+	}
+}
+
+/// `scope/app`, each one DNS label, as a scope token names what it writes.
+fn scope_and_app(name: &str) -> Option<(&str, &str)> {
+	let (scope, app) = name.split_once('/')?;
+	(crate::api::label_is_valid(scope) && crate::api::label_is_valid(app)).then_some((scope, app))
+}
+
+/// The tokens that each write one app of one scope alone, as the digest of each.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScopeTokens(Vec<(String, String, [u8; 32])>);
+
+impl ScopeTokens {
+	/// `SECRETS_SCOPE_TOKENS` read: `scope/app:digest` pairs, see `pairs`. A scope and app may be
+	/// named twice, so its token is replaced with no moment none is admitted; one digest named for
+	/// two is refused, since that token would write both.
+	pub fn parse(value: &str) -> Result<Self, String> {
+		let pairs = pairs(value, |name| scope_and_app(name).is_some())?;
+		for (index, (name, digest)) in pairs.iter().enumerate() {
+			if pairs[..index].iter().any(|(other, kept)| kept == digest && other != name) {
+				return Err(format!("{name}:{}", hex::encode(digest)));
+			}
+		}
+		let held = pairs
+			.into_iter()
+			.map(|(name, digest)| {
+				let (scope, app) = scope_and_app(&name).expect("checked as each pair was read");
+				(scope.to_owned(), app.to_owned(), digest)
+			})
+			.collect();
+		Ok(ScopeTokens(held))
+	}
+
+	/// The scope and app `token` writes, if it is one of these. Every digest is compared whatever
+	/// matched, so the time taken says nothing of which did.
+	pub fn grant_of(&self, token: &str) -> Option<Grant> {
+		let given = digest(token);
+		let mut found = None;
+		for (scope, app, kept) in &self.0 {
+			if equal(&given, kept) && found.is_none() {
+				found = Some(Grant::Held { scope: scope.clone(), app: app.clone() });
+			}
+		}
+		found
 	}
 
 	pub fn len(&self) -> usize {
@@ -104,6 +182,49 @@ mod tests {
 		let digest = "d0cd53f06568c9cdf0be664afcf1aa86acef7179e1840e1377afe84c902ba564";
 		assert_eq!(hex::encode(super::digest(read)), digest);
 		assert!(NodeTokens::parse(&format!("rdu:{digest}")).unwrap().admits("rdu", read));
+	}
+
+	#[test]
+	fn a_scope_token_writes_its_own_app_of_its_own_scope_alone() {
+		let value = format!(
+			"accounts/registry:{} canmi/web:{} accounts/registry:{}",
+			hex::encode(digest("accounts-token")),
+			hex::encode(digest("canmi-token")),
+			hex::encode(digest("accounts-next")),
+		);
+		let tokens = ScopeTokens::parse(&value).unwrap();
+		assert_eq!(tokens.len(), 3);
+		let registry = Grant::Held { scope: "accounts".into(), app: "registry".into() };
+		assert_eq!(tokens.grant_of("accounts-token"), Some(registry.clone()));
+		assert_eq!(tokens.grant_of("accounts-next"), Some(registry.clone()));
+		assert_eq!(registry.held(), Some(("accounts", "registry")));
+		assert_eq!(tokens.grant_of("platform-token"), None);
+		assert_eq!(tokens.grant_of(""), None);
+		assert!(registry.reaches("accounts", "registry"));
+		assert!(!registry.reaches("accounts", "web") && !registry.reaches("canmi", "registry"));
+		assert!(Grant::Every.reaches("canmi", "web") && Grant::Every.held().is_none());
+	}
+
+	#[test]
+	fn a_scope_pair_that_is_not_one_is_refused() {
+		let good = hex::encode(digest("x"));
+		for value in [
+			"accounts/registry".to_owned(),
+			format!("accounts:{good}"),
+			format!("accounts/:{good}"),
+			format!("/registry:{good}"),
+			format!("accounts/registry/x:{good}"),
+			format!("Accounts/registry:{good}"),
+			format!("accounts/-registry:{good}"),
+			format!("accounts/registry:{good}0"),
+			format!("accounts/registry:{good} accounts/web:{good}"),
+		] {
+			assert!(ScopeTokens::parse(&value).is_err(), "{value}");
+		}
+		assert!(ScopeTokens::parse("").unwrap().is_empty());
+		assert!(
+			ScopeTokens::parse(&format!("accounts/registry:{good} accounts/registry:{good}")).is_ok()
+		);
 	}
 
 	#[test]

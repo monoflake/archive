@@ -3,6 +3,7 @@ docker, ssh, chown, mountpoint and shred, and the task around it with SSH mocked
 `python3 .mise/tasks/seal_test.py`."""
 
 import contextlib
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -408,7 +409,9 @@ class Token(unittest.TestCase):
 		nodes = secret["SECRETS_NODE_TOKENS"].split()
 		self.assertEqual([pair.split(":")[0] for pair in nodes], ["rdu", "sin", "tyo"])
 		self.assertIn(f"rdu:{DIGEST}", nodes)
-		self.assertEqual(calls[1][3], {"CORES": "100.64.0.1 100.64.0.2 100.64.0.3"})
+		self.assertEqual(
+			calls[1][3], {"CORES": "100.64.0.1 100.64.0.2 100.64.0.3", "SECRETS_NODE_SCOPES": "platform"}
+		)
 		self.assertIn("buf has no HOST_TOKEN_BUF", said)
 		for value in ["write-value", "peer-value", HOST, READ, DIGEST]:
 			self.assertNotIn(value, said)
@@ -419,6 +422,7 @@ class Token(unittest.TestCase):
 			said = self.quietly(dry=True)
 		self.assertIn("would set", said)
 		self.assertIn("CORES=100.64.0.1 100.64.0.2 100.64.0.3", said)
+		self.assertIn("SECRETS_NODE_SCOPES=platform", said)
 		for value in ["write-value", "peer-value", HOST, READ, DIGEST]:
 			self.assertNotIn(value, said)
 
@@ -429,6 +433,101 @@ class Token(unittest.TestCase):
 		with mock.patch.object(seal.database, "upsert", return_value=False), self.assertRaises(SystemExit):
 			self.quietly()
 
+
+class Scope(unittest.TestCase):
+	"""`seal scope`, with secrets.json, the cores and the app faked, and no program run."""
+
+	def setUp(self):
+		self.made = {}
+
+		def stored(key, dry):
+			self.made[key] = dry
+			return None if dry else f"made-{key}"
+
+		manifests = {"registry": {"placements": ["tyo", "sin", "rdu"]}, "site": {"placements": ["workers"]}}
+		patches = [
+			mock.patch.object(seal, "cores", lambda: ["tyo", "sin", "rdu"]),
+			mock.patch.object(seal.database, "stored_secret", stored),
+			mock.patch.object(seal.database, "manifest_of", manifests.__getitem__),
+			mock.patch.dict(
+				seal.os.environ,
+				{"SECRETS_SCOPE_TOKEN_CANMI__WEB": "canmi-token", "SECRETS_SCOPE_TOKEN_OLD": "ignored"},
+			),
+			mock.patch.object(seal.subprocess, "run", mock.Mock(side_effect=AssertionError("ran a program"))),
+		]
+		for patch in patches:
+			patch.start()
+			self.addCleanup(patch.stop)
+
+	def quietly(self, *arguments, dry=False):
+		out = io.StringIO()
+		with contextlib.redirect_stdout(out):
+			seal.scope(list(arguments), dry)
+		return out.getvalue()
+
+	def test_a_scope_and_app_read_back_from_their_key(self):
+		for scope, app in [("accounts", "registry"), ("my-scope", "my-app"), ("a1", "b")]:
+			self.assertEqual(seal.held_of_key(seal.scope_key(scope, app)), (scope, app))
+		self.assertEqual(seal.scope_key("my-scope", "my-app"), "SECRETS_SCOPE_TOKEN_MY_SCOPE__MY_APP")
+		for key in ["SECRETS_SCOPE_TOKEN_CANMI", "SECRETS_SCOPE_TOKEN_A____B", "SECRETS_SCOPE_TOKEN___B"]:
+			self.assertIsNone(seal.held_of_key(key), key)
+
+	def test_every_core_is_given_every_scope_token_as_a_digest(self):
+		with mock.patch.object(seal.database, "upsert", return_value=True) as wrote:
+			said = self.quietly("accounts", "registry")
+		self.assertEqual(self.made, {"SECRETS_SCOPE_TOKEN_ACCOUNTS__REGISTRY": False})
+		calls = [call.args for call in wrote.call_args_list]
+		self.assertEqual([(node, app, file) for node, app, file, _ in calls], [
+			("tyo", "secrets", "secret.env"), ("sin", "secrets", "secret.env"), ("rdu", "secrets", "secret.env"),
+		])
+		digest = lambda token: hashlib.sha256(token.encode()).hexdigest()
+		made = "made-SECRETS_SCOPE_TOKEN_ACCOUNTS__REGISTRY"
+		expected = f"accounts/registry:{digest(made)} canmi/web:{digest('canmi-token')}"
+		self.assertEqual(calls[0][3], {"SECRETS_SCOPE_TOKENS": expected})
+		for value in [made, "canmi-token", digest("canmi-token")]:
+			self.assertNotIn(value, said)
+
+	def test_the_app_named_is_given_the_token_on_each_of_its_nodes(self):
+		with mock.patch.object(seal.database, "upsert", return_value=True) as wrote:
+			said = self.quietly("accounts", "identities", "--app", "registry")
+		given = [call.args for call in wrote.call_args_list if call.args[1] == "registry"]
+		self.assertEqual([node for node, *_ in given], ["tyo", "sin", "rdu"])
+		token = "made-SECRETS_SCOPE_TOKEN_ACCOUNTS__IDENTITIES"
+		self.assertEqual(given[0][2:], ("secret.env", {"SECRETS_SCOPE_TOKEN": token}))
+		self.assertIn("registry reads its token, writing accounts/identities, as SECRETS_SCOPE_TOKEN", said)
+		self.assertNotIn("made-", said)
+
+	def test_a_dry_run_reaches_no_machine_and_prints_no_token(self):
+		explode = mock.Mock(side_effect=AssertionError("reached a core"))
+		with mock.patch.object(seal.database, "upsert", explode):
+			said = self.quietly("accounts", "registry", "--app", "registry", dry=True)
+		self.assertEqual(self.made, {"SECRETS_SCOPE_TOKEN_ACCOUNTS__REGISTRY": True})
+		self.assertIn(
+			"would set in /data/apps/secrets/secret.env: SECRETS_SCOPE_TOKENS=<digests of accounts/registry,"
+			" canmi/web>",
+			said,
+		)
+		self.assertIn("would set in /data/apps/registry/secret.env: SECRETS_SCOPE_TOKEN=<redacted>", said)
+		self.assertNotIn("canmi-token", said)
+
+	def test_what_is_not_a_scope_and_app_or_an_app_on_nodes_is_refused(self):
+		for arguments in [
+			[],
+			["accounts"],
+			["Accounts", "registry"],
+			["accounts", "-registry"],
+			["accounts", "my--app"],
+			["a--b", "registry"],
+			["accounts", "registry", "web"],
+			["accounts", "registry", "--app"],
+			["accounts", "registry", "--app", "site"],
+		]:
+			with mock.patch.object(seal.database, "upsert") as wrote, self.assertRaises(SystemExit):
+				self.quietly(*arguments)
+			wrote.assert_not_called()
+			self.assertEqual(self.made, {}, arguments)
+		with mock.patch.object(seal.database, "upsert", return_value=False), self.assertRaises(SystemExit):
+			self.quietly("accounts", "registry")
 
 if __name__ == "__main__":
 	unittest.main()
