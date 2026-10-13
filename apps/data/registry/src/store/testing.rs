@@ -1,0 +1,35 @@
+//! The SQL is run against a Postgres only where `REGISTRY_TEST_DATABASE_URL` names one, each test
+//! in a schema of its own: `mise run test-sql` starts one, and CI has its own. Without it those
+//! tests pass over themselves and say so, except in CI, where that is a failure.
+
+use super::Store;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static NEXT: AtomicU32 = AtomicU32::new(0);
+
+/// A store in a schema of its own in the test database, or None, said so, when there is none.
+pub async fn store() -> Option<Store> {
+	let Ok(url) = std::env::var("REGISTRY_TEST_DATABASE_URL") else {
+		let ci = std::env::var("CI").is_ok_and(|value| !value.is_empty());
+		assert!(!ci, "CI is set and REGISTRY_TEST_DATABASE_URL is not: CI runs every SQL test");
+		eprintln!("REGISTRY_TEST_DATABASE_URL is not set; this test's SQL is not run");
+		return None;
+	};
+	let schema = format!(
+		"test_{}_{}_{}",
+		std::process::id(),
+		jiff::Timestamp::now().as_millisecond(),
+		NEXT.fetch_add(1, Ordering::Relaxed)
+	);
+	let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls).await.unwrap();
+	tokio::spawn(connection);
+	client.batch_execute(&format!("CREATE SCHEMA {schema}")).await.unwrap();
+	let store = Store::connect(&url, Some(&schema)).unwrap();
+	store.migrate().await.unwrap();
+	Some(store)
+}
+
+/// A store over a database that is never reached, for what is refused before the store is asked.
+pub fn unreached() -> Store {
+	Store::connect("host=unreached.invalid user=nobody dbname=none", None).unwrap()
+}

@@ -12,6 +12,7 @@ members = [
 	"apps/compute/geo",
 	"apps/model/grok",
 	"apps/data/ledger",
+	"apps/data/registry",
 	"apps/data/database",
 	"apps/data/store",
 	"apps/data/primary",

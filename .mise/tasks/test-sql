@@ -9,7 +9,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 image="$(sed -n 's/^FROM \(postgres:[^ ]*\).*/\1/p' "$ROOT/apps/data/database/Dockerfile")"
 [ -n "$image" ] || { echo "test-sql: no postgres image in apps/data/database/Dockerfile" >&2; exit 1; }
 name="test-sql-$$"
-trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+trap 'docker rm -f -v "$name" >/dev/null 2>&1 || true' EXIT
 docker run -d --name "$name" -e POSTGRES_PASSWORD=test -p 127.0.0.1::5432 "$image" >/dev/null
 port="$(docker port "$name" 5432/tcp | head -n 1 | sed 's/.*://')"
 for _ in $(seq 1 60); do
@@ -18,5 +18,7 @@ for _ in $(seq 1 60); do
 done
 docker exec "$name" pg_isready -U postgres -h 127.0.0.1 >/dev/null || { echo "test-sql: Postgres did not start in 60 seconds" >&2; exit 1; }
 cd "$ROOT"
-LEDGER_TEST_DATABASE_URL="postgresql://postgres:test@127.0.0.1:$port/postgres" \
-	cargo test -p ledger-service "$@"
+# One database for both services' tests: each test makes a schema of its own in it.
+url="postgresql://postgres:test@127.0.0.1:$port/postgres"
+LEDGER_TEST_DATABASE_URL="$url" REGISTRY_TEST_DATABASE_URL="$url" \
+	cargo test -p ledger-service -p registry-service "$@"

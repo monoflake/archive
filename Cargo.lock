@@ -2014,6 +2014,7 @@ checksum = "851ca9db4932932d69f3ea811b1abe63087a0f740a47692619dd40d4899b68be"
 dependencies = [
  "bytes",
  "fallible-iterator 0.2.0",
+ "jiff",
  "postgres-protocol",
  "serde_core",
  "serde_json",
@@ -2278,6 +2279,24 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "registry-service"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "deadpool-postgres",
+ "http-body-util",
+ "jiff",
+ "mimalloc",
+ "response",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tower",
+]
 
 [[package]]
 name = "relay"

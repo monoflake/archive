@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+#MISE description="Run the platform's registry: `registry token` gives it its write token, `registry import` loads the nodes into it once, each with --dry-run"
+"""The operator's half of the platform's registry. See spec/architecture/registry.md and RFC ja5hm.
+
+`token` writes the registry's write token on every node it runs on, made and kept in secrets.json
+the first time; `import` reads infra's nodes.toml and puts each node into the registry, which is
+safe to run again. Values move over SSH on stdin, never on a command line, and `--dry-run` touches
+no machine and prints no secret. It borrows the database task's helpers rather than copying them.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+import tomllib
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def borrow(name):
+	"""A sibling task, which has no extension, loaded as a module; its `main` stays unrun."""
+	loader = importlib.machinery.SourceFileLoader(f"task_{name}", str(HERE / name))
+	module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+	loader.exec_module(module)
+	return module
+
+
+database = borrow("database")
+
+APP = "registry"
+PORT = 12013
+TOKEN = "REGISTRY_TOKEN"
+# Who a change is recorded as made by.
+BY = "import"
+TIMEOUT_SECONDS = 10
+
+
+def fail(message):
+	sys.exit(f"{APP}: {message}")
+
+
+def placements():
+	"""The core nodes the registry runs on, in order, from its service.toml."""
+	return database.manifest_of(APP)["placements"]
+
+
+def request_body(table, address, by=BY):
+	"""The body of `PUT /nodes/<name>`: the node's table as nodes.toml has it, plus its tailnet
+	IPv4. See spec/architecture/registry.md."""
+	return {"by": by, "node": {**table, "address": address}}
+
+
+def token(dry):
+	cores = placements()
+	value = database.stored_secret(TOKEN, dry)
+	for node in cores:
+		if dry:
+			print(
+				f"{APP}: {node}: would set, keeping every other line, mode 600, in"
+				f" /data/apps/{APP}/secret.env: {TOKEN}=<redacted>"
+			)
+		elif not database.upsert(node, APP, "secret.env", {TOKEN: value}):
+			fail(f"writing {TOKEN} failed on {node}")
+	print(f"{APP}: reads it on its next deploy; `mise run //repos/infra:node redeploy <node> {APP}`")
+
+
+def put(address, name, body, secret):
+	"""The registry's answer to one node at `address`; None when it did not answer at all."""
+	request = urllib.request.Request(
+		f"http://{address}:{PORT}/nodes/{name}",
+		data=json.dumps(body).encode(),
+		method="PUT",
+		headers={"Content-Type": "application/json", "Authorization": f"Bearer {secret}"},
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as answer:
+			return json.load(answer)
+	except urllib.error.HTTPError as refused:
+		fail(f"{name}: refused: {refused.code} {refused.read().decode().strip()}")
+	except (OSError, ValueError):
+		return None
+
+
+def load_nodes():
+	path = database.NODES
+	if not path.is_file():
+		fail(f"{path} is not there; clone infra beside this repository")
+	return tomllib.loads(path.read_text())
+
+
+def importing(dry):
+	nodes = load_nodes()
+	cores = placements()
+	secret = os.environ.get(TOKEN)
+	if not secret and not dry:
+		fail(f"secrets.json has no {TOKEN}; `registry token` makes it")
+	addresses = {node: database.tailnet_ipv4(node) for node in {*nodes, *cores}}
+	if dry:
+		print(
+			f"{APP}: would PUT each of {len(nodes)} nodes, by {BY!r}, to the first of"
+			f" {', '.join(cores)} whose registry answers on {PORT}, as Bearer <redacted>:"
+		)
+		for name, table in nodes.items():
+			body = request_body(table, addresses[name])
+			print(f"  PUT /nodes/{name} {json.dumps(body)}")
+		return
+	for name, table in nodes.items():
+		body = request_body(table, addresses[name])
+		answer = None
+		for core in cores:
+			answer = put(addresses[core], name, body, secret)
+			if answer is not None:
+				break
+		if answer is None:
+			fail(f"no registry answered on {', '.join(cores)}")
+		if answer.get("status") != "success":
+			fail(f"{name}: {answer}")
+		change = answer["data"].get("change")
+		print(f"{APP}: {name}: " + ("unchanged" if change is None else f"changed, change {change}"))
+
+
+def main():
+	arguments = sys.argv[1:]
+	dry = "--dry-run" in arguments or "-n" in arguments
+	rest = [a for a in arguments if a not in ("--dry-run", "-n")]
+	if len(rest) != 1 or rest[0] not in ("token", "import"):
+		fail("name one of token or import, and --dry-run to only say what")
+	(token if rest[0] == "token" else importing)(dry)
+
+
+if __name__ == "__main__":
+	main()

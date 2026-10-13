@@ -1,0 +1,24 @@
+# What host needs to run this service. The record is read by host on the machine, a program
+# deployed apart from this file, so it carries a version. See infra's spec/architecture/host.md.
+version = 1
+name = "registry"
+display_name = "Node Registry"
+# The three cores; its data is in the cluster, reached by the `DATABASE_URL` that `mise run
+# database grant platform registry` writes. See spec/architecture/registry.md and RFC ja5hm.
+placements = ["tyo", "sin", "rdu"]
+# Deployed by hand: the version a run would deploy needs the `DATABASE_URL` that only
+# `mise run database grant` makes. See spec/architecture/databases.md, "Where it runs, and which one
+# writes".
+rollout = "manual"
+
+[container]
+# One above relay's 12012, in the platform's own low block. See spec/architecture/services.md,
+# "A service keeps one port".
+port = 12013
+health = "/health"
+memory_mb = 64
+
+# Published on the machine for every node's relay, firewalled to the tailnet. See infra's
+# spec/architecture/host.md, "A role is asked for by the app and granted by the node".
+[shape]
+kind = "peer"
