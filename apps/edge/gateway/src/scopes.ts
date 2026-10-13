@@ -164,11 +164,11 @@ export const SCOPES: Readonly<Record<string, Scope>> = {
 			{
 				path: '/*',
 				cache: {
-					fulfilled: 900,
+					fulfilled: 0,
 					accepted: 0,
-					redirected: 900,
-					rejected: 300,
-					faulted: 300,
+					redirected: 0,
+					rejected: 0,
+					faulted: 0,
 				},
 				crawlable: false,
 				exposed: true,

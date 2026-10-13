@@ -9,8 +9,8 @@ good. It is written to by every service and read by the console, so a task whose
 ## A task, and the events that make it up
 
 **The ledger's model is a task and the events inside it, in order.** A service's log lines lose
-both: which task a line belongs to, and where among its lines it falls once several tasks interleave.
-Here every event belongs to one task and carries its place in it.
+both: which task a line belongs to, and where among its lines it falls once several tasks
+interleave. Here every event belongs to one task and carries its place in it.
 
 A **task** is one thing a service was asked to do:
 
@@ -63,25 +63,34 @@ events in `seq`, since its numbers are later moments.
 **Delivery is the service's to retry, and never its to wait on.** `libs/ledger` is the client every
 Rust service uses: a task or an event is handed to it and the call returns at once; a background
 task sends them in batches, and holds what could not be sent in a bounded queue, oldest dropped
-first, trying again with backoff. A ledger that is down costs records, never a capture.
+first, trying again with backoff. A ledger that is down costs records, never a capture. **What it
+holds or loses is said, once a streak**, since 2026-10-13, when a write's task looked lost and
+nothing had said a word: the ledger not answering and answering again, a batch it refused with the
+status it refused with, and the oldest dropped past the bound, each a line of counts and reasons,
+never a record. **A service stopping flushes what it holds within a bound**, `Ledger::flush`, five
+seconds inside the twenty host gives a container to stop, so a redeploy no longer drops what was
+waiting out a backoff. The client names its TLS provider, `ring`, so a dependency that brings
+another into a build cannot leave it unable to choose. **The gateway keeps nothing of the ledger**,
+as of the registry: a list read through it was a quarter of an hour old.
 
 **It is reached through Caddy, as a scope that is never public**: services write to
-`api.internal.ixc.one/ledger`, which every container reaches, since Caddy admits Docker's private range
-there. Like every scope it is on `api.canmi.app` too, where Access stands in front and our Workers
-reach it over VPC; it is in the gateway's table as a private scope, so a node's private side can
-send a write on to it from another node with `INTERNAL_TOKEN`, and the public never reaches it. Nothing asks for a
-token, as nothing on the private side does; host is the exception, and the ledger is not host.
+`api.internal.ixc.one/ledger`, which every container reaches, since Caddy admits Docker's private
+range there. Like every scope it is on `api.canmi.app` too, where Access stands in front and our
+Workers reach it over VPC; it is in the gateway's table as a private scope, so a node's private side
+can send a write on to it from another node with `INTERNAL_TOKEN`, and the public never reaches it.
+Nothing asks for a token, as nothing on the private side does; host is the exception, and the ledger
+is not host.
 
 ## Read by the console
 
 `GET /tasks` lists tasks newest first, a page at a time -- each item carries its `cursor`, and
-`before=<cursor>` of the last one asks for the next page, `limit` at most 500 -- narrowed by `service`, `state`, `kind`, `caller` or `parent`;
-`GET /tasks/{service}/{id}` is one, with its events in `seq` order and the tasks it is the parent
-of. The console's Tasks page is to read these: a list, and a task as a timeline -- each step, how long it
-took, where it failed, what started it and what it started. The answer is always the envelope. A
-query that does not read is forgiven rather than refused: a cursor that does not parse starts from
-the top, a filter naming no known value matches nothing, and a limit out of range is brought into
-it.
+`before=<cursor>` of the last one asks for the next page, `limit` at most 500 -- narrowed by
+`service`, `state`, `kind`, `caller` or `parent`; `GET /tasks/{service}/{id}` is one, with its
+events in `seq` order and the tasks it is the parent of. The console's Tasks page is to read these:
+a list, and a task as a timeline -- each step, how long it took, where it failed, what started it
+and what it started. The answer is always the envelope. A query that does not read is forgiven
+rather than refused: a cursor that does not parse starts from the top, a filter naming no known
+value matches nothing, and a limit out of range is brought into it.
 
 **The list is ours alone.** A record carries what somebody asked for -- a capture's URL is someone
 else's browsing -- so no route of a public scope lists records; a public caller reads its own task
@@ -102,8 +111,8 @@ year of captures at thousands a day, each a handful of events, is some hundreds 
 
 **The ledger's history is `platform_ledger` in the platform's cluster**, owned by the `platform`
 role and reached by the `DATABASE_URL` that `mise run database grant platform ledger` writes --
-[databases.md](databases.md), "The platform's alone, and its scope a role in it". So it is backed up,
-mirrored and failed over as the cluster is, and the ledger keeps nothing on its node.
+[databases.md](databases.md), "The platform's alone, and its scope a role in it". So it is backed
+up, mirrored and failed over as the cluster is, and the ledger keeps nothing on its node.
 
 - **Two tables on their natural keys**: tasks keyed by `service` and `id`, events by `service`,
   `task` and `seq`, so no key is ever minted. Times are nanoseconds in a `bigint`, since the cursor

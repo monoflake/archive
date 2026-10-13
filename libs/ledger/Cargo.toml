@@ -16,10 +16,15 @@ hyper = { version = "1.11.1", features = ["client", "http1"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "webpki-tokio"] }
 hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
 jiff = { version = "0.2", features = ["serde"] }
+# The crypto provider named, never chosen by what the rest of a build enables: with `aws-lc-rs` and
+# `ring` both on, rustls cannot choose and the sending task panics, every record with it.
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time"] }
 monoflake = { path = "../sdk" }
 
 [dev-dependencies]
-tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time"] }
+# A ledger to send to in tests, on 127.0.0.1, as the services' own tests stand one up.
+axum = "0.8.9"
+tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time", "net"] }

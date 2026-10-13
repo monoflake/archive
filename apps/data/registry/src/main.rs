@@ -46,7 +46,9 @@ async fn main() -> anyhow::Result<()> {
 	let shared: Shared = Arc::new(Registry { store, token, ledger, secrets });
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("registry: listening on {listen}");
-	axum::serve(listener, api::routes(shared)).with_graceful_shutdown(stopped()).await?;
+	axum::serve(listener, api::routes(shared.clone())).with_graceful_shutdown(stopped()).await?;
+	// What a write handed the ledger just before the stop goes with it, unless it is sent now.
+	registry_service::task::stopping(shared.ledger.as_ref(), registry_service::task::FLUSH).await;
 	Ok(())
 }
 

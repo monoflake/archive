@@ -1948,6 +1948,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 name = "ledger"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "bytes",
  "http-body-util",
  "hyper",
@@ -1955,6 +1956,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "monoflake",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

@@ -1,21 +1,20 @@
 //! The ledger's model of a task and its events, and the client every service hands them to. An
 //! item is handed over and the call returns at once; a background task batches what is queued and
 //! sends it to `POST {base}/events`, keeps what could not be sent in a bounded queue with the
-//! oldest dropped first, and tries again with backoff. A ledger that is down costs records, never
-//! the work. See spec/architecture/ledger.md.
+//! oldest dropped first, and tries again with backoff -- deliver.rs, which says once per streak
+//! whenever a record is held or lost. A ledger that is down costs records, never the work, and a
+//! service stopping flushes what it holds within a bound. See spec/architecture/ledger.md.
 
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Method, Request};
-use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::TokioExecutor;
+mod deliver;
+
+use deliver::Message;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -179,11 +178,13 @@ impl SeqTracker {
 	}
 }
 
-/// The handle a service keeps: cheap to clone, and never waits.
+/// The handle a service keeps: cheap to clone, and never waits but to flush.
 #[derive(Clone)]
 pub struct Ledger {
-	sender: mpsc::UnboundedSender<Item>,
+	sender: mpsc::UnboundedSender<Message>,
 	seqs: Arc<Mutex<SeqTracker>>,
+	/// How many items the background task holds, unsent.
+	held: Arc<AtomicUsize>,
 }
 
 impl Ledger {
@@ -196,15 +197,39 @@ impl Ledger {
 	}
 
 	pub fn to(base: String) -> Self {
+		Self::logging(base, Arc::new(|line: &str| eprintln!("{line}")))
+	}
+
+	/// `to`, its lines said to `log` rather than stderr.
+	pub(crate) fn logging(base: String, log: deliver::Log) -> Self {
 		let (sender, receiver) = mpsc::unbounded_channel();
-		tokio::spawn(deliver(base.trim_end_matches('/').to_owned(), receiver));
-		Self { sender, seqs: Arc::new(Mutex::new(SeqTracker::new())) }
+		let held = Arc::new(AtomicUsize::new(0));
+		let base = base.trim_end_matches('/').to_owned();
+		tokio::spawn(deliver::deliver(base, receiver, held.clone(), log));
+		Self { sender, seqs: Arc::new(Mutex::new(SeqTracker::new())), held }
 	}
 
 	/// Hand a task over. It is sent in the background, and a task that cannot be is lost rather
 	/// than waited for.
 	pub fn send(&self, task: Task) {
-		let _ = self.sender.send(Item::Task(task));
+		let _ = self.sender.send(Message::Item(Box::new(Item::Task(task))));
+	}
+
+	/// Everything handed over and not yet sent, sent now, past any backoff, for a service that is
+	/// stopping: waited on for `within` at most, and answered with how many items are still unsent.
+	/// What is unsent then is lost with the process, so the caller says how many.
+	pub async fn flush(&self, within: Duration) -> usize {
+		let deadline = tokio::time::Instant::now() + within;
+		let (answer, answered) = oneshot::channel();
+		if self.sender.send(Message::Flush { deadline, answer }).is_err() {
+			return self.held.load(Ordering::Relaxed);
+		}
+		// A moment past the bound, for the answer the background task gives at the bound.
+		let grace = deadline + Duration::from_millis(250);
+		match tokio::time::timeout_at(grace, answered).await {
+			Ok(Ok(held)) => held,
+			_ => self.held.load(Ordering::Relaxed),
+		}
 	}
 
 	/// Shorthand for `send` with a parentless task.
@@ -246,83 +271,7 @@ impl TaskEvents {
 			message: message.into(),
 			data,
 		};
-		let _ = self.ledger.sender.send(Item::Event(event));
-	}
-}
-
-/// Keep at most `WAITING`, the oldest going first.
-fn keep(waiting: &mut VecDeque<Item>, item: Item) {
-	waiting.push_back(item);
-	while waiting.len() > WAITING {
-		waiting.pop_front();
-	}
-}
-
-async fn deliver(base: String, mut receiver: mpsc::UnboundedReceiver<Item>) {
-	// Roots compiled in rather than read from the system: an image built from scratch has none.
-	let https = hyper_rustls::HttpsConnectorBuilder::new()
-		.with_webpki_roots()
-		.https_or_http()
-		.enable_http1()
-		.build();
-	let client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>> =
-		Client::builder(TokioExecutor::new()).build(https);
-	let mut waiting = VecDeque::new();
-	let mut backoff = BACKOFF.0;
-	loop {
-		if waiting.is_empty() {
-			match receiver.recv().await {
-				Some(item) => keep(&mut waiting, item),
-				None => return,
-			}
-		}
-		while let Ok(item) = receiver.try_recv() {
-			keep(&mut waiting, item);
-		}
-		let batch: Vec<&Item> = waiting.iter().take(BATCH).collect();
-		if send(&client, &base, &batch).await {
-			let sent = batch.len();
-			for _ in 0..sent {
-				waiting.pop_front();
-			}
-			backoff = BACKOFF.0;
-			continue;
-		}
-		// Waiting out the backoff, while what arrives meanwhile still queues.
-		let until = tokio::time::Instant::now() + backoff;
-		loop {
-			tokio::select! {
-				() = tokio::time::sleep_until(until) => break,
-				arrived = receiver.recv() => match arrived {
-					Some(item) => keep(&mut waiting, item),
-					None => break,
-				},
-			}
-		}
-		backoff = (backoff * 2).min(BACKOFF.1);
-	}
-}
-
-async fn send(
-	client: &Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>,
-	base: &str,
-	batch: &[&Item],
-) -> bool {
-	let Ok(body) = serde_json::to_vec(batch) else { return true };
-	let uri = format!("{base}/events");
-	let Ok(request) = Request::builder()
-		.method(Method::POST)
-		.uri(uri)
-		.header("content-type", "application/json")
-		.body(Full::new(Bytes::from(body)))
-	else {
-		return true;
-	};
-	match tokio::time::timeout(Duration::from_secs(10), client.request(request)).await {
-		// A refusal is the ledger's answer about this batch, and sending it again would not change
-		// it; only a failure to reach the ledger is tried again.
-		Ok(Ok(answer)) => !answer.status().is_server_error(),
-		_ => false,
+		let _ = self.ledger.sender.send(Message::Item(Box::new(Item::Event(event))));
 	}
 }
 
@@ -388,12 +337,13 @@ mod tests {
 	#[tokio::test]
 	async fn send_queues_a_task_with_its_parent_on_the_wire() {
 		let (sender, mut receiver) = mpsc::unbounded_channel();
-		let ledger = Ledger { sender, seqs: Arc::new(Mutex::new(SeqTracker::new())) };
+		let seqs = Arc::new(Mutex::new(SeqTracker::new()));
+		let ledger = Ledger { sender, seqs, held: Arc::default() };
 		let task =
 			Task { record: record("a"), parent: Some(Parent { service: "cron".into(), id: "p".into() }) };
 		ledger.send(task.clone());
-		let item = receiver.recv().await.unwrap();
-		assert_eq!(item, Item::Task(task));
+		let Some(Message::Item(item)) = receiver.recv().await else { panic!("an item") };
+		assert_eq!(*item, Item::Task(task));
 		assert!(
 			serde_json::to_string(&item).unwrap().contains(r#""parent":{"service":"cron","id":"p"}"#)
 		);
@@ -427,7 +377,7 @@ mod tests {
 	fn keeps_the_newest_when_too_many_wait() {
 		let mut waiting = VecDeque::new();
 		for n in 0..WAITING + 3 {
-			keep(&mut waiting, Item::Task(record(&n.to_string()).into()));
+			deliver::keep(&mut waiting, Item::Task(record(&n.to_string()).into()));
 		}
 		assert_eq!(waiting.len(), WAITING);
 		match waiting.front().unwrap() {

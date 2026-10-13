@@ -26,3 +26,13 @@ path = "/data"
 # Caddy on api.internal.ixc.one/ledger. See spec/architecture/ledger.md, "Pushed to, never asking".
 [api]
 public = false
+
+# Never kept: a list read through the gateway was served up to fifteen minutes old, and a task just
+# written looked lost. See spec/architecture/ledger.md, "Pushed to, never asking".
+[api.defaults.cache.success]
+fulfilled = "none"
+redirected = "none"
+
+[api.defaults.cache.failure]
+rejected = "none"
+faulted = "none"
