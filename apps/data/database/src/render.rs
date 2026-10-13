@@ -35,6 +35,10 @@ const RETRY: u64 = 10;
 const PRIMARY_START_TIMEOUT: u64 = 25;
 /// A standby more than this behind is never promoted: Pigsty's `pg_rpo`, defaults/main.yml.
 const MAXIMUM_LAG: u64 = 1024 * 1024;
+/// How many of the other cores confirm a commit before it is answered: `ANY 1`, under Patroni's
+/// quorum mode. `.mise/tasks/database`'s `commit` puts the same into a running cluster. See RFC
+/// bhybp.
+const CONFIRMING: u64 = 1;
 /// Not Pigsty's 250 for its tiny template, which counts on PgBouncer in front: every app's own pool
 /// connects straight to the cluster. The same on every member, as a standby must have at least the
 /// primary's.
@@ -126,8 +130,13 @@ pub fn patroni(config: &Config, machine: Machine, data: &Path, run: &Path) -> Va
 				"retry_timeout": RETRY,
 				"primary_start_timeout": PRIMARY_START_TIMEOUT,
 				"maximum_lag_on_failover": MAXIMUM_LAG,
-				// Asynchronous, as decided; tiny.yml turns it on only for an RPO of nothing.
-				"synchronous_mode": false,
+				// A commit waits for any one of the other cores, and only a member holding every
+				// commit so confirmed is promoted; with no core but the primary left, it waits rather
+				// than going asynchronous. A transaction may still ask `synchronous_commit = local`.
+				// See RFC bhybp.
+				"synchronous_mode": "quorum",
+				"synchronous_mode_strict": true,
+				"synchronous_node_count": CONFIRMING,
 				// A leader that reaches every member keeps leading while etcd is down; tiny.yml too.
 				"failsafe_mode": true,
 				"postgresql": {
@@ -176,10 +185,12 @@ pub fn patroni(config: &Config, machine: Machine, data: &Path, run: &Path) -> Va
 			// Patroni streams the WAL itself and refuses to be told how; the rate is tiny.yml's.
 			"basebackup": [{ "max-rate": "1000M" }, { "checkpoint": "fast" }],
 		},
-		// tiny.yml's clonefrom: a new member may copy a replica rather than cross to the primary.
+		// tiny.yml's clonefrom: a new member may copy a replica rather than cross to the primary. A
+		// member that never leads never confirms a commit either, so the quorum is the cores'.
 		"tags": {
 			"failover_priority": config.priority,
 			"nofailover": config.priority == 0,
+			"nosync": config.priority == 0,
 			"clonefrom": true,
 		},
 		"watchdog": { "mode": "off" },
@@ -192,6 +203,9 @@ fn shared() -> Value {
 	json!({
 		"max_connections": MAX_CONNECTIONS,
 		"superuser_reserved_connections": 10,
+		// Postgres's own default, said aloud: a commit waits for the quorum above unless its
+		// transaction sets `local`. See RFC bhybp.
+		"synchronous_commit": "on",
 		"track_commit_timestamp": "on",
 		// Logical, for a major's upgrade by logical replication; see spec/architecture/databases.md.
 		"wal_level": "logical",
@@ -352,7 +366,7 @@ mod tests {
 		let sha = patroni(&config("sha", 0), SMALL, &data, &run);
 		assert_eq!(
 			sha["tags"],
-			json!({ "failover_priority": 0, "nofailover": true, "clonefrom": true })
+			json!({ "failover_priority": 0, "nofailover": true, "nosync": true, "clonefrom": true })
 		);
 		assert_eq!(rendered["postgresql"]["config_dir"], "/tmp/postgresql");
 		assert_eq!(rendered["postgresql"]["parameters"]["unix_socket_directories"], "/tmp");
@@ -369,15 +383,34 @@ mod tests {
 		);
 		assert!(ttl >= wait + 2 * retry, "{ttl} {wait} {retry}");
 		assert_eq!(dcs["maximum_lag_on_failover"], 1_048_576);
-		assert_eq!(
-			(dcs["primary_start_timeout"].clone(), dcs["synchronous_mode"].clone()),
-			(json!(25), json!(false))
-		);
+		assert_eq!(dcs["primary_start_timeout"], 25);
 		assert_eq!(dcs["failsafe_mode"], true);
 		assert_eq!(dcs["postgresql"]["use_pg_rewind"], true);
 		assert_eq!(dcs["postgresql"]["remove_data_directory_on_rewind_failure"], true);
 		assert_eq!(rendered["postgresql"]["create_replica_methods"], json!(["wal_g", "basebackup"]));
 		assert_eq!(rendered["watchdog"]["mode"], "off");
+	}
+
+	#[test]
+	fn a_commit_waits_for_any_one_other_core_and_never_for_a_member_elsewhere() {
+		let (data, run) = (Path::new("/d"), Path::new("/r"));
+		let tyo = patroni(&config("tyo", 3), SMALL, data, run);
+		let dcs = &tyo["bootstrap"]["dcs"];
+		assert_eq!(dcs["synchronous_mode"], "quorum");
+		assert_eq!(dcs["synchronous_mode_strict"], true);
+		assert_eq!(dcs["synchronous_node_count"], 1);
+		assert_eq!(dcs["postgresql"]["parameters"]["synchronous_commit"], "on");
+		// Each core may confirm; every member that never leads never does.
+		for (node, priority) in [("tyo", 3), ("sin", 2), ("rdu", 1)] {
+			let tags = &patroni(&config(node, priority), SMALL, data, run)["tags"];
+			assert_eq!(tags["nofailover"], false, "{node}");
+			assert_eq!(tags["nosync"], false, "{node}");
+		}
+		for node in ["buf", "gvx", "sha"] {
+			let tags = &patroni(&config(node, 0), SMALL, data, run)["tags"];
+			assert_eq!(tags["nofailover"], true, "{node}");
+			assert_eq!(tags["nosync"], true, "{node}");
+		}
 	}
 
 	#[test]

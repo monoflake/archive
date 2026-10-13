@@ -31,13 +31,22 @@ placed by the platform's scheduler, whose leases are kept in it, so its members 
 `service.toml`, apart from the core -- infra's `spec/architecture/nodes.md`, "Three nodes are the
 core, named by the author".
 
-- **Replication is streaming, and asynchronous until RFC bhybp lands.** Today a commit waits for no
-  standby, and a failover can lose the last seconds of writes. Decided on 2026-10-12: **a write is
-  classed by what losing it costs**. What must not be disputed -- a resource's `spec`, a lease, a
-  unique name, a membership -- is confirmed by `ANY 1` of the other two cores under Patroni's quorum
-  mode, one round trip to `sin`. What can be replayed -- a ledger event, a reported status, a
-  measurement -- commits locally and is written near. Reads are from the nearest standby, with
-  correctness held by the revision a write carries, and a lease taken on the primary alone.
+- **A commit is confirmed by `ANY 1` of the other two cores, under Patroni's quorum mode**, since
+  RFC bhybp: `synchronous_mode: quorum`, `synchronous_node_count: 1` and `synchronous_commit = on`
+  by default, which put `ANY 1 (rdu, sin)` in `synchronous_standby_names` while `tyo` leads. Inside
+  Asia that is one round trip to `sin`, about 75 ms a commit; `rdu`, about 150 ms, confirms when
+  `sin` cannot. `buf`, `gvx` and `sha` are tagged `nosync` beside `nofailover`, so a commit is never
+  waited on by a member that cannot lead. **What can be replayed** -- a ledger event, a reported
+  status, a measurement -- sets `synchronous_commit = local` in its transaction and commits at once,
+  as the ledger's task and event writes do; what must not be disputed -- a resource's `spec`, a
+  lease, a unique name, a membership -- keeps the default. **Strict**: with no core but the primary
+  left, a confirmed commit waits rather than going asynchronous, except that Patroni then names `*`,
+  so a standby elsewhere still streaming confirms it. **Only a core holding every confirmed commit is
+  promoted**: losing one core at a time fails over by itself, but losing two at once -- Asia whole --
+  leaves the third waiting for the operator's `patronictl failover --candidate <node> --force`,
+  which accepts losing what only the lost cores held. The mode lives in etcd: `src/render.rs`
+  bootstraps a new cluster with it, and `mise run database commit quorum|async` sets it in a running
+  one, `async` being the way back.
 - **Three may lead, in order: `tyo`, then `sin`, then `rdu`**, the core, as Patroni's failover
   priorities, which `database env` writes. One member writes at a time, and the three are what may
   take over. `sin` is `tyo`'s twin 73 ms away, so a failover inside Asia keeps the primary near

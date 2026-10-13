@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-#MISE description="Run the platform's Postgres: `database env`, `database grant <scope> <app>`, `database switchover [node]`, `database quorum-auth`, `database mirror-env`, each with --dry-run"
+#MISE description="Run the platform's Postgres: `database env`, `database grant <scope> <app>`, `database switchover [node]`, `database commit quorum|async`, `database quorum-auth`, `database mirror-env`, each with --dry-run"
 """The operator's half of the platform's Postgres. See spec/architecture/databases.md.
 
 `env` writes what the database and its etcd, `quorum`, read on each node, `grant` gives an app its
 database and login and writes its `DATABASE_URL`, and `switchover` asks Patroni to move the leader,
-to the node named or to the one it chooses; `quorum-auth` turns etcd's password on, once;
-`mirror-env` gives each node's `store` the key it reads the backups with. Values move over SSH on
-stdin, never on a command line, and `--dry-run` touches no machine and prints no secret.
+to the node named or to the one it chooses; `commit` sets how a commit is confirmed in the running
+cluster; `quorum-auth` turns etcd's password on, once; `mirror-env` gives each node's `store` the
+key it reads the backups with. Values move over SSH on stdin, never on a command line, and
+`--dry-run` touches no machine and prints no secret.
 """
 
 import base64
@@ -86,6 +87,21 @@ MIRRORED = [
 ]
 # How long a switchover may take to show its new leader running.
 SWITCHING_SECONDS = 60
+# How a commit is confirmed, as Patroni keeps it in etcd: `quorum` waits for any one of the other
+# cores, and with none of them left waits rather than going asynchronous; `async` is how it ran
+# before, and the way back. src/render.rs bootstraps a new cluster with `quorum`, and a running
+# one, whose settings etcd already holds, takes either only from `commit`. See RFC bhybp.
+COMMIT_MODES = {
+	"quorum": {
+		"synchronous_mode": "quorum",
+		"synchronous_mode_strict": True,
+		"synchronous_node_count": 1,
+		"postgresql": {"parameters": {"synchronous_commit": "on"}},
+	},
+	"async": {"synchronous_mode": False, "synchronous_mode_strict": False},
+}
+# How long a change of mode may take to show in Patroni's view: a few of its 5 s loops.
+COMMIT_SECONDS = 30
 LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 # Runs on the node with KEY=VALUE lines on stdin and the app's directory and the file's name as
@@ -435,6 +451,97 @@ def switchover(arguments, dry):
 	switchover_to(addresses, password, names[0] if names else None, dry)
 
 
+def commit_refusal(view, nodes, mode):
+	"""Why `mode` must not be set on the cluster `view` shows, or None. Every member must answer, so
+	none is passed over unseen, and before `quorum` each that never leads must carry the `nosync` tag
+	its keeper renders, and another core must be streaming to confirm."""
+	if leader_of(view) is None:
+		return "the cluster has no leader now"
+	members = {m["name"]: m for m in view.get("members", [])}
+	absent = [node for node in nodes if node not in members]
+	if absent:
+		return f"{', '.join(absent)} not in Patroni's view; set it once every member answers"
+	if mode != "quorum":
+		return None
+	untagged = [n for n in nodes if n not in ORDER and not members[n].get("tags", {}).get("nosync")]
+	if untagged:
+		return (
+			f"{', '.join(untagged)} would confirm commits: redeploy each on the keeper that tags it"
+			" nosync first"
+		)
+	leader = leader_of(view)
+	if not any(members.get(n, {}).get("state") == "streaming" for n in ORDER if n != leader):
+		return f"no other core streams from {leader}, so no commit could be confirmed"
+	return None
+
+
+def commit_shows(view, mode):
+	"""Whether Patroni's view shows `mode` in force: a core named a quorum standby, or none."""
+	roles = {m.get("role") for m in view.get("members", [])}
+	if mode == "quorum":
+		return "quorum_standby" in roles
+	return not roles & {"quorum_standby", "sync_standby"}
+
+
+def commit(arguments, dry):
+	"""`mode` patched into the dynamic configuration Patroni keeps in etcd, through the leader's
+	REST, then waited on until Patroni's view shows it. See RFC bhybp."""
+	names = [a for a in arguments if not a.startswith("-")]
+	if len(names) != 1 or names[0] not in COMMIT_MODES:
+		fail(f"commit takes one of {', '.join(COMMIT_MODES)}")
+	mode = names[0]
+	body = COMMIT_MODES[mode]
+	nodes = placements()
+	if dry:
+		print(
+			f"database: would read the cluster from the first member whose REST on {REST} answers;"
+			f" refuse unless {', '.join(nodes)} each answer"
+			+ (
+				f", each of {', '.join(n for n in nodes if n not in ORDER)} is tagged nosync, and"
+				" another core streams"
+			)
+			* (mode == "quorum")
+			+ f"; then patch the leader's /config, as {REST_USER}, with {json.dumps(body)}, and wait"
+			f" up to {COMMIT_SECONDS} seconds for Patroni's view to show it"
+		)
+		return
+	password = os.environ.get(MADE["PATRONI_PASSWORD"])
+	if not password:
+		fail(f"secrets.json has no {MADE['PATRONI_PASSWORD']}; `database env` makes it")
+	addresses = {node: tailnet_ipv4(node) for node in nodes}
+	view = cluster(addresses)
+	if view is None:
+		fail("no member's Patroni answered")
+	print(f"database: now {shown(view)}")
+	reason = commit_refusal(view, nodes, mode)
+	if reason:
+		fail(reason)
+	leader = leader_of(view)
+	token = base64.b64encode(f"{REST_USER}:{password}".encode()).decode()
+	request = urllib.request.Request(
+		f"http://{addresses[leader]}:{REST}/config",
+		data=json.dumps(body).encode(),
+		method="PATCH",
+		headers={"Content-Type": "application/json", "Authorization": f"Basic {token}"},
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=10) as answer:
+			kept = json.load(answer)
+	except urllib.error.HTTPError as refused:
+		fail(f"{leader}'s Patroni refused: {refused.code} {refused.read().decode().strip()}")
+	except (OSError, ValueError) as error:
+		fail(f"{leader}'s Patroni did not answer: {error}")
+	settings = {key: kept.get(key) for key in ("synchronous_mode", "synchronous_mode_strict")}
+	print(f"database: etcd holds {json.dumps(settings)}")
+	for _ in range(COMMIT_SECONDS):
+		view = cluster(addresses) or {}
+		if commit_shows(view, mode):
+			print(f"database: {mode} in force; {shown(view)}")
+			return
+		time.sleep(1)
+	fail(f"Patroni's view did not show {mode} within {COMMIT_SECONDS}s; `patronictl list` says why")
+
+
 def openssl(directory, *args):
 	"""openssl in `directory`, every key and certificate a file there, never an argument."""
 	done = subprocess.run(["openssl", *args], cwd=directory, text=True, capture_output=True)
@@ -631,13 +738,14 @@ def main():
 		"env": env,
 		"grant": grant,
 		"switchover": switchover,
+		"commit": commit,
 		"quorum-auth": quorum_auth,
 		"mirror-env": mirror_env,
 	}
 	if not arguments or arguments[0] not in verbs:
 		fail(
-			"name one of env, grant <scope> <app>, switchover [node], quorum-auth or mirror-env, and"
-			" --dry-run to only say what"
+			"name one of env, grant <scope> <app>, switchover [node], commit quorum|async, quorum-auth"
+			" or mirror-env, and --dry-run to only say what"
 		)
 	verbs[arguments[0]](rest, dry)
 

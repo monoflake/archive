@@ -37,8 +37,8 @@ pub struct Config {
 	pub peers: BTreeMap<String, String>,
 	/// etcd's members, by address: every member of the database votes.
 	pub quorum: Vec<String>,
-	/// Patroni's `failover_priority`: higher is promoted first, and 0 never leads. See `ORDER` in
-	/// `.mise/tasks/database`, which writes it.
+	/// Patroni's `failover_priority`: higher is promoted first, and 0 never leads nor confirms a
+	/// commit. See `ORDER` in `.mise/tasks/database`, which writes it.
 	pub priority: u32,
 	pub superuser_password: String,
 	pub replication_password: String,

@@ -99,6 +99,34 @@ async fn a_batch_is_one_round_trip_however_many_items_it_carries() {
 	assert_eq!(store.list(&done, None, 500).await.unwrap().len(), 100);
 }
 
+#[tokio::test]
+async fn a_task_and_a_batch_commit_locally_and_nothing_else_does() {
+	let Some(store) = store().await else { return };
+	let mut client = store.pool.get().await.unwrap();
+	let setting = "SELECT current_setting('synchronous_commit')";
+	let read = async |client: &deadpool_postgres::Transaction<'_>| -> String {
+		client.query_one(setting, &[]).await.unwrap().get(0)
+	};
+	// Each in a transaction held open, so the setting is read before the commit lets it go.
+	let transaction = client.transaction().await.unwrap();
+	upsert_in(&transaction, task("local", State::Running, None)).await.unwrap();
+	assert_eq!(read(&transaction).await, "local");
+	transaction.rollback().await.unwrap();
+	let transaction = client.transaction().await.unwrap();
+	let (tasks, events) = (TaskColumns::default(), EventColumns::default());
+	let params: Vec<&(dyn ToSql + Sync)> =
+		tasks.params().into_iter().chain(events.params()).collect();
+	transaction.query_one(BATCH.as_str(), &params).await.unwrap();
+	assert_eq!(read(&transaction).await, "local");
+	transaction.rollback().await.unwrap();
+	// Alone, the statement is its own transaction, and the setting goes with it: whatever the
+	// session does next waits for the cluster's quorum again.
+	upsert_in(&client, task("local", State::Running, None)).await.unwrap();
+	let after: String = client.query_one(setting, &[]).await.unwrap().get(0);
+	assert_eq!(after, "on");
+	assert_eq!(store.get("shot", "local").await.unwrap().unwrap().task.record.id, "local");
+}
+
 #[test]
 fn a_cursor_round_trips_through_its_encoding() {
 	let cursor = Cursor { updated_at: 12345, id: "with:colon".into() };

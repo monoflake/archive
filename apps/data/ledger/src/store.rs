@@ -154,10 +154,17 @@ const RULE: &str = "ON CONFLICT (service, id) DO UPDATE SET
 		OR (excluded.asked_at = tasks.asked_at AND (tasks.finished_at IS NULL
 			OR (excluded.finished_at IS NOT NULL AND excluded.finished_at >= tasks.finished_at)))";
 
+/// A replayable write commits on the primary alone, waiting for no other core: what `SET LOCAL
+/// synchronous_commit = local` sets, but inside the statement, so the write stays one round trip.
+/// A task or an event lost with a primary is sent again, and kept once. Read by every statement
+/// that names `locally`. See RFC bhybp.
+const LOCALLY: &str = "locally AS (SELECT set_config('synchronous_commit', 'local', true))";
+
 static UPSERT: LazyLock<String> = LazyLock::new(|| {
 	format!(
-		"INSERT INTO tasks {COLUMNS} VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) {RULE} \
-		 RETURNING record"
+		"WITH {LOCALLY} INSERT INTO tasks {COLUMNS} SELECT $1::text, $2::text, $3::text, $4::text, \
+		 $5::text, $6::bigint, $7::bigint, $8::bigint, $9::text, $10::text, $11::jsonb FROM locally \
+		 {RULE} RETURNING record"
 	)
 });
 
@@ -180,12 +187,14 @@ fn events_into(from: usize) -> String {
 	)
 }
 
-/// A batch as one statement: its tasks upserted by the rule, one per task, and its events kept.
+/// A batch as one statement: its tasks upserted by the rule, one per task, and its events kept,
+/// committed `locally`.
 static BATCH: LazyLock<String> = LazyLock::new(|| {
 	format!(
-		"WITH upserted AS (INSERT INTO tasks {COLUMNS} {TASK_ARRAYS} {RULE} RETURNING 1), \
+		"WITH {LOCALLY}, upserted AS (INSERT INTO tasks {COLUMNS} {TASK_ARRAYS} {RULE} RETURNING 1), \
 		 appended AS ({} RETURNING 1) \
-		 SELECT (SELECT count(*) FROM upserted), (SELECT count(*) FROM appended)",
+		 SELECT (SELECT count(*) FROM upserted), (SELECT count(*) FROM appended), \
+		 (SELECT count(*) FROM locally)",
 		events_into(11)
 	)
 });
