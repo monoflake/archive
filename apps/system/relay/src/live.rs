@@ -6,16 +6,12 @@
 use crate::mesh::HEARTBEAT;
 use crate::presence::Entry;
 use crate::relay::{Change, Relay, State};
-use crate::socket::{Received, Socket, SocketError};
+use crate::socket::{Heard, Received, Socket, SocketError};
 use serde::Serialize;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
 use url::Url;
-
-/// A browser that has answered no ping through three heartbeats is gone.
-const SILENCE: Duration = Duration::from_secs(90);
 
 /// Whether a socket may open from `origin`: a page on the platform's `.app` or a name under it, or
 /// no page at all -- a client that is not a browser sends no `Origin`. Anything else is a page
@@ -47,15 +43,21 @@ pub enum Live {
 	},
 }
 
-pub async fn watch<S: Socket>(relay: Arc<Relay>, mut socket: S) -> Result<(), SocketError> {
+/// Until the browser closes or falls silent; a browser gone quiet is no failure.
+pub async fn watch<S: Socket>(relay: Arc<Relay>, socket: Heard<S>) -> Result<(), SocketError> {
+	match watching(relay, socket).await {
+		Err(error) if error.silent() => Ok(()),
+		ended => ended,
+	}
+}
+
+async fn watching<S: Socket>(relay: Arc<Relay>, mut socket: Heard<S>) -> Result<(), SocketError> {
 	let mut changes = relay.subscribe_changes();
 	send(&mut socket, &Live::Cluster(relay.state())).await?;
 	let mut heartbeat = tokio::time::interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
-	let mut heard = Instant::now();
 	loop {
 		tokio::select! {
 			received = socket.receive() => {
-				heard = Instant::now();
 				if received? == Received::Closed {
 					return Ok(());
 				}
@@ -68,9 +70,6 @@ pub async fn watch<S: Socket>(relay: Arc<Relay>, mut socket: S) -> Result<(), So
 				Err(RecvError::Closed) => return Ok(()),
 			},
 			_ = heartbeat.tick() => {
-				if heard.elapsed() >= SILENCE {
-					return Ok(());
-				}
 				socket.ping(bytes::Bytes::new()).await?;
 			}
 		}

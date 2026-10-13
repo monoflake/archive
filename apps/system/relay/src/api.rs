@@ -3,6 +3,7 @@
 
 use crate::history::answer::Asked;
 use crate::relay::Relay;
+use crate::socket::Heard;
 use crate::{live, mesh};
 use axum::Router;
 use axum::extract::rejection::QueryRejection;
@@ -117,7 +118,7 @@ async fn watched(
 		return response::failure(StatusCode::UPGRADE_REQUIRED, "invalid_method");
 	};
 	upgrade.on_upgrade(|socket| async move {
-		if let Err(error) = live::watch(relay, socket).await {
+		if let Err(error) = live::watch(relay, Heard::new(socket)).await {
 			eprintln!("relay: a browser's socket: {error}");
 		}
 	})
@@ -136,7 +137,7 @@ async fn neighbor(
 		return response::failure(StatusCode::UPGRADE_REQUIRED, "invalid_method");
 	};
 	upgrade.on_upgrade(|socket| async move {
-		if let Err(error) = mesh::converse(relay, None, socket).await {
+		if let Err(error) = mesh::converse(relay, None, Heard::new(socket)).await {
 			eprintln!("relay: a neighbor's socket: {error}");
 		}
 	})

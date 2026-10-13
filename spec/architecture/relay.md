@@ -53,8 +53,11 @@ relays share, `RELAY_SECRET`. The peers are the nodes the registry lists, follow
 kept on its disk -- [registry.md](registry.md), "Every relay follows it" -- with `RELAY_PEERS`,
 `name=address:port` by tailnet address, the seed a relay starts from; a relay skips its own. Each stream's first message
 carries the contract's version, and a neighbor speaking another is dropped. Both ends ping every
-three seconds -- the round trip below -- and drop a socket silent for ninety, and redial from one
-second, doubling to a minute. A browser's socket is pinged every thirty.
+three seconds -- the round trip below -- and drop a socket on which nothing has been heard for
+ninety seconds, a write still waiting on it included: a neighbor gone without closing stops taking
+what is written, and TCP alone would hold that write for a quarter of an hour, as it did on `nrt`
+and `hnd` on 2026-10-13. A dropped socket is redialed from one second, doubling to a minute. A
+browser's socket is pinged every thirty and dropped by the same ninety.
 
 **A browser opens `/live` on `relay.canmi.app`**, behind Access, and is sent the whole cluster, then
 every change; `/state` answers the same once, for the console's polling. **`/live` admits a page on

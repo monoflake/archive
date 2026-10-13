@@ -8,7 +8,7 @@ use crate::cluster::{Carried, Versions};
 use crate::config::Peer;
 use crate::relay::{Relay, Update, VERSION};
 use crate::runs::Batch;
-use crate::socket::{Dial, Received, Socket, SocketError};
+use crate::socket::{Dial, Heard, Received, Socket, SocketError};
 use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, InvalidHeaderValue};
 use bytes::Bytes;
@@ -37,9 +37,6 @@ pub const HEARTBEAT: Duration = Duration::from_secs(30);
 /// a slower one leaves the figure a round behind. Two ten-byte frames a socket, beside snapshots of
 /// kilobytes every round. See spec/architecture/relay.md, "The round trip to each neighbor".
 pub const PING: Duration = crate::own::EVERY;
-
-/// A neighbor that has sent nothing, not even a pong, for ninety seconds is gone.
-const SILENCE: Duration = Duration::from_secs(90);
 
 /// How long the other end has to say who it is.
 const INTRODUCTION: Duration = Duration::from_secs(10);
@@ -95,8 +92,6 @@ pub enum MeshError {
 	Unintroduced,
 	#[error("it says it is `{0}`")]
 	Stranger(String),
-	#[error("nothing heard for {0:?}")]
-	Silent(Duration),
 	#[error("it closed the socket")]
 	Closed,
 }
@@ -134,12 +129,12 @@ impl Drop for Speaking<'_> {
 	}
 }
 
-/// One socket to a neighbor, from the introductions until it closes. `expected` is the neighbor
-/// dialed, and none for one that dialed here.
+/// One socket to a neighbor, from the introductions until it closes or falls silent, either end
+/// alike. `expected` is the neighbor dialed, and none for one that dialed here.
 pub async fn converse<S: Socket>(
 	relay: Arc<Relay>,
 	expected: Option<&str>,
-	mut socket: S,
+	mut socket: Heard<S>,
 ) -> Result<(), MeshError> {
 	// Subscribed before saying what is held, so nothing taken meanwhile is missed.
 	let mut updates = relay.subscribe();
@@ -183,11 +178,9 @@ pub async fn converse<S: Socket>(
 	let mut comparison = tokio::time::interval_at(Instant::now() + COMPARISON, COMPARISON);
 	let mut ping = tokio::time::interval(PING);
 	let origin = Instant::now();
-	let mut heard = Instant::now();
 	loop {
 		tokio::select! {
 			received = socket.receive() => {
-				heard = Instant::now();
 				match received? {
 					Received::Text(text) => match serde_json::from_str(&text)? {
 						Message::Node { node, state } => {
@@ -257,9 +250,6 @@ pub async fn converse<S: Socket>(
 				}
 			}
 			_ = ping.tick() => {
-				if heard.elapsed() >= SILENCE {
-					return Err(MeshError::Silent(SILENCE));
-				}
 				socket.ping(stamp(origin, Instant::now())).await?;
 			}
 		}
@@ -374,7 +364,7 @@ pub async fn keep(relay: Arc<Relay>, peer: Peer) {
 			Ok(socket) => {
 				eprintln!("relay: holding {}", peer.name);
 				let opened = Instant::now();
-				let ended = converse(relay.clone(), Some(&peer.name), socket).await;
+				let ended = converse(relay.clone(), Some(&peer.name), Heard::new(socket)).await;
 				match ended {
 					Ok(()) => eprintln!("relay: {} closed", peer.name),
 					Err(error) => eprintln!("relay: lost {}: {error}", peer.name),
@@ -453,9 +443,8 @@ mod tests {
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
 
-		converse(relay.clone(), Some("tyo"), Fake { incoming, sent: sent.clone(), echo: None })
-			.await
-			.unwrap();
+		let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
+		converse(relay.clone(), Some("tyo"), fake).await.unwrap();
 		let sent = sent.lock().unwrap();
 		assert!(matches!(&sent[0], Message::Hello { node, versions, .. }
 			if node == "rdu" && *versions == relay.versions()));
@@ -483,9 +472,8 @@ mod tests {
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
-		converse(relay.clone(), Some("tyo"), Fake { incoming, sent: sent.clone(), echo: None })
-			.await
-			.unwrap();
+		let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
+		converse(relay.clone(), Some("tyo"), fake).await.unwrap();
 		sent.lock().unwrap().clone()
 	}
 
@@ -540,9 +528,8 @@ mod tests {
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
-		converse(relay.clone(), Some("tyo"), Fake { incoming, sent: sent.clone(), echo: None })
-			.await
-			.unwrap();
+		let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
+		converse(relay.clone(), Some("tyo"), fake).await.unwrap();
 		sent.lock().unwrap().clone()
 	}
 
@@ -596,7 +583,7 @@ mod tests {
 				minutes: None,
 			};
 			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
-			let fake = Fake { incoming, sent: Arc::default(), echo: None };
+			let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: None });
 			let refused = converse(relay.clone(), expected, fake).await;
 			assert!(matches!(refused, Err(MeshError::Stranger(named)) if named == said));
 		}
@@ -614,7 +601,7 @@ mod tests {
 			minutes: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
-		let fake = Fake { incoming, sent: Arc::default(), echo: Some(feed) };
+		let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: Some(feed) });
 		let conversing = tokio::spawn(converse(relay.clone(), Some("tyo"), fake));
 		let timed = async {
 			while relay.round_trips().is_empty() {
@@ -626,6 +613,58 @@ mod tests {
 		let round_trips = relay.round_trips();
 		assert_eq!(round_trips.keys().collect::<Vec<_>>(), ["tyo"]);
 		assert!((0.0..1000.0).contains(&round_trips["tyo"]));
+	}
+
+	/// A socket to a neighbor gone without closing: the hello goes, and every write after it waits on
+	/// a buffer nobody drains, as one does once the kernel's is full.
+	struct Stuck {
+		incoming: mpsc::UnboundedReceiver<Received>,
+		written: usize,
+	}
+
+	impl Socket for Stuck {
+		async fn send_text(&mut self, _: String) -> Result<(), SocketError> {
+			self.written += 1;
+			if self.written > 1 {
+				std::future::pending::<()>().await;
+			}
+			Ok(())
+		}
+
+		async fn ping(&mut self, _: Bytes) -> Result<(), SocketError> {
+			std::future::pending().await
+		}
+
+		async fn receive(&mut self) -> Result<Received, SocketError> {
+			Ok(self.incoming.recv().await.unwrap_or(Received::Closed))
+		}
+	}
+
+	#[tokio::test]
+	async fn a_neighbor_that_takes_nothing_written_is_dropped_once_silent() {
+		let relay = relay("rdu");
+		let (feed, incoming) = mpsc::unbounded_channel();
+		let hello = Message::Hello {
+			version: VERSION,
+			node: "tyo".into(),
+			versions: Versions::new(),
+			runs: None,
+			minutes: None,
+		};
+		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
+		let silence = Duration::from_millis(300);
+		let stuck = Heard::within(Stuck { incoming, written: 0 }, silence);
+		let opened = Instant::now();
+		let conversing = tokio::spawn(converse(relay.clone(), Some("tyo"), stuck));
+		// This node's next snapshot, which the socket starts to write and never finishes.
+		relay.take("rdu", Carried { version: 1, snapshot: Arc::new(serde_json::json!({})) }, None);
+		let ended = tokio::time::timeout(Duration::from_secs(5), conversing)
+			.await
+			.expect("dropped, not left waiting on the write")
+			.unwrap();
+		assert!(matches!(ended, Err(MeshError::Socket(error)) if error.silent()));
+		assert!(opened.elapsed() >= silence);
+		drop(feed);
 	}
 
 	#[test]
