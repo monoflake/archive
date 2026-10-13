@@ -31,8 +31,9 @@ pub fn record(node: Value) -> Result<Map<String, Value>, String> {
 	if !TIERS.contains(&text("tier")?) {
 		return Err(format!("`tier` is one of {}", TIERS.join(", ")));
 	}
-	if !reference_or_code(text("domain")?) {
-		return Err("`domain` is a domain's id, or a provider code, as `oci` or `oci-2`".into());
+	// Read from its account, never written -- RFC 32hd9.
+	if record.contains_key("domain") {
+		return Err("`domain` is not written: a node's failure domain is its account".into());
 	}
 	if !SYSTEMS.contains(&text("system")?) {
 		return Err(format!("`system` is one of {}", SYSTEMS.join(", ")));
@@ -54,8 +55,8 @@ pub fn record(node: Value) -> Result<Map<String, Value>, String> {
 	{
 		return Err(format!("`hosting` is one of {}", HOSTINGS.join(", ")));
 	}
-	if record.get("account").is_some_and(|account| !account.as_str().is_some_and(reference_or_code)) {
-		return Err("`account` is an account's id, or a provider code, as `oci` or `oci-2`".into());
+	if record.get("account").is_some_and(|account| !account.as_str().is_some_and(kinds::is_id)) {
+		return Err("`account` is the id of the account the node is under".into());
 	}
 	if record.get("roles").is_some_and(|roles| !roles_are_valid(roles)) {
 		return Err(format!("`roles` is a list of one or more of {}, each once", ROLES.join(", ")));
@@ -71,22 +72,6 @@ fn roles_are_valid(roles: &Value) -> bool {
 		})
 }
 
-/// A node's `account` or `domain`: the id of the resource it names, which the API checks the
-/// registry holds, or, until `nodes.toml` writes ids, the provider's code it held before -- RFC
-/// 32hd9. Read by shape, and no code has an id's.
-fn reference_or_code(value: &str) -> bool {
-	kinds::is_id(value) || domain_is_valid(value)
-}
-
-/// `oci`, `az`, `oci-2`: the provider, and which of its accounts when there is more than one.
-fn domain_is_valid(domain: &str) -> bool {
-	let (letters, number) = domain.split_once('-').unwrap_or((domain, ""));
-	!letters.is_empty()
-		&& letters.bytes().all(|b| b.is_ascii_lowercase())
-		&& (domain.len() == letters.len()
-			|| (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())))
-}
-
 fn is_year(year: u64) -> bool {
 	(1000..=9999).contains(&year)
 }
@@ -100,13 +85,12 @@ mod tests {
 		json!({
 			"address": "100.64.0.9",
 			"tier": "datacenter",
-			"domain": "oci-2",
 			"system": "debian",
 			"core": true,
 			"expiry": 2036,
 			"retired": false,
 			"hosting": "datacenter",
-			"account": "oci-2",
+			"account": "0123456789abcdef",
 			"roles": ["compute", "core"],
 			"canary": true,
 			"grants": ["database"],
@@ -153,7 +137,7 @@ mod tests {
 
 	#[test]
 	fn every_required_key_is_required() {
-		for key in ["address", "tier", "domain", "system"] {
+		for key in ["address", "tier", "system"] {
 			assert_eq!(record(without(key)), Err(format!("`{key}` is required")));
 		}
 	}
@@ -173,12 +157,8 @@ mod tests {
 			("address", json!("fd7a::1")),
 			("address", json!(1)),
 			("tier", json!("cloud")),
-			("domain", json!("OCI")),
-			("domain", json!("oci-")),
-			("domain", json!("-2")),
-			("domain", json!("oci-a")),
-			("domain", json!("oci-2-3")),
-			("domain", json!("")),
+			("domain", json!("oci")),
+			("domain", json!("0123456789abcdef")),
 			("system", json!("ubuntu")),
 			("core", json!("yes")),
 			("core", json!(null)),
@@ -192,8 +172,10 @@ mod tests {
 			("hosting", json!("home")),
 			("hosting", json!("Datacenter")),
 			("hosting", json!(null)),
-			("account", json!("OCI")),
-			("account", json!("oci-")),
+			("account", json!("oci")),
+			("account", json!("oci-2")),
+			("account", json!("0123456789ABCDEF")),
+			("account", json!("0123456789abcde")),
 			("account", json!(2)),
 			("roles", json!([])),
 			("roles", json!("compute")),
@@ -216,25 +198,6 @@ mod tests {
 			[json!(["compute"]), json!(["storage", "core"]), json!(["core", "storage", "compute"])]
 		{
 			assert!(record(with("roles", roles.clone())).is_ok(), "{roles}");
-		}
-	}
-
-	#[test]
-	fn an_account_or_a_domain_is_an_id_or_until_then_a_code() {
-		for key in ["account", "domain"] {
-			for value in ["0123456789abcdef", "oci-2", "int"] {
-				assert!(record(with(key, json!(value))).is_ok(), "{key}: {value}");
-			}
-			for value in ["0123456789ABCDEF", "0123456789abcde", "oci 2", ""] {
-				assert!(record(with(key, json!(value))).is_err(), "{key}: {value}");
-			}
-		}
-	}
-
-	#[test]
-	fn takes_each_domain_nodes_toml_has() {
-		for domain in ["oci", "oci-2", "az", "rkn", "int"] {
-			assert!(domain_is_valid(domain), "{domain}");
 		}
 	}
 }

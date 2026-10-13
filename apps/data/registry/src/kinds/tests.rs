@@ -1,5 +1,5 @@
 use super::*;
-use crate::{account, app, domain};
+use crate::{account, app};
 use serde_json::{Value, json};
 
 /// Whether `kind`'s validation stores `spec`.
@@ -8,7 +8,6 @@ fn accepts(kind: &Description, spec: Value) -> bool {
 		Kind::Node => node::record(spec).is_ok(),
 		Kind::App => app::spec(spec).is_ok(),
 		Kind::Account => account::spec(spec).is_ok(),
-		Kind::Domain => domain::spec(spec).is_ok(),
 	}
 }
 
@@ -19,13 +18,12 @@ fn example(kind: &Description) -> Value {
 		Kind::Node => json!({
 			"address": "100.64.0.9",
 			"tier": "datacenter",
-			"domain": "oci-2",
 			"system": "debian",
 			"core": true,
 			"expiry": 2036,
 			"retired": false,
 			"hosting": "datacenter",
-			"account": "oci-2",
+			"account": "0123456789abcdef",
 			"roles": ["compute", "core"],
 			"canary": true,
 			"grants": ["database"],
@@ -42,7 +40,6 @@ fn example(kind: &Description) -> Value {
 			"provider": "oracle",
 			"identities": [{ "kind": "email", "value": "me@example.com" }],
 		}),
-		Kind::Domain => json!({ "note": "Oracle's Tokyo and Singapore, one card" }),
 	}
 }
 
@@ -116,7 +113,17 @@ fn each_kind_answers_its_plural() {
 		assert_eq!(answered["plural"], json!(kind.kind.plural()));
 	}
 	let plurals: Vec<&str> = CATALOG.iter().map(|kind| kind.plural).collect();
-	assert_eq!(plurals, ["nodes", "apps", "accounts", "domains"]);
+	assert_eq!(plurals, ["nodes", "apps", "accounts"]);
+}
+
+/// An account has no name, and the catalog says so; every other kind is named -- RFC 32hd9.
+#[test]
+fn a_kind_without_a_name_is_marked_so() {
+	for kind in CATALOG {
+		assert_eq!(kind.named, kind.kind.named());
+		let answered = serde_json::to_value(kind).unwrap();
+		assert_eq!(answered["named"], json!(kind.kind != Kind::Account), "{}", kind.kind.name());
+	}
 }
 
 /// A reference names the kind it points at, and no other field names one.
@@ -240,6 +247,7 @@ fn a_kind_is_answered_in_the_shape_the_console_reads() {
 		json!({
 			"name": "app",
 			"plural": "apps",
+			"named": true,
 			"fields": [
 				{ "name": "placements", "type": "list", "editable": true, "required": true },
 				{ "name": "release", "type": "object", "editable": true, "required": false },

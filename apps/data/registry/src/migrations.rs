@@ -113,6 +113,57 @@ pub const MIGRATIONS: &[Migration] = &[
 			CREATE UNIQUE INDEX domains_by_id ON domains (id);
 		"#,
 	},
+	// An account has no name and is kept by its id, a change naming none; the `domain` kind leaves,
+	// and with it every node's `domain` and an `account` holding a provider's code, never an id. Each
+	// is a change in the history as a write is, by `migration`; a resource's revision is now read by
+	// its id, so every change to one held is given it first. See RFC 32hd9 and
+	// spec/architecture/registry.md.
+	Migration {
+		version: 5,
+		name: "accounts by id alone, and no domains",
+		kind: Kind::Contract,
+		sql: r#"
+			ALTER TABLE accounts DROP CONSTRAINT accounts_pkey;
+			ALTER TABLE accounts ADD CONSTRAINT accounts_pkey PRIMARY KEY USING INDEX accounts_by_id;
+			ALTER TABLE accounts ALTER COLUMN name DROP NOT NULL;
+			ALTER TABLE changes ALTER COLUMN name DROP NOT NULL;
+			UPDATE changes c SET resource = r.id
+				FROM (
+					SELECT 'node' AS kind, name, id FROM nodes
+					UNION ALL SELECT 'app', name, id FROM apps
+					UNION ALL SELECT 'account', name, id FROM accounts
+				) r
+				WHERE c.resource IS NULL AND c.kind = r.kind AND c.name = r.name AND c.id > coalesce(
+					(SELECT max(d.id) FROM changes d
+						WHERE d.kind = c.kind AND d.name = c.name AND d.after IS NULL),
+					0
+				);
+			CREATE INDEX changes_by_resource_id ON changes (kind, resource, id);
+
+			INSERT INTO changes (kind, by, name, before, after, resource, task)
+				SELECT 'domain', 'migration', name, spec, NULL, id, registry_id()
+				FROM domains ORDER BY name;
+			DROP TABLE domains;
+
+			CREATE FUNCTION registry_stripped(record jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+				SELECT CASE
+					WHEN record->>'account' !~ '^[0-9a-f]{16}$' THEN record - 'domain' - 'account'
+					ELSE record - 'domain'
+				END
+			$$;
+			INSERT INTO changes (kind, by, name, before, after, resource, task)
+				SELECT 'node', 'migration', name, record, registry_stripped(record), id, registry_id()
+				FROM nodes WHERE record <> registry_stripped(record) ORDER BY name;
+			UPDATE nodes SET record = registry_stripped(record), updated_at = now()
+				WHERE record <> registry_stripped(record);
+			DROP FUNCTION registry_stripped(jsonb);
+
+			INSERT INTO changes (kind, by, name, before, after, resource, task)
+				SELECT 'account', 'migration', name, spec, spec, id, registry_id()
+				FROM accounts WHERE name IS NOT NULL ORDER BY name;
+			UPDATE accounts SET name = NULL, updated_at = now() WHERE name IS NOT NULL;
+		"#,
+	},
 ];
 
 /// The advisory lock every registry takes before migrating: "registry" in ASCII.

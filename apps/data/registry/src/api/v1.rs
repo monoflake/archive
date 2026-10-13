@@ -4,18 +4,18 @@
 
 use super::{Shared, by_is_valid, invalid_name, refused};
 use crate::kinds::{self, Kind, Refusal};
-use crate::store::{Key, Resource, Set};
-use crate::{account, app, domain, node, task};
+use crate::store::{Key, Resource, Set, Target};
+use crate::{account, app, node, task};
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use serde_json::{Map, Value, json};
 
 /// Every kind the registry holds, each answered at `/v1/<plural>`.
-const KINDS: [Kind; 4] = [Kind::Node, Kind::App, Kind::Account, Kind::Domain];
+const KINDS: [Kind; 3] = [Kind::Node, Kind::App, Kind::Account];
 
 pub fn routes() -> Router<Shared> {
 	let mut router = Router::new().route("/v1/kinds", get(kinds));
@@ -25,7 +25,8 @@ pub fn routes() -> Router<Shared> {
 	router.route("/v1/{kind}", any(no_such_kind)).route("/v1/{kind}/{name}", any(no_such_kind))
 }
 
-/// One kind's collection and its members, by id or by name.
+/// One kind's collection and its members, by id or by name; a kind with no name is made by a
+/// `POST` to its collection, which draws its id -- RFC 32hd9.
 fn resources(kind: Kind) -> Router<Shared> {
 	let plural = kind.plural();
 	let one = get(move |Path(key): Path<String>, State(registry): State<Shared>| {
@@ -39,9 +40,16 @@ fn resources(kind: Kind) -> Router<Shared> {
 			patch(registry, kind, key, headers, body)
 		},
 	);
-	let list = get(move |State(registry): State<Shared>, Query(asked): Query<Asked>| {
+	let mut list = get(move |State(registry): State<Shared>, Query(asked): Query<Asked>| {
 		listed(registry, kind, asked)
 	});
+	list = if kind.named() {
+		list.merge(post(move || made_by_name(kind)))
+	} else {
+		list.merge(post(move |State(registry): State<Shared>, headers: HeaderMap, body| {
+			create(registry, kind, headers, body)
+		}))
+	};
 	Router::new().route(&format!("/v1/{plural}"), list).route(&format!("/v1/{plural}/{{key}}"), one)
 }
 
@@ -68,13 +76,16 @@ struct Asked {
 /// revision is the newest change either way, since a filter narrows what is answered rather than
 /// what it was read at.
 async fn listed(registry: Shared, kind: Kind, asked: Asked) -> Response {
+	if asked.name.is_some() && !kind.named() {
+		return unnamed(kind);
+	}
 	match registry.store.resources(kind).await {
 		Ok(mut listed) => {
 			if let (Kind::App, Some(node)) = (kind, &asked.node) {
 				listed.items.retain(|app| app::is_placed_on(&app.spec, node));
 			}
 			if let Some(name) = &asked.name {
-				listed.items.retain(|resource| resource.name == *name);
+				listed.items.retain(|resource| resource.name.as_deref() == Some(name.as_str()));
 			}
 			response::success(StatusCode::OK, listed)
 		}
@@ -89,15 +100,31 @@ type Refused = Box<Response>;
 fn absent(kind: Kind) -> Response {
 	match kind {
 		Kind::Node => response::failure(StatusCode::NOT_FOUND, "no_such_node"),
-		Kind::App | Kind::Account | Kind::Domain => {
-			response::failure(StatusCode::NOT_FOUND, "no_such_resource")
-		}
+		Kind::App | Kind::Account => response::failure(StatusCode::NOT_FOUND, "no_such_resource"),
 	}
 }
 
-/// The resource `key` names, by its id or by its name -- RFC 2kuvi.
+/// A `POST` to a named kind's collection, which is made by its name instead.
+async fn made_by_name(kind: Kind) -> Response {
+	let message = format!("A {} is made by PUT /v1/{}/<name>", kind.name(), kind.plural());
+	response::failure_with(StatusCode::METHOD_NOT_ALLOWED, "invalid_method", message)
+}
+
+/// What a name answers where a kind has none: refused, saying the id is what names one.
+fn unnamed(kind: Kind) -> Response {
+	let (name, plural) = (kind.name(), kind.plural());
+	let message = format!("An {name} has no name: it is its id, made by POST /v1/{plural}");
+	response::failure_with(StatusCode::BAD_REQUEST, "invalid_name", message)
+}
+
+/// The resource `key` names, by its id or by its name -- RFC 2kuvi; a kind with no name, by its id
+/// alone.
 async fn found(registry: &Shared, kind: Kind, key: &str) -> Result<Resource, Refused> {
-	match registry.store.resource(kind, Key::of(key)).await {
+	let key = Key::of(key);
+	if matches!(key, Key::Name(_)) && !kind.named() {
+		return Err(Box::new(absent(kind)));
+	}
+	match registry.store.resource(kind, key).await {
 		Ok(Some(resource)) => Ok(resource),
 		Ok(None) => Err(Box::new(absent(kind))),
 		Err(error) => Err(Box::new(store_unavailable(error))),
@@ -120,8 +147,9 @@ struct Written {
 }
 
 /// The body of a write, or its refusal. `status` and `drift` are a controller's and the platform's
-/// to write, never a person's, so a body carrying either is refused whatever it holds.
-fn written(body: Result<axum::Json<Value>, JsonRejection>) -> Result<Written, Refused> {
+/// to write, never a person's, so a body carrying either is refused whatever it holds, and so is a
+/// `name` for a kind that has none.
+fn written(kind: Kind, body: Result<axum::Json<Value>, JsonRejection>) -> Result<Written, Refused> {
 	let invalid = |message: &str| {
 		Box::new(response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message))
 	};
@@ -133,6 +161,14 @@ fn written(body: Result<axum::Json<Value>, JsonRejection>) -> Result<Written, Re
 			StatusCode::BAD_REQUEST,
 			"forbidden_field",
 			format!("`{key}` is not written by a person"),
+		)));
+	}
+	if body.contains_key("name") && !kind.named() {
+		let message = format!("An {} has no name to write", kind.name());
+		return Err(Box::new(response::failure_with(
+			StatusCode::BAD_REQUEST,
+			"forbidden_field",
+			message,
 		)));
 	}
 	let Some(by) = body.get("by").and_then(Value::as_str).filter(|by| by_is_valid(by)) else {
@@ -147,39 +183,49 @@ fn written(body: Result<axum::Json<Value>, JsonRejection>) -> Result<Written, Re
 }
 
 /// A write's refusal, if it has one, or what it says: the token every write takes, and, where the
-/// key is a name, one its kind can have. A key of an id's shape is an id, and is looked up later.
+/// key is a name, one its kind can have. A key of an id's shape is an id, and is looked up later;
+/// a kind with no name takes no other. `key` is none for a `POST`, which names nothing.
 fn asked(
 	registry: &Shared,
 	headers: &HeaderMap,
 	kind: Kind,
-	key: &str,
+	key: Option<&str>,
 	body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Result<Written, Refused> {
 	if let Some(refusal) = refused(registry, headers) {
 		return Err(Box::new(refusal));
 	}
-	if let Key::Name(name) = Key::of(key) {
+	if let Some(Key::Name(name)) = key.map(Key::of) {
 		match kind {
+			_ if !kind.named() => return Err(Box::new(unnamed(kind))),
 			Kind::Node if !node::name_is_valid(name) => return Err(Box::new(invalid_name())),
-			Kind::App | Kind::Account | Kind::Domain if !kinds::label_is_valid(name) => {
+			Kind::App | Kind::Account if !kinds::label_is_valid(name) => {
 				return Err(Box::new(response::failure_with(
 					StatusCode::BAD_REQUEST,
 					"invalid_name",
 					"A name is one DNS label, and never 16 hexadecimal digits, which is an id",
 				)));
 			}
-			Kind::Node | Kind::App | Kind::Account | Kind::Domain => {}
+			Kind::Node | Kind::App | Kind::Account => {}
 		}
 	}
-	written(body)
+	written(kind, body)
 }
 
-/// The name a write sets: the key itself when it is a name, since a resource is made by its name
-/// alone, or the name of the resource the id names, which has to be held -- RFC 2kuvi.
-async fn named(registry: &Shared, kind: Kind, key: &str) -> Result<String, Refused> {
+/// What a write sets: the resource named by the key when it is a name, since a named resource is
+/// made by its name alone, or the one the id names, which has to be held -- RFC 2kuvi.
+async fn target(registry: &Shared, kind: Kind, key: &str) -> Result<String, Refused> {
 	match Key::of(key) {
 		Key::Name(name) => Ok(name.to_owned()),
-		Key::Id(_) => found(registry, kind, key).await.map(|resource| resource.name),
+		Key::Id(_) => found(registry, kind, key).await.map(|resource| resource.id),
+	}
+}
+
+/// `target`'s answer as the store takes it.
+fn targeted(key: &str) -> Target<'_> {
+	match Key::of(key) {
+		Key::Name(name) => Target::Named(name),
+		Key::Id(id) => Target::Held(id),
 	}
 }
 
@@ -191,16 +237,34 @@ async fn put(
 	headers: HeaderMap,
 	body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-	let written = match asked(&registry, &headers, kind, &key, body) {
+	let written = match asked(&registry, &headers, kind, Some(&key), body) {
 		Ok(written) => written,
 		Err(refusal) => return *refusal,
 	};
-	let name = match named(&registry, kind, &key).await {
-		Ok(name) => name,
+	let held = match target(&registry, kind, &key).await {
+		Ok(held) => held,
 		Err(refusal) => return *refusal,
 	};
 	match checked(&registry, kind, written.spec).await {
-		Ok(spec) => set(&registry, kind, &name, written.by, written.revision, spec).await,
+		Ok(spec) => set(&registry, kind, targeted(&held), written.by, written.revision, spec).await,
+		Err(refusal) => *refusal,
+	}
+}
+
+/// Makes a resource of a kind with no name, its id drawn here and answered beside the revision and
+/// the task -- RFC 32hd9. It is made at revision 0, and a body at any other is refused.
+async fn create(
+	registry: Shared,
+	kind: Kind,
+	headers: HeaderMap,
+	body: Result<axum::Json<Value>, JsonRejection>,
+) -> Response {
+	let written = match asked(&registry, &headers, kind, None, body) {
+		Ok(written) => written,
+		Err(refusal) => return *refusal,
+	};
+	match checked(&registry, kind, written.spec).await {
+		Ok(spec) => set(&registry, kind, Target::Unnamed, written.by, written.revision, spec).await,
 		Err(refusal) => *refusal,
 	}
 }
@@ -215,21 +279,21 @@ async fn patch(
 	headers: HeaderMap,
 	body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-	let written = match asked(&registry, &headers, kind, &key, body) {
+	let written = match asked(&registry, &headers, kind, Some(&key), body) {
 		Ok(written) => written,
 		Err(refusal) => return *refusal,
 	};
-	let (name, spec) = match merged(&registry, kind, &key, written.revision, written.spec).await {
+	let (id, spec) = match merged(&registry, kind, &key, written.revision, written.spec).await {
 		Ok(merged) => merged,
 		Err(refusal) => return *refusal,
 	};
 	match checked(&registry, kind, spec).await {
-		Ok(spec) => set(&registry, kind, &name, written.by, written.revision, spec).await,
+		Ok(spec) => set(&registry, kind, Target::Held(&id), written.by, written.revision, spec).await,
 		Err(refusal) => *refusal,
 	}
 }
 
-/// What a `PATCH` makes, and the name of what it writes: `given` laid over the spec kept, which is
+/// What a `PATCH` makes, and the id of what it writes: `given` laid over the spec kept, which is
 /// still at `revision`, a key given `null` taken out, as a JSON merge patch does. Read outside the
 /// write's lock, so `set` holds the write to the same revision once more; the spec it makes is
 /// checked whole by the kind's own rules.
@@ -250,8 +314,8 @@ async fn merged(
 		return Err(Box::new(response::failure(StatusCode::CONFLICT, "invalid_revision")));
 	}
 	let Value::Object(mut spec) = kept.spec else {
-		let name = &kept.name;
-		let broken = anyhow::anyhow!("{name}'s stored spec is not an object");
+		let id = &kept.id;
+		let broken = anyhow::anyhow!("{id}'s stored spec is not an object");
 		return Err(Box::new(store_unavailable(broken)));
 	};
 	for (key, value) in given {
@@ -261,7 +325,7 @@ async fn merged(
 			spec.insert(key, value);
 		}
 	}
-	Ok((kept.name, Value::Object(spec)))
+	Ok((kept.id, Value::Object(spec)))
 }
 
 /// `spec` as its kind stores it, or why it is not stored.
@@ -275,7 +339,6 @@ async fn checked(
 			.map_err(|message| response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message)),
 		Kind::App => app::spec(spec).map_err(refused_spec),
 		Kind::Account => account::spec(spec).map_err(refused_spec),
-		Kind::Domain => domain::spec(spec).map_err(refused_spec),
 	};
 	let spec = spec.map_err(Box::new)?;
 	if kind == Kind::Node {
@@ -284,9 +347,9 @@ async fn checked(
 	Ok(spec)
 }
 
-/// A node's account and domain, where each names an id, are resources the registry holds.
+/// A node's account is one the registry holds.
 async fn referenced(registry: &Shared, record: &Map<String, Value>) -> Result<(), Refused> {
-	for (key, kind) in [("account", Kind::Account), ("domain", Kind::Domain)] {
+	for (key, kind) in [("account", Kind::Account)] {
 		let Some(id) = record.get(key).and_then(Value::as_str).filter(|id| kinds::is_id(id)) else {
 			continue;
 		};
@@ -318,22 +381,26 @@ fn refused_spec(refusal: Refusal) -> Response {
 }
 
 /// A write's answer: `202` with the revision it made and the task it is, told to the ledger and
-/// never waited on; `200` with `{}` when there was nothing to change, which makes no task; and a
-/// conflict when the resource changed after the revision given was read -- RFC cpc2b.
+/// never waited on, and the id of what a `POST` made; `200` with `{}` when there was nothing to
+/// change, which makes no task; and a conflict when the resource changed after the revision given
+/// was read -- RFC cpc2b.
 async fn set(
 	registry: &Shared,
 	kind: Kind,
-	name: &str,
+	target: Target<'_>,
 	by: String,
 	revision: i64,
 	spec: Map<String, Value>,
 ) -> Response {
-	match registry.store.set(kind, name, &by, revision, Value::Object(spec)).await {
+	match registry.store.set(kind, target, &by, revision, Value::Object(spec)).await {
 		Ok(Set::Changed(written)) => {
 			if let Some(ledger) = &registry.ledger {
-				task::tell(ledger, kind, name, &by, &written);
+				task::tell(ledger, kind, &by, &written);
 			}
-			let answer = json!({ "revision": written.revision, "task": written.task });
+			let mut answer = json!({ "revision": written.revision, "task": written.task });
+			if target == Target::Unnamed {
+				answer["id"] = json!(written.id);
+			}
 			response::success(StatusCode::ACCEPTED, answer)
 		}
 		Ok(Set::Unchanged) => response::success(StatusCode::OK, json!({})),

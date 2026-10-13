@@ -28,7 +28,7 @@ pub async fn stopping(ledger: Option<&Ledger>, within: std::time::Duration) -> u
 }
 
 /// The task a write is: every instant its own, since it was asked, started and finished at once.
-pub fn record(kind: Kind, name: &str, written: &Written) -> Record {
+pub fn record(kind: Kind, written: &Written) -> Record {
 	Record {
 		service: SERVICE.to_owned(),
 		id: written.task.clone(),
@@ -41,22 +41,23 @@ pub fn record(kind: Kind, name: &str, written: &Written) -> Record {
 		summary: json!({
 			"kind": kind.name(),
 			"id": written.id,
-			"name": name,
+			"name": written.name,
 			"revision": written.revision,
 		}),
 		detail: None,
 	}
 }
 
-/// The one line its event says.
-pub fn message(kind: Kind, name: &str, by: &str, written: &Written) -> String {
-	format!("{by} wrote {} {name} at revision {}", kind.name(), written.revision)
+/// The one line its event says, naming the resource by its name or, having none, its id.
+pub fn message(kind: Kind, by: &str, written: &Written) -> String {
+	let named = written.name.as_deref().unwrap_or(&written.id);
+	format!("{by} wrote {} {named} at revision {}", kind.name(), written.revision)
 }
 
 /// The task and its one event, `written`, handed to `ledger`.
-pub fn tell(ledger: &Ledger, kind: Kind, name: &str, by: &str, written: &Written) {
-	ledger.record(record(kind, name, written));
-	let message = message(kind, name, by, written);
+pub fn tell(ledger: &Ledger, kind: Kind, by: &str, written: &Written) {
+	ledger.record(record(kind, written));
+	let message = message(kind, by, written);
 	ledger.task(SERVICE, &written.task).event("written", Level::Info, message, Value::Null);
 }
 
@@ -68,6 +69,7 @@ mod tests {
 		Written {
 			revision: 42,
 			id: "0123456789abcdef".into(),
+			name: Some("tyo".into()),
 			task: "fedcba9876543210".into(),
 			at: "2026-10-13T12:00:00Z".parse().unwrap(),
 		}
@@ -75,7 +77,7 @@ mod tests {
 
 	#[test]
 	fn a_write_is_a_task_done_at_its_instant() {
-		let record = record(Kind::Node, "tyo", &written());
+		let record = record(Kind::Node, &written());
 		let wire = serde_json::to_value(&record).unwrap();
 		assert_eq!(
 			wire,
@@ -122,7 +124,7 @@ mod tests {
 	async fn a_stopping_registry_sends_what_it_holds() {
 		let (base, taken) = ledger().await;
 		let ledger = Ledger::to(base);
-		tell(&ledger, Kind::Node, "tyo", "test", &written());
+		tell(&ledger, Kind::Node, "test", &written());
 		assert_eq!(stopping(Some(&ledger), FLUSH).await, 0);
 		assert_eq!(*taken.lock().unwrap(), ["fedcba9876543210"]);
 		assert_eq!(stopping(None, FLUSH).await, 0);
@@ -136,7 +138,7 @@ mod tests {
 		let address = listener.local_addr().unwrap();
 		drop(listener);
 		let ledger = Ledger::to(format!("http://{address}"));
-		tell(&ledger, Kind::Node, "tyo", "test", &written());
+		tell(&ledger, Kind::Node, "test", &written());
 		let started = std::time::Instant::now();
 		let within = std::time::Duration::from_millis(400);
 		assert_eq!(stopping(Some(&ledger), within).await, 2, "the task and its event");
@@ -145,7 +147,16 @@ mod tests {
 
 	#[test]
 	fn its_event_says_who_wrote_what_in_one_line() {
-		let message = message(Kind::App, "web", "import", &written());
-		assert_eq!(message, "import wrote app web at revision 42");
+		let web = Written { name: Some("web".into()), ..written() };
+		assert_eq!(message(Kind::App, "import", &web), "import wrote app web at revision 42");
+		let unnamed = Written { name: None, ..written() };
+		let said = message(Kind::Account, "alice", &unnamed);
+		assert_eq!(said, "alice wrote account 0123456789abcdef at revision 42");
+	}
+
+	#[test]
+	fn an_unnamed_resource_is_summarized_with_a_null_name() {
+		let unnamed = Written { name: None, ..written() };
+		assert_eq!(record(Kind::Account, &unnamed).summary["name"], Value::Null);
 	}
 }

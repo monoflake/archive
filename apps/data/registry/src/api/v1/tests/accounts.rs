@@ -1,7 +1,9 @@
-//! Accounts and domains, resources as nodes and apps are -- RFC 32hd9.
+//! Accounts, which have no name: each made by a `POST` that draws its id, and read and written by
+//! that id alone -- RFC 32hd9.
 
 use super::{id_of, patch, put, wanted};
 use crate::api::tests::{TOKEN, ask, code, reached, refusing, send, sin};
+use axum::Router;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
@@ -12,45 +14,85 @@ fn oracle() -> Value {
 	})
 }
 
-#[tokio::test]
-async fn an_account_and_a_domain_are_set_and_read_by_name_and_by_id() {
-	let Some(router) = reached().await else { return };
-	for (kind, plural, spec) in [
-		("account", "accounts", oracle()),
-		("domain", "domains", json!({ "note": "Oracle's Tokyo and Singapore" })),
-	] {
-		let answer = ask(router.clone(), &format!("/v1/{plural}/oci-2")).await;
-		assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_resource"), "{kind}");
-		let (status, body) =
-			put(router.clone(), &format!("/v1/{plural}/oci-2"), wanted(0, spec.clone())).await;
-		assert_eq!(status, StatusCode::ACCEPTED, "{kind}: {body}");
-		let created = body["data"]["revision"].as_i64().unwrap();
-		let (_, by_name) = ask(router.clone(), &format!("/v1/{plural}/oci-2")).await;
-		let id = id_of(&by_name["data"]);
-		let resource =
-			json!({ "kind": kind, "id": id, "name": "oci-2", "revision": created, "spec": spec });
-		assert_eq!(by_name["data"], resource);
-		let (_, by_id) = ask(router.clone(), &format!("/v1/{plural}/{id}")).await;
-		assert_eq!(by_id["data"], resource);
-		let (_, listed) = ask(router.clone(), &format!("/v1/{plural}?name=oci-2")).await;
-		assert_eq!(listed["data"]["items"], json!([resource]));
-		let (_, none) = ask(router.clone(), &format!("/v1/{plural}?name=oci")).await;
-		assert_eq!(none["data"]["items"], json!([]));
-	}
-
-	// A PATCH by id keeps what it does not name.
-	let (_, account) = ask(router.clone(), "/v1/accounts/oci-2").await;
-	let (id, at) = (id_of(&account["data"]), account["data"]["revision"].as_i64().unwrap());
-	let renamed = wanted(at, json!({ "provider": "oraclecloud" }));
-	let (status, _) = patch(router.clone(), &format!("/v1/accounts/{id}"), renamed).await;
-	assert_eq!(status, StatusCode::ACCEPTED);
-	let (_, account) = ask(router, "/v1/accounts/oci-2").await;
-	let mut spec = oracle();
-	spec["provider"] = json!("oraclecloud");
-	assert_eq!(account["data"]["spec"], spec);
+async fn post(router: Router, path: &str, body: Value) -> (StatusCode, Value) {
+	let bearer = format!("Bearer {TOKEN}");
+	send(router, "POST", path, Some(&bearer), Some(body)).await
 }
 
-/// An identity is exactly its kind and its value.
+/// A new account's id, made by a `POST`.
+async fn made(router: &Router, spec: Value) -> String {
+	let (status, body) = post(router.clone(), "/v1/accounts", wanted(0, spec)).await;
+	assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+	id_of(&body["data"])
+}
+
+#[tokio::test]
+async fn an_account_is_made_by_post_and_read_and_written_by_its_id() {
+	let Some(router) = reached().await else { return };
+	let (status, body) = post(router.clone(), "/v1/accounts", wanted(0, oracle())).await;
+	assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+	let id = id_of(&body["data"]);
+	let created = body["data"]["revision"].as_i64().unwrap();
+	assert!(crate::kinds::is_id(body["data"]["task"].as_str().unwrap()));
+
+	let (status, held) = ask(router.clone(), &format!("/v1/accounts/{id}")).await;
+	let resource =
+		json!({ "kind": "account", "id": id, "name": null, "revision": created, "spec": oracle() });
+	assert_eq!((status, &held["data"]), (StatusCode::OK, &resource));
+	let (_, listed) = ask(router.clone(), "/v1/accounts").await;
+	assert_eq!(listed["data"]["items"], json!([resource]));
+
+	// A second with the same spec is a second account: nothing tells two apart but their ids.
+	let other = made(&router, oracle()).await;
+	assert_ne!(other, id);
+
+	// A PATCH by id keeps what it does not name; a PUT by id sets the whole spec.
+	let moved = wanted(created, json!({ "provider": "azure" }));
+	let (status, body) = patch(router.clone(), &format!("/v1/accounts/{id}"), moved).await;
+	assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+	assert!(body["data"].get("id").is_none(), "only a POST answers the id it made");
+	let at = body["data"]["revision"].as_i64().unwrap();
+	let mut spec = oracle();
+	spec["provider"] = json!("azure");
+	let (_, held) = ask(router.clone(), &format!("/v1/accounts/{id}")).await;
+	assert_eq!(held["data"]["spec"], spec);
+	let (status, _) = put(router.clone(), &format!("/v1/accounts/{id}"), wanted(at, oracle())).await;
+	assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+/// A name is no way to an account: not in a route, not in a body, not in a list's query.
+#[tokio::test]
+async fn an_account_takes_no_name_anywhere() {
+	let router = refusing(TOKEN);
+	for (method, path) in [("PUT", "/v1/accounts/oci"), ("PATCH", "/v1/accounts/oci")] {
+		let bearer = format!("Bearer {TOKEN}");
+		let answer = send(router.clone(), method, path, Some(&bearer), Some(wanted(0, oracle()))).await;
+		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_name"), "{method}");
+	}
+	let answer = ask(router.clone(), "/v1/accounts?name=oci").await;
+	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_name"));
+	let mut named = wanted(0, oracle());
+	named["name"] = json!("oci");
+	let answer = post(router.clone(), "/v1/accounts", named).await;
+	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "forbidden_field"));
+
+	let Some(router) = reached().await else { return };
+	let answer = ask(router, "/v1/accounts/oci").await;
+	assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_resource"));
+}
+
+/// A named kind is made by its name, and a `POST` to it is answered with the route that does.
+#[tokio::test]
+async fn a_named_kind_takes_no_post() {
+	for (plural, kind) in [("apps", "app"), ("nodes", "node")] {
+		let answer = post(refusing(TOKEN), &format!("/v1/{plural}"), wanted(0, json!({}))).await;
+		assert_eq!(code(&answer), (StatusCode::METHOD_NOT_ALLOWED, "invalid_method"), "{plural}");
+		let message = answer.1["message"].as_str().unwrap();
+		assert_eq!(message, format!("A {kind} is made by PUT /v1/{plural}/<name>"));
+	}
+}
+
+/// An identity is exactly its kind and its value; a provider is one of those the registry knows.
 #[tokio::test]
 async fn an_account_is_refused_what_it_cannot_hold_before_the_store_is_asked() {
 	let router = refusing(TOKEN);
@@ -66,82 +108,68 @@ async fn an_account_is_refused_what_it_cannot_hold_before_the_store_is_asked() {
 		(json!({ "provider": "oracle", "name": "oci-2" }), "forbidden_field"),
 		(json!({ "provider": "oci-2" }), "invalid_body"),
 		(
+			json!({ "provider": "cloud", "identities": [{ "kind": "email", "value": "x" }] }),
+			"invalid_body",
+		),
+		(
 			json!({ "provider": "oracle", "identities": [{ "kind": "password", "value": "x" }] }),
 			"invalid_body",
 		),
 	] {
-		let answer = put(router.clone(), "/v1/accounts/oci-2", wanted(0, spec.clone())).await;
+		let answer = post(router.clone(), "/v1/accounts", wanted(0, spec.clone())).await;
 		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, expected), "{spec}");
 	}
-	let answer = put(router.clone(), "/v1/domains/oci-2", wanted(0, json!({ "note": "" }))).await;
-	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_body"));
-	for path in ["/v1/accounts/OCI-2", "/v1/domains/-rdu", "/v1/domains/oci_2"] {
-		let answer = put(router.clone(), path, wanted(0, json!({ "note": "x" }))).await;
-		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_name"), "{path}");
-	}
 	let bearer = Some("Bearer s3cre");
-	let answer = send(router, "PUT", "/v1/domains/rdu", bearer, Some(wanted(0, json!({})))).await;
+	let answer = send(router, "POST", "/v1/accounts", bearer, Some(wanted(0, oracle()))).await;
 	assert_eq!(code(&answer), (StatusCode::UNAUTHORIZED, "invalid_token"));
 }
 
-/// A resource is made by its name alone, an account and a domain as every other.
+/// An account is made only new: a POST at any revision but 0, and a write to an id not held, make
+/// nothing.
 #[tokio::test]
-async fn a_write_to_an_account_or_domain_id_not_held_makes_nothing() {
+async fn a_write_to_an_account_not_held_makes_nothing() {
 	let Some(router) = reached().await else { return };
-	for path in ["/v1/accounts/0123456789abcdef", "/v1/domains/0123456789abcdef"] {
-		let answer = put(router.clone(), path, wanted(0, json!({ "provider": "oracle" }))).await;
-		assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_resource"), "{path}");
-	}
+	let answer = post(router.clone(), "/v1/accounts", wanted(3, oracle())).await;
+	assert_eq!(code(&answer), (StatusCode::CONFLICT, "invalid_revision"));
+	let path = "/v1/accounts/0123456789abcdef";
+	let answer = put(router.clone(), path, wanted(0, oracle())).await;
+	assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_resource"));
 	let (_, body) = ask(router, "/v1/accounts").await;
 	assert_eq!(body["data"], json!({ "items": [], "revision": 0 }));
 }
 
-/// What a node names by shape: an id has to be one the registry holds of that kind, and a code is
-/// still taken until the import writes ids.
+/// A node names the account it is under by its id, one the registry holds, and never a domain:
+/// its failure domain is read from the account -- RFC 32hd9.
 #[tokio::test]
-async fn a_node_names_an_account_and_a_domain_the_registry_holds() {
+async fn a_node_names_an_account_the_registry_holds_and_no_domain() {
 	let Some(router) = reached().await else { return };
-	put(router.clone(), "/v1/accounts/oci-2", wanted(0, oracle())).await;
-	put(router.clone(), "/v1/domains/oci-2", wanted(0, json!({}))).await;
-	let (_, account) = ask(router.clone(), "/v1/accounts/oci-2").await;
-	let (_, domain) = ask(router.clone(), "/v1/domains/oci-2").await;
-	let (account, domain) = (id_of(&account["data"]), id_of(&domain["data"]));
+	let account = made(&router, oracle()).await;
+	let (_, app) = put(router.clone(), "/v1/apps/web", wanted(0, json!({ "placements": [] }))).await;
+	assert!(app["data"]["revision"].is_i64());
+	let (_, web) = ask(router.clone(), "/v1/apps/web").await;
+	let web = id_of(&web["data"]);
 
-	let node = |account: &str, domain: &str| {
+	let node = |key: &str, value: Value| {
 		let mut spec = sin();
-		spec["account"] = json!(account);
-		spec["domain"] = json!(domain);
+		spec[key] = value;
 		spec
 	};
-	// Each refused naming its field: an id held by nobody, and an id held by the other kind.
-	for (spec, field) in [
-		(node("00000000000000aa", &domain), "account"),
-		(node(&account, "00000000000000bb"), "domain"),
-		(node(&domain, &domain), "account"),
-		(node(&account, &account), "domain"),
+	for (spec, expected) in [
+		(node("account", json!("00000000000000aa")), "invalid_resource"),
+		(node("account", json!(web)), "invalid_resource"),
+		(node("account", json!("oci-2")), "invalid_body"),
+		(node("domain", json!("oci-2")), "invalid_body"),
 	] {
-		let answer = put(router.clone(), "/v1/nodes/sin", wanted(0, spec)).await;
-		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_resource"), "{field}");
-		assert!(answer.1["message"].as_str().unwrap().starts_with(&format!("`{field}`")), "{answer:?}");
+		let answer = put(router.clone(), "/v1/nodes/sin", wanted(0, spec.clone())).await;
+		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, expected), "{spec}");
 	}
 	let (_, none) = ask(router.clone(), "/v1/nodes").await;
 	assert_eq!(none["data"]["items"], json!([]), "a refused write makes nothing");
 
-	// The old codes, as every node holds them until the import writes ids.
 	let (status, body) =
-		put(router.clone(), "/v1/nodes/sin", wanted(0, node("oci-2", "oci-2"))).await;
-	assert_eq!(status, StatusCode::ACCEPTED);
+		put(router.clone(), "/v1/nodes/sin", wanted(0, node("account", json!(account)))).await;
+	assert_eq!(status, StatusCode::ACCEPTED, "{body}");
 	let at = body["data"]["revision"].as_i64().unwrap();
-	let (status, body) =
-		put(router.clone(), "/v1/nodes/sin", wanted(at, node(&account, &domain))).await;
-	assert_eq!(status, StatusCode::ACCEPTED);
-	let at = body["data"]["revision"].as_i64().unwrap();
-	let (_, sin) = ask(router.clone(), "/v1/nodes/sin").await;
-	assert_eq!(
-		(&sin["data"]["spec"]["account"], &sin["data"]["spec"]["domain"]),
-		(&json!(account), &json!(domain))
-	);
-
 	// A key given `null` is taken out, as a selfhost node's account is.
 	let (status, _) =
 		patch(router.clone(), "/v1/nodes/sin", wanted(at, json!({ "account": null }))).await;
@@ -150,6 +178,6 @@ async fn a_node_names_an_account_and_a_domain_the_registry_holds() {
 	assert!(sin["data"]["spec"].get("account").is_none(), "{sin}");
 	let at = sin["data"]["revision"].as_i64().unwrap();
 	// A required key taken out is refused as a spec without it is.
-	let answer = patch(router, "/v1/nodes/sin", wanted(at, json!({ "domain": null }))).await;
+	let answer = patch(router, "/v1/nodes/sin", wanted(at, json!({ "tier": null }))).await;
 	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_body"));
 }

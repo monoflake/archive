@@ -24,25 +24,21 @@ NODE = tomllib.loads(
 
 
 class Body(unittest.TestCase):
-	def test_the_table_is_kept_whole_and_the_address_added(self):
+	def test_the_table_is_kept_but_its_domain_and_the_address_added(self):
 		body = registry.request_body(NODE, "100.64.0.1", 5)
 		self.assertEqual((body["by"], body["revision"]), ("import", 5))
 		derived = {"hosting": "datacenter", "roles": ["compute", "core"]}
-		self.assertEqual(body["spec"], {**NODE, **derived, "address": "100.64.0.1"})
+		table = {key: value for key, value in NODE.items() if key != "domain"}
+		self.assertEqual(body["spec"], {**table, **derived, "address": "100.64.0.1"})
 		self.assertEqual(body["spec"]["grants"], ["hub:peer"])
 
-	def test_the_ids_take_the_codes_place(self):
-		body = registry.request_body(NODE, "100.64.0.1", 5, "00000000000000a1", "00000000000000d1")
-		spec = body["spec"]
-		self.assertEqual((spec["account"], spec["domain"]), ("00000000000000a1", "00000000000000d1"))
-		home = registry.request_body(NODE, "100.64.0.1", 5, None, "00000000000000d2")["spec"]
-		self.assertEqual((home["account"], home["domain"]), (None, "00000000000000d2"))
-
-	def test_a_put_leaves_out_what_a_patch_takes_out(self):
-		body = registry.request_body(NODE, "100.64.0.1", 0, None, "00000000000000d2")
-		self.assertNotIn("account", registry.for_method(body, "PUT")["spec"])
-		self.assertIsNone(registry.for_method(body, "PATCH")["spec"]["account"])
-		self.assertIsNone(body["spec"]["account"], "the body given is not changed")
+	def test_no_domain_and_no_account_is_written(self):
+		"""A node's failure domain is its account, read and never written, and its account the
+		author's to write by id. See RFC 32hd9."""
+		for table in [NODE, {"tier": "home", "domain": "int", "system": "debian"}]:
+			spec = registry.request_body(table, "100.64.0.1", 0)["spec"]
+			self.assertNotIn("domain", spec)
+			self.assertNotIn("account", spec)
 
 	def test_the_table_given_is_not_changed(self):
 		before = dict(NODE)
@@ -55,7 +51,6 @@ class Body(unittest.TestCase):
 			registry.request_body(table, "100.64.0.2", 0)["spec"],
 			{
 				"tier": "datacenter",
-				"domain": "oci",
 				"system": "alpine",
 				"hosting": "datacenter",
 				"roles": ["compute"],
@@ -71,24 +66,6 @@ class Derived(unittest.TestCase):
 		pairs = [("home", "selfhost"), ("datacenter", "datacenter"), ("transient", "datacenter")]
 		for tier, hosting in pairs:
 			self.assertEqual(registry.derived({"tier": tier, "domain": "oci"})["hosting"], hosting, tier)
-
-	def test_a_provider_s_code_is_the_account_and_the_domain_and_a_home_its_own_domain(self):
-		datacenter = {"tier": "datacenter", "domain": "oci-2"}
-		self.assertEqual(registry.homed("sin", datacenter), ("oci-2", "oci-2"))
-		self.assertEqual(registry.homed("rdu", {"tier": "home", "domain": "int"}), (None, "rdu"))
-
-	def test_each_account_names_its_nodes_and_each_domain_is_named_once(self):
-		nodes = {
-			"tyo": {"tier": "datacenter", "domain": "oci"},
-			"nrt": {"tier": "datacenter", "domain": "oci"},
-			"sin": {"tier": "datacenter", "domain": "oci-2"},
-			"gvx": {"tier": "datacenter", "domain": "az"},
-			"rdu": {"tier": "home", "domain": "int"},
-			"sha": {"tier": "home", "domain": "int"},
-		}
-		accounts, domains = registry.resources_named(nodes)
-		self.assertEqual(accounts, {"oci": ["tyo", "nrt"], "oci-2": ["sin"], "az": ["gvx"]})
-		self.assertEqual(domains, ["oci", "oci-2", "az", "rdu", "sha"])
 
 	def test_every_node_computes_and_a_core_is_core_too(self):
 		self.assertEqual(registry.derived({"core": True})["roles"], ["compute", "core"])
@@ -319,7 +296,7 @@ class Importing(unittest.TestCase):
 				mock.patch.object(registry.database, "tailnet_ipv4", addresses.__getitem__)
 			)
 			stack.enter_context(mock.patch.dict(os.environ, {registry.TOKEN: "s3cret"}))
-			# A dry run reads which accounts are held; an empty registry, unless a test gives one.
+			# An empty registry, unless a test gives one.
 			answered = answered if answered is not None else Fake()
 			stack.enter_context(mock.patch.object(registry, "answered", answered))
 			stack.enter_context(contextlib.redirect_stdout(printed))
@@ -334,8 +311,6 @@ class Importing(unittest.TestCase):
 
 	def test_a_dry_run_says_every_write_and_makes_none(self):
 		fake = Fake()
-		identities = [{"kind": "email", "secret": "platform/registry/OCI_EMAIL"}]
-		fake.hold("accounts", "oci", {"provider": "oracle", "identities": identities}, 7)
 		lines = self.run_import(True, fake)
 		self.assertEqual(fake.written, [], "a dry run reads, and writes nothing")
 		puts = [line.split()[1] for line in lines if line.startswith("  PATCH /v1/apps/")]
@@ -344,79 +319,39 @@ class Importing(unittest.TestCase):
 		self.assertIn(f"  PATCH /v1/apps/web {registry.json.dumps(web)}", lines)
 		self.assertIn("  skip aka", lines)
 		self.assertEqual(sum(line.startswith("  PATCH /v1/nodes/") for line in lines), 3)
-		ids = ("<the id of account oci>", "<the id of domain oci>")
-		tyo = registry.request_body(self.NODES["tyo"], "100.64.0.1", "<read>", *ids)
+		tyo = registry.request_body(self.NODES["tyo"], "100.64.0.1", "<read>")
 		self.assertIn(f"  PATCH /v1/nodes/tyo {registry.json.dumps(tyo)}", lines)
-		made = [line.split()[1] for line in lines if line.startswith("  PUT /v1/")]
-		self.assertEqual(made, ["/v1/domains/oci", "/v1/domains/rdu"])
-		self.assertIn("registry: account oci: linked, tyo, sin", lines)
-		self.assertNotIn("s3cret", "\n".join(lines))
+		said = "\n".join(lines)
+		self.assertNotIn("/v1/domains/", said)
+		self.assertNotIn("/v1/accounts/", said)
+		self.assertNotIn("s3cret", said)
 
-	def test_a_dry_run_says_an_account_not_held_and_the_nodes_left_without_one(self):
-		lines = self.run_import(True)
-		self.assertIn(
-			"registry: account oci: not held; tyo, sin have none until it is written with its identities",
-			lines,
-		)
-		domain = "<the id of domain oci>"
-		sin = registry.request_body(self.NODES["sin"], "100.64.0.2", "<read>", None, domain)
-		self.assertIn(f"  PATCH /v1/nodes/sin {registry.json.dumps(sin)}", lines)
-
-	def test_a_run_makes_the_domains_then_writes_at_the_revision_it_read(self):
+	def test_a_run_writes_each_node_at_the_revision_it_read_and_nothing_else(self):
 		fake = Fake()
-		# What the import before this one left: the code as the account.
-		fake.hold("nodes", "tyo", {"address": "100.64.0.9", "account": "oci"}, 3)
+		fake.hold("nodes", "tyo", {"address": "100.64.0.9"}, 3)
 		lines = self.run_import(False, fake)
 		self.assertEqual(
-			fake.written[:5],
-			[
-				("PUT", "domains", "oci"),
-				("PUT", "domains", "rdu"),
-				("PATCH", "nodes", "tyo"),
-				("PUT", "nodes", "sin"),
-				("PUT", "nodes", "rdu"),
-			],
+			fake.written[:3],
+			[("PATCH", "nodes", "tyo"), ("PUT", "nodes", "sin"), ("PUT", "nodes", "rdu")],
 		)
-		accounts = [entry for entry in fake.written if entry[1] == "accounts"]
-		self.assertFalse(accounts, "the import never makes an account")
+		kinds = {plural for _, plural, _ in fake.written}
+		self.assertEqual(kinds, {"nodes", "apps"}, "no domain and no account is ever written")
 		self.assertEqual(fake.bodies[("PATCH", "nodes", "tyo")]["revision"], 3)
-		domain = fake.id_of("domains", "oci")
-		for node in ["tyo", "sin"]:
+		for node in ["tyo", "sin", "rdu"]:
 			spec = fake.spec_of("nodes", node)
-			self.assertEqual(spec["domain"], domain, node)
-			self.assertNotIn("account", spec, f"{node}: no account until the author writes it")
-		self.assertIn("registry: domain oci: made, revision 101", lines)
-		self.assertIn(
-			"registry: account oci: not held; tyo, sin have none until it is written with its identities",
-			lines,
-		)
+			self.assertNotIn("domain", spec, node)
+			self.assertNotIn("account", spec, node)
+		self.assertEqual(fake.spec_of("nodes", "rdu")["hosting"], "selfhost")
 		self.assertIn("registry: app aka: skipped, not placed on nodes", lines)
 		web = fake.bodies[("PUT", "apps", "web")]
 		self.assertEqual(web, registry.app_body(0, ["tyo", "sin"]))
 
-	def test_a_home_node_has_no_account_and_its_own_domain(self):
+	def test_a_rerun_keeps_the_account_the_author_wrote(self):
 		fake = Fake()
-		# What the import before this one left: the code of its house as the account.
-		left = {"tier": "home", "domain": "int", "account": "int", "address": "100.64.0.3"}
-		fake.hold("nodes", "rdu", left, 4)
+		account = "00000000000000a1"
+		fake.hold("nodes", "tyo", {**self.NODES["tyo"], "address": "100.64.0.9", "account": account}, 5)
 		self.run_import(False, fake)
-		rdu = fake.spec_of("nodes", "rdu")
-		self.assertNotIn("account", rdu)
-		self.assertEqual((rdu["domain"], rdu["hosting"]), (fake.id_of("domains", "rdu"), "selfhost"))
-		self.assertNotIn(("accounts", "int"), fake.held)
-		self.assertNotIn(("domains", "int"), fake.held)
-
-	def test_an_account_the_author_wrote_is_linked_and_never_written(self):
-		fake = Fake()
-		identities = [{"kind": "email", "secret": "platform/registry/OCI_EMAIL"}]
-		fake.hold("accounts", "oci", {"provider": "oracle", "identities": identities}, 7)
-		lines = self.run_import(False, fake)
-		self.assertFalse([entry for entry in fake.written if entry[1] == "accounts"])
-		self.assertEqual(fake.spec_of("accounts", "oci")["identities"], identities)
-		self.assertIn("registry: account oci: linked, tyo, sin", lines)
-		for node in ["tyo", "sin"]:
-			self.assertEqual(fake.spec_of("nodes", node)["account"], fake.id_of("accounts", "oci"))
-		self.assertNotIn("account", fake.spec_of("nodes", "rdu"))
+		self.assertEqual(fake.spec_of("nodes", "tyo")["account"], account)
 
 	def test_a_rerun_keeps_the_release_an_app_already_has(self):
 		release = {"repository": "monoflake/platform", "run": 7, "commit": "0" * 40}
@@ -431,12 +366,13 @@ class Importing(unittest.TestCase):
 
 	def test_a_rerun_keeps_a_node_retired_in_the_registry(self):
 		"""An operator retired tyo in the registry, and nodes.toml says nothing of it; the import
-		sets what nodes.toml carries, the ids in place of the codes, and keeps the rest."""
+		sets what nodes.toml carries but its domain, and keeps the rest."""
 		fake = Fake()
-		fake.hold("nodes", "tyo", {**self.NODES["tyo"], "address": "100.64.0.9", "retired": True}, 5)
+		table = {key: value for key, value in self.NODES["tyo"].items() if key != "domain"}
+		fake.hold("nodes", "tyo", {**table, "address": "100.64.0.9", "retired": True}, 5)
 		self.run_import(False, fake)
-		tyo = {**registry.derived(self.NODES["tyo"]), **self.NODES["tyo"]}
-		tyo.update(address="100.64.0.1", retired=True, domain=fake.id_of("domains", "oci"))
+		tyo = {**registry.derived(table), **table}
+		tyo.update(address="100.64.0.1", retired=True)
 		self.assertEqual(fake.spec_of("nodes", "tyo"), tyo)
 
 	def test_an_app_held_is_patched_and_one_not_held_is_put(self):

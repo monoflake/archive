@@ -45,6 +45,10 @@
 				"name": {
 					"$ref": "#/$defs/Kind"
 				},
+				"named": {
+					"description": "False for a kind whose resources have no name, an account's: each is its id, made by a `POST`\nto its collection, and shown by its fields and its id's first eight digits -- RFC 32hd9.",
+					"type": "boolean"
+				},
 				"plural": {
 					"description": "Its collection's segment of a route, `/v1/<plural>`, so no reader derives one.",
 					"type": "string"
@@ -53,6 +57,7 @@
 			"required": [
 				"name",
 				"plural",
+				"named",
 				"fields",
 				"actions",
 				"columns"
@@ -114,8 +119,7 @@
 			"enum": [
 				"node",
 				"app",
-				"account",
-				"domain"
+				"account"
 			]
 		},
 		"Type": {

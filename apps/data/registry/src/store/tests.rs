@@ -1,10 +1,10 @@
 use super::testing::{bare, store};
-use super::{Key, Kind, Set, Store};
+use super::{Key, Kind, Set, Store, Target};
 use crate::{kinds, migrations};
 use serde_json::{Value, json};
 
 fn node(address: &str) -> Value {
-	json!({ "address": address, "tier": "datacenter", "domain": "oci", "system": "debian" })
+	json!({ "address": address, "tier": "datacenter", "system": "debian" })
 }
 
 /// One row of `changes`, the history: who set `name` of `kind` from `before` to `after`.
@@ -13,7 +13,7 @@ struct Row {
 	id: i64,
 	kind: String,
 	by: String,
-	name: String,
+	name: Option<String>,
 	before: Option<Value>,
 	after: Option<Value>,
 }
@@ -41,7 +41,7 @@ async fn history(store: &Store) -> Vec<Row> {
 
 /// A set that must append a change, answering its id.
 async fn changed(store: &Store, kind: Kind, name: &str, by: &str, at: i64, spec: Value) -> i64 {
-	match store.set(kind, name, by, at, spec).await.unwrap() {
+	match store.set(kind, Target::Named(name), by, at, spec).await.unwrap() {
 		Set::Changed(written) => written.revision,
 		other => panic!("{name}: {other:?}"),
 	}
@@ -61,9 +61,9 @@ async fn a_set_of_the_spec_kept_writes_no_change() {
 	let Some(store) = store().await else { return };
 	let first = changed(&store, Kind::Node, "tyo", "test", 0, node("100.64.0.1")).await;
 	// The same object, its keys in another order: jsonb compares what they hold.
-	let same =
-		json!({ "system": "debian", "domain": "oci", "tier": "datacenter", "address": "100.64.0.1" });
-	assert_eq!(store.set(Kind::Node, "tyo", "test", first, same).await.unwrap(), Set::Unchanged);
+	let same = json!({ "system": "debian", "tier": "datacenter", "address": "100.64.0.1" });
+	let unchanged = store.set(Kind::Node, Target::Named("tyo"), "test", first, same).await.unwrap();
+	assert_eq!(unchanged, Set::Unchanged);
 	assert_eq!(history(&store).await.len(), 1);
 	assert_eq!(store.resources(Kind::Node).await.unwrap().revision, first);
 }
@@ -79,7 +79,7 @@ async fn a_change_records_who_what_was_and_what_is() {
 		id,
 		kind: "node".into(),
 		by: by.into(),
-		name: "tyo".into(),
+		name: Some("tyo".into()),
 		before,
 		after: Some(after),
 	};
@@ -101,7 +101,7 @@ async fn nodes_are_answered_in_name_order() {
 		changed(&store, Kind::Node, name, "test", 0, node("100.64.0.1")).await;
 	}
 	let items = store.resources(Kind::Node).await.unwrap().items;
-	let names: Vec<&str> = items.iter().map(|node| node.name.as_str()).collect();
+	let names: Vec<&str> = items.iter().map(|node| node.name.as_deref().unwrap()).collect();
 	assert_eq!(names, ["rdu", "sin", "tyo"]);
 }
 
@@ -126,7 +126,7 @@ async fn the_second_migration_keeps_every_change_as_a_node_s() {
 		.unwrap()
 		.get(0);
 
-	assert_eq!(store.migrate().await.unwrap(), [2, 3, 4]);
+	assert_eq!(store.migrate().await.unwrap(), [2, 3, 4, 5]);
 	let kind: String =
 		client.query_one("SELECT kind FROM changes WHERE id = $1", &[&id]).await.unwrap().get(0);
 	assert_eq!(kind, "node");
@@ -140,18 +140,28 @@ async fn the_second_migration_keeps_every_change_as_a_node_s() {
 async fn a_set_is_held_to_the_revision_read() {
 	let Some(store) = store().await else { return };
 	assert!(store.resource(Kind::App, Key::Name("web")).await.unwrap().is_none());
-	assert_eq!(store.set(Kind::App, "web", "test", 1, app(&["tyo"])).await.unwrap(), Set::Stale);
-	let created = store.set(Kind::App, "web", "alice", 0, app(&["tyo"])).await.unwrap();
+	assert_eq!(
+		store.set(Kind::App, Target::Named("web"), "test", 1, app(&["tyo"])).await.unwrap(),
+		Set::Stale
+	);
+	let created =
+		store.set(Kind::App, Target::Named("web"), "alice", 0, app(&["tyo"])).await.unwrap();
 	let Set::Changed(created) = created else { panic!("not created") };
 	let created = created.revision;
-	assert_eq!(store.set(Kind::App, "web", "bob", 0, app(&["sin"])).await.unwrap(), Set::Stale);
-	let same = store.set(Kind::App, "web", "bob", created, app(&["tyo"])).await.unwrap();
+	assert_eq!(
+		store.set(Kind::App, Target::Named("web"), "bob", 0, app(&["sin"])).await.unwrap(),
+		Set::Stale
+	);
+	let same =
+		store.set(Kind::App, Target::Named("web"), "bob", created, app(&["tyo"])).await.unwrap();
 	assert_eq!(same, Set::Unchanged);
-	let moved = store.set(Kind::App, "web", "bob", created, app(&["sin"])).await.unwrap();
+	let moved =
+		store.set(Kind::App, Target::Named("web"), "bob", created, app(&["sin"])).await.unwrap();
 	let Set::Changed(moved) = moved else { panic!("not moved") };
 	let moved = moved.revision;
 	assert!(moved > created);
-	let stale = store.set(Kind::App, "web", "carol", created, app(&["rdu"])).await.unwrap();
+	let stale =
+		store.set(Kind::App, Target::Named("web"), "carol", created, app(&["rdu"])).await.unwrap();
 	assert_eq!(stale, Set::Stale);
 
 	let web = store.resource(Kind::App, Key::Name("web")).await.unwrap().unwrap();
@@ -163,16 +173,16 @@ async fn a_kind_s_revisions_are_its_own_and_a_list_s_the_newest_of_any() {
 	let Some(store) = store().await else { return };
 	let node_at = changed(&store, Kind::Node, "tyo", "test", 0, node("100.64.0.1")).await;
 	// An app named as a node is, so a revision read by name alone would mix the two.
-	let app_at = store.set(Kind::App, "tyo", "test", 0, app(&["tyo"])).await.unwrap();
+	let app_at = store.set(Kind::App, Target::Named("tyo"), "test", 0, app(&["tyo"])).await.unwrap();
 	let Set::Changed(app_at) = app_at else { panic!("not created") };
 	let app_at = app_at.revision;
-	store.set(Kind::App, "api", "test", 0, app(&[])).await.unwrap();
+	store.set(Kind::App, Target::Named("api"), "test", 0, app(&[])).await.unwrap();
 
 	let nodes = store.resources(Kind::Node).await.unwrap();
 	let apps = store.resources(Kind::App).await.unwrap();
 	assert_eq!(nodes.items.len(), 1);
 	assert_eq!(nodes.items[0].revision, node_at);
-	let names: Vec<&str> = apps.items.iter().map(|app| app.name.as_str()).collect();
+	let names: Vec<&str> = apps.items.iter().map(|app| app.name.as_deref().unwrap()).collect();
 	assert_eq!(names, ["api", "tyo"]);
 	assert_eq!(apps.items[1].revision, app_at);
 	assert_eq!(nodes.revision, apps.revision);
@@ -197,9 +207,11 @@ async fn a_node_deleted_is_set_again_from_revision_zero() {
 		.unwrap();
 	drop(client);
 	assert!(store.resource(Kind::Node, Key::Name("tyo")).await.unwrap().is_none());
-	let stale = store.set(Kind::Node, "tyo", "test", created, node("100.64.0.2")).await.unwrap();
+	let stale =
+		store.set(Kind::Node, Target::Named("tyo"), "test", created, node("100.64.0.2")).await.unwrap();
 	assert_eq!(stale, Set::Stale);
-	let again = store.set(Kind::Node, "tyo", "test", 0, node("100.64.0.2")).await.unwrap();
+	let again =
+		store.set(Kind::Node, Target::Named("tyo"), "test", 0, node("100.64.0.2")).await.unwrap();
 	assert!(matches!(again, Set::Changed(written) if written.revision > created));
 }
 
@@ -248,7 +260,7 @@ async fn the_third_migration_gives_every_resource_an_id_and_every_row_its_resour
 	)
 	.await;
 
-	assert_eq!(store.migrate().await.unwrap(), [3, 4]);
+	assert_eq!(store.migrate().await.unwrap(), [3, 4, 5]);
 	let id = |kind, name: &'static str| {
 		let store = &store;
 		async move { store.resource(kind, Key::Name(name)).await.unwrap().unwrap().id }
@@ -280,13 +292,15 @@ async fn the_third_migration_gives_every_resource_an_id_and_every_row_its_resour
 async fn a_write_keeps_its_resource_s_id_and_its_task_in_the_history() {
 	let Some(store) = store().await else { return };
 	let Set::Changed(created) =
-		store.set(Kind::Node, "tyo", "test", 0, node("100.64.0.1")).await.unwrap()
+		store.set(Kind::Node, Target::Named("tyo"), "test", 0, node("100.64.0.1")).await.unwrap()
 	else {
 		panic!("not created");
 	};
 	assert!(kinds::is_id(&created.id) && kinds::is_id(&created.task));
-	let Set::Changed(moved) =
-		store.set(Kind::Node, "tyo", "test", created.revision, node("100.64.0.2")).await.unwrap()
+	let Set::Changed(moved) = store
+		.set(Kind::Node, Target::Named("tyo"), "test", created.revision, node("100.64.0.2"))
+		.await
+		.unwrap()
 	else {
 		panic!("not moved");
 	};
@@ -340,7 +354,7 @@ async fn an_id_already_held_is_drawn_again() {
 	// The node's id taken, then a fresh one for it; the first task's taken, then a fresh one.
 	drawing(&store, &[&held, "00000000000000a1", &task, "00000000000000b2"]).await;
 	let Set::Changed(written) =
-		store.set(Kind::Node, "sin", "test", 0, node("100.64.0.2")).await.unwrap()
+		store.set(Kind::Node, Target::Named("sin"), "test", 0, node("100.64.0.2")).await.unwrap()
 	else {
 		panic!("not created");
 	};
@@ -357,7 +371,7 @@ async fn ids_that_keep_colliding_fail_the_write() {
 	changed(&store, Kind::Node, "tyo", "test", 0, node("100.64.0.1")).await;
 	let held = store.resource(Kind::Node, Key::Name("tyo")).await.unwrap().unwrap().id;
 	drawing(&store, &[held.as_str(); super::DRAWS]).await;
-	let failed = store.set(Kind::Node, "sin", "test", 0, node("100.64.0.2")).await;
+	let failed = store.set(Kind::Node, Target::Named("sin"), "test", 0, node("100.64.0.2")).await;
 	assert!(failed.unwrap_err().to_string().contains("each taken already"));
 	assert!(store.resource(Kind::Node, Key::Name("sin")).await.unwrap().is_none());
 	assert_eq!(history(&store).await.len(), 1);
@@ -380,20 +394,103 @@ async fn an_id_is_sixteen_digits_every_one_drawn() {
 	}
 }
 
-/// An account and a domain are kept as every resource is, each with an id and a history row.
+/// An account has no name: it is made by its kind alone, its id drawn, and written again by that
+/// id; its history rows name nothing -- RFC 32hd9.
 #[tokio::test]
-async fn an_account_and_a_domain_are_held_as_every_resource_is() {
+async fn an_account_is_made_unnamed_and_kept_by_its_id() {
 	let Some(store) = store().await else { return };
-	let account =
-		changed(&store, Kind::Account, "oci", "test", 0, json!({ "provider": "oracle" })).await;
-	let domain = changed(&store, Kind::Domain, "oci", "test", 0, json!({})).await;
-	let accounts = store.resources(Kind::Account).await.unwrap();
-	let domains = store.resources(Kind::Domain).await.unwrap();
-	assert_eq!((accounts.items.len(), domains.items.len()), (1, 1));
-	assert_eq!((accounts.items[0].revision, domains.items[0].revision), (account, domain));
-	assert!(kinds::is_id(&accounts.items[0].id) && kinds::is_id(&domains.items[0].id));
-	assert_ne!(accounts.items[0].id, domains.items[0].id);
-	assert!(store.resources(Kind::Node).await.unwrap().items.is_empty(), "one name, kinds apart");
-	let kinds: Vec<String> = history(&store).await.into_iter().map(|row| row.kind).collect();
-	assert_eq!(kinds, ["account", "domain"]);
+	let spec = json!({ "provider": "oracle" });
+	let stale = store.set(Kind::Account, Target::Unnamed, "test", 3, spec.clone()).await.unwrap();
+	assert_eq!(stale, Set::Stale, "a new account is at revision 0");
+	let Set::Changed(made) =
+		store.set(Kind::Account, Target::Unnamed, "test", 0, spec.clone()).await.unwrap()
+	else {
+		panic!("not made");
+	};
+	assert!(kinds::is_id(&made.id));
+	assert_eq!(made.name, None);
+	let held = store.resource(Kind::Account, Key::Id(&made.id)).await.unwrap().unwrap();
+	assert_eq!((held.name, held.revision, held.spec), (None, made.revision, spec));
+
+	let moved = json!({ "provider": "azure" });
+	let target = Target::Held(&made.id);
+	let Set::Changed(again) =
+		store.set(Kind::Account, target, "test", made.revision, moved.clone()).await.unwrap()
+	else {
+		panic!("not written");
+	};
+	assert_eq!(again.id, made.id, "an id is never changed");
+	let unknown = Target::Held("0123456789abcdef");
+	assert_eq!(store.set(Kind::Account, unknown, "test", 0, moved).await.unwrap(), Set::Stale);
+	let second = store.set(Kind::Account, Target::Unnamed, "test", 0, json!({})).await.unwrap();
+	assert!(matches!(second, Set::Changed(_)), "two accounts with no name are two");
+
+	assert_eq!(store.resources(Kind::Account).await.unwrap().items.len(), 2);
+	let rows = history(&store).await;
+	assert!(rows.iter().all(|row| row.kind == "account" && row.name.is_none()), "{rows:?}");
+}
+
+/// What a release before the fifth migration left: a domain, nodes naming it and an account by its
+/// code, and an account with a name. Each leaves as a change by `migration`.
+#[tokio::test]
+async fn the_fifth_migration_leaves_accounts_unnamed_and_no_domain() {
+	let Some(store) = bare().await else { return };
+	let (mut client, connection) = store.config.connect(tokio_postgres::NoTls).await.unwrap();
+	tokio::spawn(connection);
+	let applied = migrations::apply(&mut client, &migrations::MIGRATIONS[..4]).await.unwrap();
+	assert_eq!(applied, [1, 2, 3, 4]);
+	client
+		.batch_execute(
+			r#"
+			INSERT INTO domains (name, id, spec) VALUES ('oci', '00000000000000d1', '{}');
+			INSERT INTO accounts (name, id, spec) VALUES ('oci', '00000000000000a1', '{"provider": "oracle"}');
+			INSERT INTO nodes (name, id, record) VALUES
+				('tyo', '0000000000000001', '{"tier": "datacenter", "domain": "00000000000000d1", "account": "00000000000000a1"}'),
+				('gvx', '0000000000000002', '{"tier": "datacenter", "domain": "az", "account": "az"}'),
+				('rdu', '0000000000000003', '{"tier": "home"}');
+			INSERT INTO changes (kind, by, name, after, resource) VALUES
+				('domain', 'old', 'oci', '{}', '00000000000000d1'),
+				('account', 'old', 'oci', '{"provider": "oracle"}', '00000000000000a1'),
+				('node', 'old', 'tyo', '{"tier": "datacenter", "domain": "00000000000000d1", "account": "00000000000000a1"}', '0000000000000001'),
+				('node', 'old', 'gvx', '{"tier": "datacenter", "domain": "az", "account": "az"}', NULL),
+				('node', 'old', 'rdu', '{"tier": "home"}', '0000000000000003');
+			"#,
+		)
+		.await
+		.unwrap();
+	let before = history(&store).await.len();
+
+	assert_eq!(store.migrate().await.unwrap(), [5]);
+	let node = |name: &'static str| {
+		let store = &store;
+		async move { store.resource(Kind::Node, Key::Name(name)).await.unwrap().unwrap() }
+	};
+	let tyo = node("tyo").await;
+	assert_eq!(tyo.spec, json!({ "tier": "datacenter", "account": "00000000000000a1" }));
+	assert_eq!(node("gvx").await.spec, json!({ "tier": "datacenter" }), "a code is no account");
+	let rdu = node("rdu").await;
+	assert_eq!(rdu.spec, json!({ "tier": "home" }));
+	let account = store.resource(Kind::Account, Key::Id("00000000000000a1")).await.unwrap().unwrap();
+	assert_eq!(account.name, None);
+	let gone: bool =
+		client.query_one("SELECT to_regclass('domains') IS NULL", &[]).await.unwrap().get(0);
+	assert!(gone, "the domains table is dropped");
+
+	let rows = history(&store).await;
+	let made: Vec<(&str, Option<&str>)> =
+		rows[before..].iter().map(|row| (row.kind.as_str(), row.name.as_deref())).collect();
+	let expected = [
+		("domain", Some("oci")),
+		("node", Some("gvx")),
+		("node", Some("tyo")),
+		("account", Some("oci")),
+	];
+	assert_eq!(made, expected);
+	assert!(rows[before..].iter().all(|row| row.by == "migration"));
+	assert_eq!(rows[before].after, None, "a domain leaves as a delete does");
+	// Each resource held is at the change the migration made for it, read by its id.
+	assert_eq!(tyo.revision, rows[before + 2].id);
+	assert_eq!(account.revision, rows[before + 3].id);
+	assert_eq!(rdu.revision, rows[before - 1].id, "a node untouched keeps its revision");
+	assert_eq!(node("gvx").await.revision, rows[before + 1].id, "its rows given its id first");
 }

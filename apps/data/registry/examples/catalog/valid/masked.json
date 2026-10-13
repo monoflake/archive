@@ -3,6 +3,7 @@
 		{
 			"name": "account",
 			"plural": "accounts",
+			"named": false,
 			"fields": [
 				{
 					"name": "provider",

@@ -1,5 +1,6 @@
-//! The nodes and the apps, each keyed by name, and every change made to them, appended and never
-//! rewritten. See spec/architecture/registry.md, RFC ja5hm and RFC cpc2b.
+//! The nodes, the apps and the accounts, each kept by id and the named ones found by name too, and
+//! every change made to them, appended and never rewritten. See spec/architecture/registry.md, RFC
+//! ja5hm and RFC cpc2b.
 
 use crate::kinds::{self, Kind};
 use crate::migrations;
@@ -27,13 +28,14 @@ pub struct Resource {
 	/// 16 lowercase hexadecimal digits, made when it was first written and never changed -- RFC
 	/// 2kuvi.
 	pub id: String,
-	pub name: String,
+	/// None for a kind with no name, an account's -- RFC 32hd9.
+	pub name: Option<String>,
 	/// The id of the newest change made to it.
 	pub revision: i64,
 	pub spec: Value,
 }
 
-/// Every resource of a kind, by name, and the newest change made to anything.
+/// Every resource of a kind, by name then id, and the newest change made to anything.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Listed {
 	pub items: Vec<Resource>,
@@ -51,13 +53,15 @@ pub enum Set {
 	Changed(Written),
 }
 
-/// A change appended: its id, the resource's revision from now on; the resource's id; the task it
-/// is told to the ledger as, whose id the history row keeps; and when it was made. Both ids are 16
-/// lowercase hexadecimal digits -- RFC 2kuvi.
+/// A change appended: its id, the resource's revision from now on; the resource's id and name; the
+/// task it is told to the ledger as, whose id the history row keeps; and when it was made. Both ids
+/// are 16 lowercase hexadecimal digits -- RFC 2kuvi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
 	pub revision: i64,
 	pub id: String,
+	/// The resource's name, none for a kind with no name.
+	pub name: Option<String>,
 	pub task: String,
 	pub at: Timestamp,
 }
@@ -76,13 +80,21 @@ impl<'a> Key<'a> {
 	}
 }
 
+/// What a write sets: a named kind's resource by its name, made where it is not held; one held, by
+/// its id; or a new one of a kind with no name, its id drawn here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target<'a> {
+	Named(&'a str),
+	Held(&'a str),
+	Unnamed,
+}
+
 /// The table a kind is kept in, and the column holding its spec.
 const fn table(kind: Kind) -> (&'static str, &'static str) {
 	match kind {
 		Kind::Node => ("nodes", "record"),
 		Kind::App => ("apps", "spec"),
 		Kind::Account => ("accounts", "spec"),
-		Kind::Domain => ("domains", "spec"),
 	}
 }
 
@@ -90,9 +102,10 @@ const fn table(kind: Kind) -> (&'static str, &'static str) {
 /// collide by chance about never, so a second collision says the source is broken, not unlucky.
 const DRAWS: usize = 4;
 
-/// A resource's revision, 0 where it has no change, in a query over its kind's table as `r`.
+/// A resource's revision, 0 where it has no change, in a query over its kind's table as `r`: its
+/// newest change, by its id, which every change made to a resource held carries.
 const REVISION: &str =
-	"coalesce((SELECT max(c.id) FROM changes c WHERE c.kind = $1 AND c.name = r.name), 0)";
+	"coalesce((SELECT max(c.id) FROM changes c WHERE c.kind = $1 AND c.resource = r.id), 0)";
 
 pub struct Store {
 	config: tokio_postgres::Config,
@@ -132,29 +145,29 @@ impl Store {
 		Ok(())
 	}
 
-	/// Sets `name` of `kind` to `spec` if it is still at `revision`, appending the change. One that
-	/// does not exist is at 0, even where changes to it are kept from before the old `DELETE /nodes`
-	/// removed it. See RFC cpc2b.
+	/// Sets the resource `target` names to `spec` if it is still at `revision`, appending the
+	/// change. One that does not exist is at 0, and one held that `target` names by an id it does not
+	/// hold is stale. See RFC cpc2b.
 	pub async fn set(
 		&self,
 		kind: Kind,
-		name: &str,
+		target: Target<'_>,
 		by: &str,
 		revision: i64,
 		spec: Value,
 	) -> anyhow::Result<Set> {
-		let made = self.set_with(kind, name, by, revision, |_| async { Ok::<_, Infallible>(spec) });
+		let made = self.set_with(kind, target, by, revision, |_| async { Ok::<_, Infallible>(spec) });
 		Ok(made.await?.unwrap_or_else(|never| match never {}))
 	}
 
 	/// `set`, with the spec made by `make` once the revision holds and the resource's id is known --
 	/// the one it holds, or the one drawn for it -- under the lock every write holds. A `make` that
-	/// fails is answered as it failed, and nothing is written: how an account's identity values
-	/// reach the secret service under a name its id is in, before anything here changes.
+	/// fails is answered as it failed, and nothing is written: how a value bound for the secret
+	/// service would reach it under a name its id is in, before anything here changes.
 	pub async fn set_with<F, Made, E>(
 		&self,
 		kind: Kind,
-		name: &str,
+		target: Target<'_>,
 		by: &str,
 		revision: i64,
 		make: F,
@@ -167,21 +180,33 @@ impl Store {
 		let mut client = self.pool.get().await?;
 		let transaction = client.transaction().await?;
 		transaction.execute("SELECT pg_advisory_xact_lock($1)", &[&WRITES]).await?;
-		let kept = transaction
-			.query_opt(
-				&format!("SELECT {column}, id, {REVISION} FROM {table} r WHERE name = $2"),
-				&[&kind.name(), &name],
-			)
-			.await?;
-		let kept_at = kept.as_ref().map_or(0, |row| row.get::<_, i64>(2));
+		let read = format!("SELECT {column}, id, name, {REVISION} FROM {table} r");
+		let kept = match target {
+			Target::Named(name) => {
+				transaction.query_opt(&format!("{read} WHERE name = $2"), &[&kind.name(), &name]).await?
+			}
+			Target::Held(id) => {
+				let held =
+					transaction.query_opt(&format!("{read} WHERE id = $2"), &[&kind.name(), &id]).await?;
+				if held.is_none() {
+					return Ok(Ok(Set::Stale));
+				}
+				held
+			}
+			Target::Unnamed => None,
+		};
+		let kept_at = kept.as_ref().map_or(0, |row| row.get::<_, i64>(3));
 		if revision != kept_at {
 			return Ok(Ok(Set::Stale));
 		}
 		// An id is made by the write that first holds the resource, and an update never names it,
-		// so it never changes.
-		let (before, id): (Option<Value>, String) = match kept {
-			Some(row) => (Some(row.get(0)), row.get(1)),
-			None => (None, unused(&transaction, table, "id").await?),
+		// so it never changes; nor does a name, which only a named kind's first write gives.
+		let (before, id, name): (Option<Value>, String, Option<String>) = match (kept, target) {
+			(Some(row), _) => (Some(row.get(0)), row.get(1), row.get(2)),
+			(None, Target::Named(name)) => {
+				(None, unused(&transaction, table, "id").await?, Some(name.to_owned()))
+			}
+			(None, _) => (None, unused(&transaction, table, "id").await?, None),
 		};
 		let spec = match make(id.clone()).await {
 			Ok(spec) => spec,
@@ -195,8 +220,8 @@ impl Store {
 			}
 			transaction
 				.execute(
-					&format!("UPDATE {table} SET {column} = $2, updated_at = now() WHERE name = $1"),
-					&[&name, &spec],
+					&format!("UPDATE {table} SET {column} = $2, updated_at = now() WHERE id = $1"),
+					&[&id, &spec],
 				)
 				.await?;
 		} else {
@@ -216,7 +241,8 @@ impl Store {
 			)
 			.await?;
 		transaction.commit().await?;
-		Ok(Ok(Set::Changed(Written { revision: row.get(0), id, task, at: row.get(1) })))
+		let written = Written { revision: row.get(0), id, name, task, at: row.get(1) };
+		Ok(Ok(Set::Changed(written)))
 	}
 
 	/// Every resource of `kind` in name order, and the newest change to anything, read from one
@@ -232,7 +258,9 @@ impl Store {
 			.await?;
 		let rows = transaction
 			.query(
-				&format!("SELECT r.id, r.name, r.{column}, {REVISION} FROM {table} r ORDER BY r.name"),
+				&format!(
+					"SELECT r.id, r.name, r.{column}, {REVISION} FROM {table} r ORDER BY r.name, r.id"
+				),
 				&[&kind.name()],
 			)
 			.await?;

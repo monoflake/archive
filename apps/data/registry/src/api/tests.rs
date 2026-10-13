@@ -25,7 +25,6 @@ pub(super) fn sin() -> Value {
 	json!({
 		"address": "100.64.0.9",
 		"tier": "datacenter",
-		"domain": "oci-2",
 		"system": "debian",
 		"core": true,
 		"expiry": 2036,

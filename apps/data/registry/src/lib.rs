@@ -4,7 +4,6 @@
 pub mod account;
 pub mod api;
 pub mod app;
-pub mod domain;
 pub mod kinds;
 pub mod migrations;
 pub mod node;

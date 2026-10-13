@@ -38,11 +38,3 @@ pub async fn bare() -> Option<Store> {
 pub fn unreached() -> Store {
 	Store::connect("host=unreached.invalid user=nobody dbname=none", None).unwrap()
 }
-
-/// Every row of the history as text, to be searched for what must never be kept there.
-pub async fn history_text(store: &Store) -> String {
-	let client = store.pool.get().await.unwrap();
-	let rows =
-		client.query("SELECT row_to_json(changes)::text FROM changes ORDER BY id", &[]).await.unwrap();
-	rows.iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>().join("\n")
-}

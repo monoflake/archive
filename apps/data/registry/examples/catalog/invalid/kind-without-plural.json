@@ -2,6 +2,7 @@
 	"items": [
 		{
 			"name": "node",
+			"named": true,
 			"fields": [
 				{
 					"name": "address",

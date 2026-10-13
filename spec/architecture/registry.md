@@ -71,31 +71,32 @@ references move to ids in a contract of their own.
 - **`node`** -- `/v1/nodes` and `/v1/nodes/{id}`, the record above as its `spec`, set whole by `PUT`
   and in part by `PATCH`. Beside the axes `nodes.toml` declares it holds the fields RFC 32hd9 gives
   a node: `hosting`, `datacenter` or `selfhost`; `account`, the id of the `account` it is under,
-  which a `selfhost` node has none of; `domain`, the id of the `domain` it fails with; and `roles`,
-  one or more of `compute`, `storage` and `core`, each once. A node naming an account or a domain
-  the registry does not hold is refused `invalid_resource`. Until `nodes.toml` declares them, the
-  import derives them from its `tier`, `domain` and `core` -- `home` is `selfhost`; a provider's
-  code such as `oci-2` names the domain it is, made when missing, and a `selfhost` node's domain is
-  the one named for it; every node is `compute`, a core `core` too -- and writes the domain's id,
-  the code living on as its name. It makes no account, since an account needs an identity only the
-  author holds: it links a node to the account named by its code once the author has written that
-  account, and until then the node has none. Meanwhile `account` and `domain` are read by shape: 16
-  hexadecimal digits are a reference, anything else the provider's code they held before, which no
-  code's shape can be mistaken for. The relay reads `roles`, falling back to `core`. The old forms
-  are refused once `nodes.toml` writes the new.
-- **`account`** -- `/v1/accounts` and `/v1/accounts/{id}`: a paid account at a provider, named as
-  the provider's code was, `oci-2`, which is how the import finds it. Only the author writes one,
-  through the API, never the import. Its `spec` is its `provider` as a whole word, `oracle` or
-  `azure`, and `identities`, one to three, each exactly `{kind, value}` and each kind at most once,
-  so an account always keeps at least one way to be known: `kind` one of `user_id`, `tenancy` and
-  `email`, the three set for now and another discussed when they fall short; `value` the identity
-  itself, kept here and answered, and `masked`, so it is drawn hidden until asked for -- RFC cpc2b.
-  Decided with the author on 2026-10-13: an identity is how the author finds their own account, so
-  they read it back, and none of the three lets anyone act on the account. An identity carrying any
-  other key is refused.
-- **`domain`** -- `/v1/domains` and `/v1/domains/{id}`: what fails together, its `spec` an optional
-  `note`, grouped by the author through the nodes that name it. A node's `account` and `domain` are
-  of the catalog's `reference` type, naming the kind they point to.
+  which a `selfhost` node has none of; and `roles`, one or more of `compute`, `storage` and `core`,
+  each once. A node naming an account the registry does not hold is refused `invalid_resource`.
+  **Its failure domain is never written**: it is its account's id, and a `selfhost` node's own id,
+  read wherever a rule counts domains, as the core's does -- RFC 32hd9, changed on 2026-10-13 from a
+  `domain` resource named by hand, whose kind, rows and field a migration removed. Until `nodes.toml`
+  declares them, the import derives `hosting` and `roles` from its `tier` and `core` -- `home` is
+  `selfhost`; every node is `compute`, a core `core` too -- and leaves `account` to the author, who
+  writes it by id: an account has no name to find it by. The relay reads `roles`, falling back to
+  `core`. The old forms are refused once `nodes.toml` writes the new.
+- **`account`** -- `/v1/accounts` and `/v1/accounts/{id}`: a third party's account, registered -- a
+  provider's, an object store's, any account something runs under -- and not a user the platform
+  issues, nor an organization or a grant: one person may hold many. **It has no name**: it is its id,
+  `name` is null and never written, and a list is not searched by one; the console and the command
+  line show its `provider` and its id's first eight digits, and the command line takes those eight
+  wherever they name one account alone. One is made by `POST /v1/accounts`, `{by, revision: 0, spec}`,
+  answered `202 {revision, task, id}` with the id the registry drew -- a kind with no name has no
+  route to `PUT` a new one to, and a named kind answers that `POST` `405`, naming its `PUT`. Only the author writes one, through the API, never the
+  import. Its `spec` is its `provider` as a whole word, `oracle`, `azure`, `racknerd`,
+  `backblaze` or `cloudflare`, and `identities`, one to three, each exactly `{kind, value}` and each kind at most
+  once, so an account always keeps at least one way to be known: `kind` one of `user_id`, `tenancy`
+  and `email`, the three set for now and another discussed when they fall short; `value` the
+  identity itself, kept here and answered, and `masked`, so it is drawn hidden until asked for --
+  RFC cpc2b. Decided with the author on 2026-10-13: an identity is how the author finds their own
+  account, so they read it back, and none of the three lets anyone act on the account. An identity
+  carrying any other key is refused. A node's `account` is of the catalog's `reference` type, naming
+  the kind it points to, and the catalog marks a kind with no name `named: false`.
 
 **A write carries the revision it read**, `{"by", "revision", "spec"}` with `revision` 0 for what
 does not exist yet, and one made after another change is refused `409 invalid_revision`. A body

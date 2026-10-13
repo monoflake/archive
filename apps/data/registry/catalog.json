@@ -2,6 +2,7 @@
 	{
 		"name": "node",
 		"plural": "nodes",
+		"named": true,
 		"fields": [
 			{
 				"name": "address",
@@ -17,13 +18,6 @@
 					"home",
 					"transient"
 				],
-				"editable": true,
-				"required": true
-			},
-			{
-				"name": "domain",
-				"type": "reference",
-				"kind": "domain",
 				"editable": true,
 				"required": true
 			},
@@ -88,13 +82,14 @@
 		"columns": [
 			"address",
 			"tier",
-			"domain",
+			"account",
 			"system"
 		]
 	},
 	{
 		"name": "app",
 		"plural": "apps",
+		"named": true,
 		"fields": [
 			{
 				"name": "placements",
@@ -117,10 +112,18 @@
 	{
 		"name": "account",
 		"plural": "accounts",
+		"named": false,
 		"fields": [
 			{
 				"name": "provider",
-				"type": "string",
+				"type": "choice",
+				"choices": [
+					"oracle",
+					"azure",
+					"racknerd",
+					"backblaze",
+					"cloudflare"
+				],
 				"editable": true,
 				"required": true
 			},
@@ -154,22 +157,6 @@
 		"actions": [],
 		"columns": [
 			"provider"
-		]
-	},
-	{
-		"name": "domain",
-		"plural": "domains",
-		"fields": [
-			{
-				"name": "note",
-				"type": "string",
-				"editable": true,
-				"required": false
-			}
-		],
-		"actions": [],
-		"columns": [
-			"note"
 		]
 	}
 ]

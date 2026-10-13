@@ -1,5 +1,5 @@
-//! What an account's spec has to be before it is stored: a paid account at a provider, read by
-//! its resource's name, and the identities the author finds it by, kept and answered, which the
+//! What an account's spec has to be before it is stored: a third party's account, which has no
+//! name and is its id, and the identities the author finds it by, kept and answered, which the
 //! catalog marks `masked`. See RFC 32hd9, RFC cpc2b and spec/architecture/registry.md.
 
 use crate::kinds::Refusal;
@@ -7,6 +7,9 @@ use serde_json::{Map, Value};
 
 /// Every key an account's spec may hold.
 const FIELDS: &[&str] = &["provider", "identities"];
+
+/// Whose account it is, each by a whole word, never a short code.
+pub const PROVIDERS: &[&str] = &["oracle", "azure", "racknerd", "backblaze", "cloudflare"];
 
 /// What an identity is of: the provider's user id, its tenancy, the email it signs in with.
 pub const IDENTITIES: &[&str] = &["user_id", "tenancy", "email"];
@@ -17,7 +20,7 @@ const IDENTITY: &[&str] = &["kind", "value"];
 /// The longest identity kept: an email or a provider's id is far shorter.
 const MAX_VALUE_BYTES: usize = 1024;
 
-/// The spec as stored: `provider`, a whole lowercase word, and `identities`, one to three, each
+/// The spec as stored: `provider`, one of `PROVIDERS`, and `identities`, one to three, each
 /// `{kind, value}` and each kind at most once, so an account always keeps an identifier.
 pub fn spec(spec: Value) -> Result<Map<String, Value>, Refusal> {
 	let Value::Object(spec) = spec else {
@@ -26,8 +29,8 @@ pub fn spec(spec: Value) -> Result<Map<String, Value>, Refusal> {
 	if let Some(key) = spec.keys().find(|key| !FIELDS.contains(&key.as_str())) {
 		return Err(Refusal::Forbidden(format!("`{key}` is not a field of an account")));
 	}
-	if !spec.get("provider").and_then(Value::as_str).is_some_and(word_is_valid) {
-		return Err(Refusal::Invalid("`provider` is a whole lowercase word, as `oracle`".into()));
+	if !spec.get("provider").and_then(Value::as_str).is_some_and(|it| PROVIDERS.contains(&it)) {
+		return Err(Refusal::Invalid(format!("`provider` is one of {}", PROVIDERS.join(", "))));
 	}
 	let Some(Value::Array(identities)) = spec.get("identities") else {
 		let message = "`identities` is required, a list of one to three `{kind, value}`";
@@ -74,11 +77,6 @@ fn identity_refusal(identity: &Value) -> Option<Refusal> {
 /// One line, not empty, no longer than an identity is.
 fn value_is_valid(value: &str) -> bool {
 	!value.is_empty() && value.len() <= MAX_VALUE_BYTES && !value.contains(['\n', '\r', '\0'])
-}
-
-/// `oracle`, `azure`, `racknerd`: a provider is named by a whole word, never a short code.
-fn word_is_valid(word: &str) -> bool {
-	(1..=32).contains(&word.len()) && word.bytes().all(|b| b.is_ascii_lowercase())
 }
 
 #[cfg(test)]

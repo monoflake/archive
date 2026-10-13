@@ -13,7 +13,6 @@ pub enum Kind {
 	Node,
 	App,
 	Account,
-	Domain,
 }
 
 impl Kind {
@@ -23,7 +22,6 @@ impl Kind {
 			Self::Node => "node",
 			Self::App => "app",
 			Self::Account => "account",
-			Self::Domain => "domain",
 		}
 	}
 
@@ -33,8 +31,12 @@ impl Kind {
 			Self::Node => "nodes",
 			Self::App => "apps",
 			Self::Account => "accounts",
-			Self::Domain => "domains",
 		}
+	}
+
+	/// Whether its resources have a name: an account has none, and is its id -- RFC 32hd9.
+	pub const fn named(self) -> bool {
+		!matches!(self, Self::Account)
 	}
 }
 
@@ -44,8 +46,8 @@ pub fn is_id(key: &str) -> bool {
 	key.len() == 16 && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// A name every kind but `node` takes: one DNS label, lowercase letters, digits and inner hyphens,
-/// as every service's is, and never an id's shape, which a route would read as an id.
+/// A name every named kind but `node` takes: one DNS label, lowercase letters, digits and inner
+/// hyphens, as every service's is, and never an id's shape, which a route would read as an id.
 pub fn label_is_valid(name: &str) -> bool {
 	(1..=63).contains(&name.len())
 		&& name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -70,6 +72,9 @@ pub struct Description {
 	pub kind: Kind,
 	/// Its collection's segment of a route, `/v1/<plural>`, so no reader derives one.
 	pub plural: &'static str,
+	/// False for a kind whose resources have no name, an account's: each is its id, made by a `POST`
+	/// to its collection, and shown by its fields and its id's first eight digits -- RFC 32hd9.
+	pub named: bool,
 	pub fields: &'static [Field],
 	pub actions: &'static [Action],
 	/// The fields a list shows first, in order.
@@ -187,10 +192,10 @@ const fn choices(name: &'static str, choices: &'static [&'static str], required:
 pub const NODE: Description = Description {
 	kind: Kind::Node,
 	plural: Kind::Node.plural(),
+	named: Kind::Node.named(),
 	fields: &[
 		field("address", Type::String, true),
 		choice("tier", node::TIERS, true),
-		reference("domain", Kind::Domain, true),
 		choice("system", node::SYSTEMS, true),
 		field("core", Type::Boolean, false),
 		field("expiry", Type::Integer, false),
@@ -201,12 +206,13 @@ pub const NODE: Description = Description {
 		choices("roles", node::ROLES, false),
 	],
 	actions: &[],
-	columns: &["address", "tier", "domain", "system"],
+	columns: &["address", "tier", "account", "system"],
 };
 
 pub const APP: Description = Description {
 	kind: Kind::App,
 	plural: Kind::App.plural(),
+	named: Kind::App.named(),
 	fields: &[field("placements", Type::List, true), field("release", Type::Object, false)],
 	actions: &[],
 	columns: &["placements"],
@@ -221,23 +227,16 @@ const IDENTITY: &[Field] = &[
 pub const ACCOUNT: Description = Description {
 	kind: Kind::Account,
 	plural: Kind::Account.plural(),
+	named: Kind::Account.named(),
 	fields: &[
-		field("provider", Type::String, true),
+		choice("provider", account::PROVIDERS, true),
 		Field { fields: IDENTITY, ..field("identities", Type::List, true) },
 	],
 	actions: &[],
 	columns: &["provider"],
 };
 
-pub const DOMAIN: Description = Description {
-	kind: Kind::Domain,
-	plural: Kind::Domain.plural(),
-	fields: &[field("note", Type::String, false)],
-	actions: &[],
-	columns: &["note"],
-};
-
-pub const CATALOG: &[Description] = &[NODE, APP, ACCOUNT, DOMAIN];
+pub const CATALOG: &[Description] = &[NODE, APP, ACCOUNT];
 
 /// What `GET /v1/kinds` answers inside the envelope: every kind the registry holds. Its JSON
 /// Schema is `catalog.schema.json`, made from this type and committed, which every reader in

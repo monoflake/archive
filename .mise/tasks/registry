@@ -92,44 +92,18 @@ def derived(table):
 	}
 
 
-def homed(name, table):
-	"""The names of the account and the domain node `name` is under: a provider's code is both, and
-	a `home` node has no account and a domain named for itself. See RFC 32hd9."""
-	if table.get("tier") == "home":
-		return None, name
-	return table["domain"], table["domain"]
+# A node's failure domain, which nodes.toml writes as a provider's code and the registry never
+# keeps: it is read from the node's account -- RFC 32hd9.
+UNKEPT = ("domain",)
 
 
-def resources_named(nodes):
-	"""The accounts the nodes are under, each with the nodes under it, and the domains, each named
-	once, in order: ({account: [node]}, [domain])."""
-	accounts, domains = {}, []
-	for name, table in nodes.items():
-		account, domain = homed(name, table)
-		if account is not None:
-			accounts.setdefault(account, []).append(name)
-		if domain not in domains:
-			domains.append(domain)
-	return accounts, domains
-
-
-def request_body(table, address, revision, account=None, domain=None, by=BY):
+def request_body(table, address, revision, by=BY):
 	"""The body of `PUT` or `PATCH /v1/nodes/<name>`: who, the revision read, and the node's table as
-	nodes.toml has it, the fields derived from it beside the old, its tailnet IPv4, and the ids of
-	its account, `None` for none, and its domain, in place of the codes. See
+	nodes.toml has it but its `domain`, the fields derived from it beside the old, and its tailnet
+	IPv4. Its `account` is the author's to write, by id, and a `PATCH` keeps it. See
 	spec/architecture/registry.md."""
-	spec = {**derived(table), **table, "address": address}
-	if domain is not None:
-		spec.update(account=account, domain=domain)
-	return {"by": by, "revision": revision, "spec": spec}
-
-
-def for_method(body, method):
-	"""`body` as `method` sends it: a `PATCH` takes a key given `None` out, a `PUT` leaves it out."""
-	if method == "PATCH":
-		return body
-	spec = {key: value for key, value in body["spec"].items() if value is not None}
-	return {**body, "spec": spec}
+	kept = {key: value for key, value in table.items() if key not in UNKEPT}
+	return {"by": by, "revision": revision, "spec": {**derived(table), **kept, "address": address}}
 
 
 def is_id(key):
@@ -429,8 +403,6 @@ def method_at(revision):
 ABSENT = {
 	"node": "no_such_node",
 	"app": "no_such_resource",
-	"account": "no_such_resource",
-	"domain": "no_such_resource",
 }
 
 
@@ -450,38 +422,6 @@ def load_nodes():
 	return tomllib.loads(path.read_text())
 
 
-def domain_held(registries, name, secret):
-	"""The id of domain `name`, made by `PUT` where the registry does not hold it; one it holds is
-	left as it is, whatever has been written to it since."""
-	path = f"/v1/domains/{name}"
-	answer = answered(registries, "GET", path)
-	if revision_of(answer, name, "domain") == 0:
-		body = {"by": BY, "revision": 0, "spec": {}}
-		made = answered(registries, "PUT", path, body, secret)
-		if made.get("status") != "success":
-			fail(f"domain {name}: {made}")
-		print(f"{APP}: domain {name}: made, revision {made['data']['revision']}")
-		answer = answered(registries, "GET", path)
-		if answer.get("status") != "success":
-			fail(f"domain {name}: {answer}")
-	else:
-		print(f"{APP}: domain {name}: held")
-	return answer["data"]["id"]
-
-
-def account_linked(registries, code, nodes):
-	"""The id of the account named `code`, or None where the author has not written it: the import
-	never makes one, since only the author holds its identities. Says which, naming the nodes."""
-	answer = answered(registries, "GET", f"/v1/accounts/{code}")
-	if revision_of(answer, code, "account") == 0:
-		under = ", ".join(nodes)
-		said = f"{under} have none until it is written with its identities"
-		print(f"{APP}: account {code}: not held; {said}")
-		return None
-	print(f"{APP}: account {code}: linked, {', '.join(nodes)}")
-	return answer["data"]["id"]
-
-
 def importing(dry):
 	nodes = load_nodes()
 	cores = placements()
@@ -498,16 +438,8 @@ def importing(dry):
 			f" to the first of {', '.join(cores)} whose registry answers on {PORT}, as Bearer"
 			" <redacted>:"
 		)
-		accounts, domains = resources_named(nodes)
-		print("  each domain they name first, by PUT where the registry does not hold it:")
-		for name in domains:
-			print(f"  PUT /v1/domains/{name} {json.dumps({'by': BY, 'revision': 0, 'spec': {}})}")
-		# Read, never written: whether the author has written each account yet.
-		linked = {code: account_linked(registries, code, under) for code, under in accounts.items()}
 		for name, table in nodes.items():
-			account, domain = homed(name, table)
-			account = f"<the id of account {account}>" if linked.get(account) else None
-			body = request_body(table, addresses[name], "<read>", account, f"<the id of domain {domain}>")
+			body = request_body(table, addresses[name], "<read>")
 			print(f"  PATCH /v1/nodes/{name} {json.dumps(body)}")
 		print(
 			f"{APP}: then each app placed on nodes, at the revision GET /v1/apps/<name> answers,"
@@ -520,17 +452,11 @@ def importing(dry):
 				body = app_body("<read>", where)
 				print(f"  PATCH /v1/apps/{name} {json.dumps(body)}")
 		return
-	accounts, domains = resources_named(nodes)
-	domain_ids = {name: domain_held(registries, name, secret) for name in domains}
-	account_ids = {code: account_linked(registries, code, under) for code, under in accounts.items()}
 	for name, table in nodes.items():
 		path = f"/v1/nodes/{name}"
 		revision = revision_of(answered(registries, "GET", path), name, "node")
-		account, domain = homed(name, table)
-		under = (account_ids.get(account), domain_ids[domain])
-		method = method_at(revision)
-		body = for_method(request_body(table, addresses[name], revision, *under), method)
-		answer = answered(registries, method, path, body, secret)
+		body = request_body(table, addresses[name], revision)
+		answer = answered(registries, method_at(revision), path, body, secret)
 		if answer.get("status") != "success":
 			fail(f"{name}: {answer}")
 		made = answer["data"].get("revision")

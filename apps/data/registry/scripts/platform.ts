@@ -19,6 +19,8 @@ const BY = 'operator';
 const HIDDEN = '<hidden>';
 /** A resource's id as a list shows it: its first eight digits -- web's spec/console/design.md. */
 const SHORT = 8;
+/** A key read as the start of an id: at least `SHORT` of its digits, and fewer than all 16. */
+const PREFIX = /^[0-9a-f]{8,15}$/;
 /** What `list` and `get` print for a value the catalog marks `masked`, until `--reveal`. */
 const MASK = '••••••••';
 const TOKEN = 'REGISTRY_TOKEN';
@@ -40,7 +42,8 @@ function fail(message: string): never {
 interface Resource {
 	kind: string;
 	id: string;
-	name: string;
+	/** Null for a kind the catalog marks `named: false`, an account's. */
+	name: string | null;
 	revision: number;
 	spec?: Record<string, unknown>;
 }
@@ -117,7 +120,7 @@ export function described(kind: Description): string {
 	const lines = [`${kind.name}'s fields, from the registry's catalog:`];
 	for (const field of kind.fields) {
 		const facts: string[] = [field.type];
-		if (field.kind) facts.push(`of a ${field.kind}, by id or name`);
+		if (field.kind) facts.push(`of a ${field.kind}, by id, its first ${SHORT} digits or a name`);
 		if (field.choices?.length) facts.push(`one of ${field.choices.join('|')}`);
 		facts.push(...marks(field));
 		if (!isEditable(field)) facts.push('not editable');
@@ -131,8 +134,15 @@ export function described(kind: Description): string {
 	return lines.join('\n');
 }
 
+/** The key `verb` takes on `kind`, none for a list or for making a resource with no name. */
+function keyGiven(kind: Description, verb: Verb): string {
+	if (verb === 'list' || (verb === 'create' && !kind.named)) return '';
+	if (verb === 'create') return ' <name>';
+	return kind.named ? ' <name-or-id>' : ' <id>';
+}
+
 function usage(kind: Description, verb: Verb): string {
-	const key = verb === 'list' ? '' : verb === 'create' ? ' <name>' : ' <name-or-id>';
+	const key = keyGiven(kind, verb);
 	if (verb === 'list' || verb === 'get') {
 		const options = '[--json] [--reveal]\n\n  --json    the answer as it is\n  --reveal  every masked value';
 		return `usage: mise run ${APP} ${kind.name} ${verb}${key} ${options}\n\n${described(kind)}`;
@@ -196,7 +206,7 @@ function given(kind: Description, verb: Verb, args: string[]): Given | undefined
 	}
 	const { values, positionals } = parsed;
 	if (values.help) return undefined;
-	if (positionals.length !== (verb === 'list' ? 0 : 1)) fail(usage(kind, verb));
+	if (positionals.length !== (keyGiven(kind, verb) ? 1 : 0)) fail(usage(kind, verb));
 	const strings = (name: string) => (write ? (values[name] as string[] | undefined) : []) ?? [];
 	return {
 		key: positionals[0] ?? '',
@@ -487,12 +497,12 @@ export function cell(value: unknown, field?: Field, reveal = false): string {
 
 export function table(kind: Description, resources: readonly Resource[], reveal = false): string {
 	const fields = new Map(kind.fields.map((field) => [field.name, field]));
-	const rows = [['id', 'name', ...kind.columns]];
+	const rows = [['id', ...(kind.named ? ['name'] : []), ...kind.columns]];
 	for (const resource of resources) {
 		const spec = resource.spec ?? {};
 		rows.push([
 			resource.id.slice(0, SHORT),
-			resource.name,
+			...(kind.named ? [resource.name ?? '-'] : []),
 			...kind.columns.map((column) => cell(spec[column], fields.get(column), reveal)),
 		]);
 	}
@@ -520,7 +530,7 @@ export function readable(kind: Description, resource: Resource, reveal = false):
 	const fields = new Map(kind.fields.map((field) => [field.name, field]));
 	const width = Math.max(...['id', 'revision', ...names].map((name) => name.length));
 	const lines = [
-		`${kind.name} ${resource.name}`,
+		`${kind.name} ${resource.name ?? resource.id.slice(0, SHORT)}`,
 		`  ${'id'.padEnd(width)}  ${resource.id}`,
 		`  ${'revision'.padEnd(width)}  ${resource.revision}`,
 	];
@@ -568,7 +578,8 @@ async function write(
 	if (!secret) fail(`secrets.json has no ${TOKEN}; \`registry token\` makes it`);
 	const data = dataOf(await ask(world, method, path, body, secret), what);
 	if (isObject(data) && 'task' in data) {
-		world.print(`${APP}: ${what}: written, revision ${data.revision}, task ${data.task}`);
+		const made = typeof data.id === 'string' ? `, id ${data.id}` : '';
+		world.print(`${APP}: ${what}: written${made}, revision ${data.revision}, task ${data.task}`);
 	} else {
 		world.print(`${APP}: ${what}: unchanged`);
 	}
@@ -576,7 +587,8 @@ async function write(
 
 function usageOf(kinds: readonly Description[]): string {
 	return (
-		`name a kind and a verb: \`mise run ${APP} <kind> ${VERBS.join('|')} [name-or-id]\`, a kind` +
+		`name a kind and a verb: \`mise run ${APP} <kind> ${VERBS.join('|')} [name-or-id]\`, an id` +
+		` given whole or by its first ${SHORT} digits or more, a kind` +
 		` being one of ${listed(kinds)}; \`<kind> <verb> --help\` says its fields`
 	);
 }
@@ -606,36 +618,63 @@ export async function run(world: World, args: readonly string[]): Promise<void> 
 		world.print(options.raw ? JSON.stringify(resources, null, 2) : table(kind, resources, options.reveal));
 		return;
 	}
-	const what = `${kind.name} ${options.key}`;
 	if (verb === 'get') {
-		const path = `/v1/${plural}/${options.key}`;
-		const resource = dataOf(await ask(world, 'GET', path), what) as Resource;
+		const resource = await found(world, kind, options.key);
 		world.print(
 			options.raw ? JSON.stringify(resource, null, 2) : readable(kind, resource, options.reveal),
 		);
 		return;
 	}
-	const resolve: Resolve = async (referenced, name) => {
-		const path = `/v1/${kindNamed(kinds, referenced).plural}/${name}`;
-		return (dataOf(await ask(world, 'GET', path), `${referenced} ${name}`) as Resource).id;
-	};
+	const resolve: Resolve = async (referenced, key) =>
+		(await found(world, kindNamed(kinds, referenced), key)).id;
 	if (verb === 'create') {
-		if (isId(options.key)) {
-			fail(`${options.key} has an id's shape, which a route reads as an id, never a name`);
-		}
 		const spec = await changes(world, kind, options, undefined, resolve);
 		const body = { by: BY, revision: 0, spec };
+		if (!kind.named) {
+			await write(world, 'POST', `/v1/${plural}`, body, `new ${kind.name}`, options.dry);
+			return;
+		}
+		if (isId(options.key) || PREFIX.test(options.key)) {
+			fail(`${options.key} has an id's shape, which is read as an id, never a name`);
+		}
+		const what = `${kind.name} ${options.key}`;
 		await write(world, 'PUT', `/v1/${plural}/${options.key}`, body, what, options.dry);
 		return;
 	}
-	const resource = dataOf(await ask(world, 'GET', `/v1/${plural}/${options.key}`), what) as Resource;
+	const resource = await found(world, kind, options.key);
 	const spec = await changes(world, kind, options, resource.spec ?? {}, resolve);
 	if (Object.keys(spec).length === 0) {
 		fail('nothing to change: give --set, --json, --unset or an item');
 	}
 	const body = { by: BY, revision: resource.revision, spec };
-	const named = `${kind.name} ${resource.name}`;
-	await write(world, 'PATCH', `/v1/${plural}/${resource.id}`, body, named, options.dry);
+	const what = `${kind.name} ${resource.name ?? resource.id.slice(0, SHORT)}`;
+	await write(world, 'PATCH', `/v1/${plural}/${resource.id}`, body, what, options.dry);
+}
+
+/**
+ * The resource `key` names: an id whole, the start of exactly one id, at least eight of its digits,
+ * or, for a named kind, its name. A start more than one id shares is refused, naming them.
+ */
+async function found(world: World, kind: Description, key: string): Promise<Resource> {
+	const what = `${kind.name} ${key}`;
+	const one = async () =>
+		dataOf(await ask(world, 'GET', `/v1/${kind.plural}/${key}`), what) as Resource;
+	if (isId(key)) return one();
+	if (PREFIX.test(key)) {
+		const listed = dataOf(await ask(world, 'GET', `/v1/${kind.plural}`), `GET /v1/${kind.plural}`);
+		const starting = (listed as { items: Resource[] }).items.filter((it) => it.id.startsWith(key));
+		const [only, ...more] = starting;
+		if (only !== undefined && more.length === 0) return only;
+		if (only !== undefined) {
+			const ids = starting.map((it) => it.id).join(', ');
+			fail(`${what} begins ${starting.length} ids, ${ids}; give more of the one meant`);
+		}
+		if (!kind.named) fail(`${what}: no ${kind.name} has an id beginning so`);
+	}
+	if (!kind.named) {
+		fail(`${what}: ${kind.plural} have no name; give the id, or its first ${SHORT} digits or more`);
+	}
+	return one();
 }
 
 /** Lines of standard input when it is not a terminal, read one per secret asked for. */
