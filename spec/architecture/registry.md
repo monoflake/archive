@@ -125,7 +125,11 @@ history holds.
 to the task -- RFC cpc2b. A field the catalog marks `secret` is asked for on the terminal with no
 echo, never taken from an argument, which the shell's history and the process list would keep.
 `--dry-run` shows the request with every such value hidden. It writes as `operator`, with
-`REGISTRY_TOKEN` from the repository's secrets, to the first core that answers.
+`REGISTRY_TOKEN` from the repository's secrets, to the first core that answers. It is TypeScript,
+`apps/data/registry/scripts/platform.ts`, and refuses a catalog its validator does not accept: the
+types and the valibot validator are `catalog.gen.ts`, made from `catalog.schema.json` by web's
+generator, `mise run catalog`, and checked for drift by `check-catalog` whatever changed -- the
+workspace's `spec/json.md` and `spec/toolchain.md`, "A script is TypeScript".
 
 ## Every relay follows it
 
