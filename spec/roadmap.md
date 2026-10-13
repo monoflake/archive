@@ -3,6 +3,10 @@
 Where the platform is going, without the steps. What is not done is an RFC -- the workspace's
 `spec/planning.md`.
 
+- **The platform deploys and operates itself before anybody else uses it**, in this order: the nodes
+  in its registry (RFC ja5hm and qcyb3); a controller in every layer bringing what runs toward what
+  the registry wants (RFC jln34); every act done from the console through one contract (RFC dk6wz and
+  cpc2b); what a node runs signed by the core (RFC 8vy7x); and only then accounts.
 - **Every API is reached through one gateway**, whose declarations are the only description of a
   service's routes, limits and lifetimes -- [architecture/gateway.md](architecture/gateway.md). The
   move is done but for its cleanup.
