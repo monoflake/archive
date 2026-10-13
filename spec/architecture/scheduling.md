@@ -115,10 +115,12 @@ the apps share the bucket; across scopes nothing is shared. The organizations ar
 
 Each organization brought to the platform after is a scope of its own.
 
-**Infra is not a scope.** A scope's bucket and database run on infra, so infra's state kept in one
-would be a foundation stored upstairs: the database down, a node would not know how to run. What
-infra knows stays in infra -- git, each node's own disk, and the relay's log on the core. Scheduling
-across the nodes is the platform's, and its leases are in `platform`.
+**Infra is not a scope, and what the nodes are is the platform's to hold.** A scope's bucket and
+database run on infra, so a node that needed the database to run would be a foundation stored
+upstairs. So the registry of nodes, and where each app runs, are in the platform's Postgres, and
+every node keeps on its own disk what it last read and runs on it while the database is not reached:
+the database down stops a change, never a node -- RFC ja5hm. Scheduling across the nodes is the
+platform's, and its leases are in `platform`.
 
 - **Content is deduplicated within a scope, never across one.** A shared store of bytes would tell
   one scope whether another holds a given file, would make deleting in one ask the other, and would
