@@ -1,8 +1,9 @@
 //! The relays' mesh: a socket to every other node's relay. Both ends open with the versions they
 //! hold and send each other what the other lacks; after that a relay sends its own node's snapshot
-//! the moment it changes, and every other node's when a neighbor's comparison shows it behind. Its
-//! pings, timed, are the round trips its own snapshot carries. The runs and the minutes travel the
-//! same way, each by their own versions. See spec/architecture/relay.md.
+//! the moment it changes, and every other node's when a neighbor's comparison shows it behind. The
+//! kernel's round trip on the socket it dialed, or else its pings timed, is what its own snapshot
+//! carries to each neighbor. The runs and the minutes travel the same way, each by their own
+//! versions. See spec/architecture/relay.md.
 
 use crate::cluster::{Carried, Versions};
 use crate::config::Peer;
@@ -11,10 +12,13 @@ use crate::runs::Batch;
 use crate::socket::{Dial, Heard, Received, Socket, SocketError};
 use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, InvalidHeaderValue};
+use axum::serve::{Listener, ListenerExt};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
@@ -32,7 +36,8 @@ pub const COMPARISON: Duration = Duration::from_secs(2);
 /// socket is pinged this often; a neighbor's, every `PING`.
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
-/// How often a relay pings each neighbor and times the pong, the first ping as the socket opens.
+/// How often a relay pings each neighbor and times the pong, and reads the kernel's round trip
+/// where it can, the first as the socket opens.
 /// Its own snapshot is taken every `own::EVERY`, so a faster ping times a figure no round carries;
 /// a slower one leaves the figure a round behind. Two ten-byte frames a socket, beside snapshots of
 /// kilobytes every round. See spec/architecture/relay.md, "The round trip to each neighbor".
@@ -261,6 +266,9 @@ pub async fn converse<S: Socket>(
 			}
 			_ = ping.tick() => {
 				socket.ping(stamp(origin, Instant::now())).await?;
+				if let Some(round_trip) = socket.round_trip() {
+					relay.measured(&peer, round_trip);
+				}
 			}
 		}
 	}
@@ -358,11 +366,21 @@ pub async fn dial(peer: &Peer, secret: &str) -> Result<Dial, MeshError> {
 		.parse()
 		.map_err(|error: InvalidHeaderValue| tungstenite::Error::HttpFormat(error.into()))?;
 	request.headers_mut().insert(AUTHORIZATION, bearer);
-	let dialing = tokio_tungstenite::connect_async(request);
+	// Without TCP_NODELAY a pong waits on the ACK of what went before it, a round trip more.
+	let dialing = tokio_tungstenite::connect_async_with_config(request, None, true);
 	let (socket, _) = tokio::time::timeout(INTRODUCTION, dialing)
 		.await
 		.map_err(|_| MeshError::Slow(INTRODUCTION))??;
 	Ok(socket)
+}
+
+/// `listener`, its every connection without Nagle's delay, as `dial`'s are.
+pub fn accepting(listener: TcpListener) -> impl Listener<Io = TcpStream, Addr = SocketAddr> {
+	listener.tap_io(|stream: &mut TcpStream| {
+		if let Err(error) = stream.set_nodelay(true) {
+			eprintln!("relay: setting TCP_NODELAY on a connection: {error}");
+		}
+	})
 }
 
 /// Holds a socket to `peer` for as long as the relay runs, dialing again after each loss, waiting

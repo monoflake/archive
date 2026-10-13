@@ -1,6 +1,7 @@
 //! Relays on loopback ports, each reading a fake host, holding sockets to each other as they do
 //! across the tailnet.
 
+use axum::serve::Listener;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http_body_util::{BodyExt, Empty};
@@ -13,11 +14,13 @@ use relay::host::{App, Event, PAGE, ReadError, Reader, Reading, Source};
 use relay::presence::{Presence, sweep};
 use relay::relay::{Relay, recall, watch};
 use relay::runs::Store;
+use relay::socket::Socket;
 use std::future::{Future, IntoFuture};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::Message;
 
 const SECRET: &str = "s3cret";
@@ -107,6 +110,7 @@ struct Started {
 async fn start(node: &str, image: &str) -> Started {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let address = listener.local_addr().unwrap();
+	let listener = relay::mesh::accepting(listener);
 	let relay =
 		Relay::new(node.into(), SECRET.into(), Default::default(), Store::memory().unwrap()).unwrap();
 	let host = Arc::new(Fake { image: Mutex::new(image.into()), events: Mutex::default() });
@@ -282,6 +286,26 @@ async fn a_relay_without_the_secret_is_refused() {
 	let stranger = Peer { name: "rdu".into(), address: rdu.address.to_string() };
 	assert!(relay::mesh::dial(&stranger, "wrong").await.is_err());
 	assert!(relay::mesh::dial(&stranger, SECRET).await.is_ok());
+}
+
+/// Both ends without Nagle's delay, so a pong is not held back for the ACK of what went before it.
+#[tokio::test]
+async fn a_socket_dialed_and_one_accepted_send_without_delay() {
+	let rdu = start("rdu", "geo:1").await;
+	let peer = Peer { name: "rdu".into(), address: rdu.address.to_string() };
+	let dialed = relay::mesh::dial(&peer, SECRET).await.unwrap();
+	let MaybeTlsStream::Plain(stream) = dialed.get_ref() else { panic!("a plain stream") };
+	assert!(stream.nodelay().unwrap());
+	// The kernel's round trip where it can be read, and none, for the pings to stand, elsewhere.
+	assert_eq!(dialed.round_trip().is_some(), cfg!(target_os = "linux"));
+
+	let mut listener =
+		relay::mesh::accepting(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+	let address = listener.local_addr().unwrap();
+	let dialing = tokio::spawn(tokio::net::TcpStream::connect(address));
+	let (accepted, _) = listener.accept().await;
+	assert!(accepted.nodelay().unwrap());
+	dialing.await.unwrap().unwrap();
 }
 
 async fn text<S>(socket: &mut S) -> serde_json::Value

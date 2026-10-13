@@ -105,8 +105,11 @@ pub struct Relay {
 	/// Which socket to each neighbor sends unasked; see `mesh::Speaking`.
 	speakers: Mutex<BTreeMap<String, u64>>,
 	conversations: AtomicU64,
-	/// Each neighbor's latest round trip, and when it was timed.
+	/// Each neighbor's latest round trip by its pings, and when it was timed.
 	timed: Mutex<BTreeMap<String, (Duration, Instant)>>,
+	/// Each neighbor's latest round trip by the kernel, and when it was read; over `timed` while
+	/// current. See `tcp`.
+	measured: Mutex<BTreeMap<String, (Duration, Instant)>>,
 	/// The newest of this node's own versions sent to each neighbor, for a relay leaving to wait on.
 	told: told::Sender<Versions>,
 	/// The nodes the registry lists as retired, whose relays are refused; see `registry::follow`.
@@ -142,6 +145,7 @@ impl Relay {
 			speakers: Mutex::default(),
 			conversations: AtomicU64::new(0),
 			timed: Mutex::default(),
+			measured: Mutex::default(),
 			told: told::Sender::new(Versions::new()),
 			retired: Mutex::default(),
 		}))
@@ -417,9 +421,18 @@ impl Relay {
 		lock(&self.timed).insert(peer.to_owned(), (round_trip, Instant::now()));
 	}
 
-	/// Each neighbor's latest round trip, a neighbor not timed lately left out.
+	/// The kernel's round trip to `peer` just read, on the socket dialed to it.
+	pub fn measured(&self, peer: &str, round_trip: Duration) {
+		lock(&self.measured).insert(peer.to_owned(), (round_trip, Instant::now()));
+	}
+
+	/// Each neighbor's latest round trip, the kernel's over the pings', a neighbor not timed lately
+	/// left out.
 	pub fn round_trips(&self) -> RoundTrips {
-		current(&lock(&self.timed), Instant::now())
+		let now = Instant::now();
+		let mut round_trips = current(&lock(&self.timed), now);
+		round_trips.extend(current(&lock(&self.measured), now));
+		round_trips
 	}
 
 	/// Once host has been read, or the grace is over.
@@ -536,6 +549,16 @@ mod tests {
 			current(&timed, now),
 			RoundTrips::from([("tyo".into(), 0.1512), ("buf".into(), 0.0005)])
 		);
+	}
+
+	#[test]
+	fn the_kernels_round_trip_stands_over_the_pings_and_the_pings_where_it_has_none() {
+		let relay = relay("rdu");
+		relay.timed("tyo", Duration::from_millis(137));
+		relay.timed("sha", Duration::from_millis(1234));
+		relay.measured("tyo", Duration::from_micros(69_250));
+		let round_trips = relay.round_trips();
+		assert_eq!(round_trips, RoundTrips::from([("tyo".into(), 0.0693), ("sha".into(), 1.234)]));
 	}
 
 	#[test]

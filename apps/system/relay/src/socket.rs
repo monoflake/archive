@@ -48,6 +48,11 @@ pub trait Socket: Send {
 	fn ping(&mut self, payload: Bytes) -> impl Future<Output = Result<(), SocketError>> + Send;
 	/// Cancel-safe, so it can wait in a `select!` beside the updates.
 	fn receive(&mut self) -> impl Future<Output = Result<Received, SocketError>> + Send;
+
+	/// The kernel's round trip for the connection beneath, where it can be read; see `tcp`.
+	fn round_trip(&self) -> Option<Duration> {
+		None
+	}
 }
 
 impl Socket for WebSocket {
@@ -89,6 +94,14 @@ impl Socket for Dial {
 			Some(Ok(_)) => Received::Other,
 			Some(Err(error)) => return Err(SocketError(error.into())),
 		})
+	}
+
+	/// Read on the dialed socket alone: axum hands over an accepted one with its stream out of reach.
+	fn round_trip(&self) -> Option<Duration> {
+		match self.get_ref() {
+			MaybeTlsStream::Plain(stream) => crate::tcp::smoothed(stream),
+			_ => None,
+		}
 	}
 }
 
@@ -141,6 +154,10 @@ impl<S: Socket> Socket for Heard<S> {
 		let received = by(self.deadline(), self.silence, self.socket.receive()).await?;
 		self.heard = Instant::now();
 		Ok(received)
+	}
+
+	fn round_trip(&self) -> Option<Duration> {
+		self.socket.round_trip()
 	}
 }
 

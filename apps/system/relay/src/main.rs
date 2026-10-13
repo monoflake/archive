@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 	let named: Vec<String> = seed.iter().map(|peer| peer.name.clone()).collect();
 	tokio::spawn(relay::registry::follow(relay.clone(), config.data.clone(), seed, cached));
 
-	let listener = tokio::net::TcpListener::bind(&config.listen).await?;
+	let listener = relay::mesh::accepting(tokio::net::TcpListener::bind(&config.listen).await?);
 	eprintln!("relay: {} listening on {}, holding {}", config.node, config.listen, named.join(" "));
 	let routes = relay::api::routes(relay.clone());
 	// Said while the mesh and the routes still run; see spec/architecture/relay.md, "A node says

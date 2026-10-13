@@ -215,18 +215,25 @@ relay's disk" -- into the same file, and answered from it. Decided with the auth
 
 ## The round trip to each neighbor
 
-**A relay times its own pings on `/mesh`, and its snapshot carries the latest per neighbor as
-`round_trip`**: `{ "tyo": 0.1512, "buf": 0.0184 }`, by node, in seconds to a tenth of a millisecond. It travels
+**A relay reads each neighbor's round trip from the kernel, and its snapshot carries the latest
+per neighbor as `round_trip`**: `{ "tyo": 0.1512, "buf": 0.0184 }`, by node, in seconds to a tenth of a millisecond. It travels
 as the rest of the snapshot does, to every relay and to `/live` and `/state`, so a page reads each
 node's round trip to every other from that node's own entry. Asked for on 2026-10-09, for the
 console's row of each node's round trip to the database's primary.
 
+- **The figure is Linux's smoothed round trip of the socket the relay dialed**, `TCP_INFO`'s
+  `tcpi_rtt`, read at every ping: it is timed on the connection's ACKs beneath the relay's own
+  queues, so a socket busy with snapshots does not count its backlog. Pings timed alone counted it,
+  and Nagle's delay besides: on 2026-10-13 `sin` read `tyo` at 137 ms and `rdu` at 1,033 ms, where
+  `tailscale ping` gave 69 and 276. Every mesh socket, dialed and accepted, sets `TCP_NODELAY`.
+  Where the kernel's figure cannot be read, off Linux or on the accepting end, the timed ping below
+  stands, and a kernel figure read lately is preferred to it.
 - **The WebSocket's own ping is timed, not a message of the mesh's.** The other end's socket
   answers it beneath the relay with a pong carrying the ping's payload back, and the payload is
   when the ping was sent, so nothing is kept per ping and a late pong still times its own. A
   relay of an older build answers it the same, and the mesh's messages and contract are untouched.
-  What it measures is the relays' own path over the tailnet, a busy peer's queue included; an
-  app's connection to another node's port takes the same path but not the same queue.
+  It measures the relays' own path over the tailnet with a busy peer's queue included, which is why
+  it is only the fallback; it also keeps a socket known to be alive.
 - **Every three seconds, on every socket, the first as the socket opens** -- the same `own::EVERY`
   the snapshot is taken at, since a faster ping times a figure no snapshot carries and a slower one
   leaves the figure a round behind. A ping and its pong are two frames of a few bytes, beside the

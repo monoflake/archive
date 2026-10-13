@@ -15,4 +15,5 @@ pub mod registry;
 pub mod relay;
 pub mod runs;
 pub mod socket;
+pub mod tcp;
 pub mod window;
