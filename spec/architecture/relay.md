@@ -221,13 +221,16 @@ as the rest of the snapshot does, to every relay and to `/live` and `/state`, so
 node's round trip to every other from that node's own entry. Asked for on 2026-10-09, for the
 console's row of each node's round trip to the database's primary.
 
-- **The figure is Linux's smoothed round trip of the socket the relay dialed**, `TCP_INFO`'s
-  `tcpi_rtt`, read at every ping: it is timed on the connection's ACKs beneath the relay's own
-  queues, so a socket busy with snapshots does not count its backlog. Pings timed alone counted it,
-  and Nagle's delay besides: on 2026-10-13 `sin` read `tyo` at 137 ms and `rdu` at 1,033 ms, where
-  `tailscale ping` gave 69 and 276. Every mesh socket, dialed and accepted, sets `TCP_NODELAY`.
-  Where the kernel's figure cannot be read, off Linux or on the accepting end, the timed ping below
-  stands, and a kernel figure read lately is preferred to it.
+- **The figure is Linux's least round trip of the socket the relay dialed**, `TCP_INFO`'s
+  `tcpi_min_rtt` -- the smoothed `tcpi_rtt` on a kernel before 4.6 -- read at every ping: it is
+  timed on the connection's ACKs beneath the relay's own queues, and as the least it leaves out the
+  delayed ACKs a mostly one-way socket draws. Pings timed alone counted the backlog, and Nagle's delay
+  besides: on 2026-10-13 `sin` read `tyo` at 137 ms and `rdu` at 1,033 ms, where `tailscale ping`
+  gave 69 and 276; the smoothed figure still read `nrt` from `hnd` at 19 ms, where it is one. Every
+  mesh socket, dialed and accepted, sets `TCP_NODELAY`. The least is kept over the kernel's window,
+  five minutes by default, so a path grown slower shows within it. Where the kernel's figure cannot
+  be read, off Linux or on the accepting end, the timed ping below stands, and a kernel figure read
+  lately is preferred to it.
 - **The WebSocket's own ping is timed, not a message of the mesh's.** The other end's socket
   answers it beneath the relay with a pong carrying the ping's payload back, and the payload is
   when the ping was sent, so nothing is kept per ping and a late pong still times its own. A

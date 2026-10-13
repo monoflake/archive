@@ -99,7 +99,7 @@ impl Socket for Dial {
 	/// Read on the dialed socket alone: axum hands over an accepted one with its stream out of reach.
 	fn round_trip(&self) -> Option<Duration> {
 		match self.get_ref() {
-			MaybeTlsStream::Plain(stream) => crate::tcp::smoothed(stream),
+			MaybeTlsStream::Plain(stream) => crate::tcp::round_trip(stream),
 			_ => None,
 		}
 	}
