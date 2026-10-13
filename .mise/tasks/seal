@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+#MISE description="Set the secret service's lock: `seal init [--recipient age1pq1...]` splits a new root key among the cores once, to recovery.pub's post-quantum recipient unless another is given; `seal token` gives every core the service's tokens; `seal unseal <node> <identity>` opens a lone core with the recovery key, each with --dry-run"
+"""The operator's half of the secret service's lock -- spec/architecture/secrets.md, RFC 231yq.
+
+`init` sets the lock once from `tyo`, the operator's agent forwarded for that run alone, accepted
+since `tyo` holds a share anyway; only the recovery ciphertext comes back here. `token` gives every
+core the service's tokens, each node's as the digest of what it derives from its `HOST_TOKEN` with
+`NODE_TOKEN_MESSAGE`. `unseal` opens a lone core with the offline key. `--dry-run` touches no
+machine and prints no secret.
+"""
+
+import hashlib
+import hmac
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tomllib
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def borrow(name):
+	"""A sibling task, which has no extension, loaded as a module; its `main` stays unrun."""
+	loader = importlib.machinery.SourceFileLoader(f"task_{name}", str(HERE / name))
+	module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+	loader.exec_module(module)
+	return module
+
+
+database = borrow("database")
+
+APP = "secrets"
+PORT = 12014
+# Where each core keeps its share, outside every app's directory, and the user the service runs as,
+# which alone may read it.
+SEAL = "/data/seal"
+USER = "65532:65532"
+# The recovery key's public half, committed by the author, and the root key encrypted to it, written
+# beside it to be committed.
+PUBLIC = database.ROOT / "recovery.pub"
+RECOVERY = database.ROOT / "recovery.age"
+TOKEN = "SECRETS_TOKEN"
+PEER_TOKEN = "SECRETS_PEER_TOKEN"
+# What every node's read token is the HMAC-SHA256 of, keyed by its HOST_TOKEN_<NODE>; host derives
+# its own with the same bytes, so the two must never drift apart.
+NODE_TOKEN_MESSAGE = b"platform secrets read"
+INFRA = database.REPOS / "infra"
+ARMOR = ("-----BEGIN AGE ENCRYPTED FILE-----", "-----END AGE ENCRYPTED FILE-----")
+# The post-quantum hybrid age recipient alone, ML-KEM-768 and X25519, `age1pq1` and its key in
+# bech32: a plain X25519 key, `age1` and 58 characters, is refused, so one cannot be passed by
+# mistake. See RFC 231yq.
+RECIPIENT = re.compile(r"^age1pq1[02-9ac-hj-np-z]{1000,}$")
+TIMEOUT_SECONDS = 10
+# Three lowercase letters, as the registry holds a node's name.
+NODE = re.compile(r"^[a-z]{3}$")
+
+# Run on each core with the seal directory as its argument: whether a share is already there.
+HELD = r"""set -eu
+mountpoint -q /data || { echo "/data is not mounted" >&2; exit 1; }
+if [ -e "$1/share" ]; then echo held; else echo absent; fi
+"""
+
+# Run on each core with a share on stdin, and the seal directory and the service's user as its
+# arguments: the share written whole or not at all, readable by that user alone, and never over one
+# already there.
+INSTALL = r"""set -eu
+umask 077
+seal=$1
+[ ! -e "$seal/share" ] || { echo "$seal/share already exists" >&2; exit 1; }
+mkdir -p "$seal"
+cat > "$seal/share.new"
+[ -s "$seal/share.new" ] || { rm -f "$seal/share.new"; echo "no share was given" >&2; exit 1; }
+chmod 400 "$seal/share.new"
+chown "$2" "$seal" "$seal/share.new"
+chmod 700 "$seal"
+mv "$seal/share.new" "$seal/share"
+"""
+
+# Run on the first core with the operator's agent forwarded. Arguments: the seal directory, the
+# service's user, the recovery recipient, this core's name, INSTALL, the command that runs INSTALL
+# on another core, then `node=address` for each other core. Every core is reached before anything is
+# made, the working directory is shredded however this ends, and the recovery ciphertext is printed
+# before any share leaves, so a failure partway still leaves the operator holding it.
+INIT = r"""set -eu
+umask 077
+seal=$1 user=$2 recipient=$3 own=$4 install=$5 remote=$6
+shift 6
+mountpoint -q /data || { echo "/data is not mounted" >&2; exit 1; }
+[ ! -e "$seal/share" ] || { echo "$own already holds a share: the lock is already set" >&2; exit 1; }
+image=$(docker inspect --format '{{.Config.Image}}' secrets) \
+	|| { echo "secrets is not deployed on this core" >&2; exit 1; }
+nodes=$own
+for pair in "$@"; do
+	ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "root@${pair#*=}" true \
+		|| { echo "${pair%%=*} is not reached from this core" >&2; exit 1; }
+	nodes="$nodes,${pair%%=*}"
+done
+work=$(mktemp -d "$seal.init.XXXXXX")
+trap 'for f in "$work"/*.share; do [ -e "$f" ] && { shred -u "$f" 2>/dev/null || rm -f "$f"; }; done; rm -rf "$work"' EXIT
+chown "$user" "$work"
+docker run --rm --network none --read-only --user "$user" -v "$work:/out" "$image" \
+	init --recipient "$recipient" --nodes "$nodes" --out /out >/dev/null
+cat "$work/recovery.age"
+sh -c "$install" sh "$seal" "$user" < "$work/$own.share"
+echo "$own: $seal/share written" >&2
+for pair in "$@"; do
+	ssh -o BatchMode=yes -o ConnectTimeout=10 "root@${pair#*=}" "$remote" < "$work/${pair%%=*}.share" \
+		|| { echo "${pair%%=*}: writing its share failed; the recovery key still opens the lock" >&2; exit 1; }
+	echo "${pair%%=*}: $seal/share written" >&2
+done
+"""
+
+
+def fail(message):
+	sys.exit(f"seal: {message}")
+
+
+def cores():
+	"""The cores the service runs on, in order, from its service.toml; the first sets the lock."""
+	return database.manifest_of(APP)["placements"]
+
+
+def install_command():
+	"""INSTALL as a command a core's shell runs, its share on stdin."""
+	return f"sh -c {shlex.quote(INSTALL)} sh {shlex.quote(SEAL)} {shlex.quote(USER)}"
+
+
+def init_command(recipient, own, others):
+	"""INIT as a command the first core's shell runs; `others` maps each other core to its address."""
+	arguments = [SEAL, USER, recipient, own, INSTALL, install_command()]
+	arguments += [f"{node}={address}" for node, address in others.items()]
+	return f"sh -c {shlex.quote(INIT)} sh " + " ".join(shlex.quote(a) for a in arguments)
+
+
+def held(node):
+	"""Whether `node` already holds a share; None when it cannot be asked."""
+	answer = database.ssh(node, f"sh -c {shlex.quote(HELD)} sh {shlex.quote(SEAL)}")
+	return None if answer is None else answer == "held"
+
+
+def forwarded(node, command):
+	"""Whether `command` succeeded on `node`, and what it printed either way, run with the operator's
+	agent forwarded so it reaches the other cores as the operator. Its errors go to the terminal."""
+	result = subprocess.run(
+		["ssh", "-A", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"root@{node}", command],
+		text=True,
+		stdout=subprocess.PIPE,
+	)
+	return result.returncode == 0, result.stdout
+
+
+def armored(text):
+	"""The age ciphertext `text` holds, alone, or None when it holds anything else."""
+	text = (text or "").strip()
+	if not (text.startswith(ARMOR[0]) and text.endswith(ARMOR[1])):
+		return None
+	return text + "\n"
+
+
+def published():
+	"""The recipient recovery.pub holds, its one line that is not a comment; None without one."""
+	if not PUBLIC.is_file():
+		return None
+	lines = [line.strip() for line in PUBLIC.read_text().splitlines()]
+	keys = [line for line in lines if line and not line.startswith("#")]
+	return keys[0] if len(keys) == 1 else None
+
+
+def recipient_of(arguments):
+	"""`--recipient <key>` when it is given, recovery.pub's recipient when nothing is, and None for
+	anything else; whichever it is, it is post-quantum or it is refused."""
+	if not arguments:
+		recipient = published()
+	elif len(arguments) == 2 and arguments[0] == "--recipient":
+		recipient = arguments[1]
+	else:
+		return None
+	return recipient if recipient and RECIPIENT.match(recipient) else None
+
+
+def init(arguments, dry):
+	recipient = recipient_of(arguments)
+	if recipient is None:
+		fail(
+			"init encrypts to a post-quantum age recipient, age1pq1..., read from recovery.pub or given"
+			" as --recipient; an X25519 key, and the sops key, are refused"
+		)
+	if RECOVERY.exists():
+		fail(f"{RECOVERY.relative_to(database.ROOT)} exists: the lock is already set")
+	own, *rest = cores()
+	if dry:
+		for node in [own, *rest]:
+			print(f"seal: {node}: would check that {SEAL}/share is absent")
+		print(
+			f"seal: {own}: would make the root key in the deployed {APP} image with no network, split it"
+			f" two of three among {', '.join([own, *rest])}, and encrypt it to {recipient[:16]}..."
+		)
+		for node in [own, *rest]:
+			print(f"seal: {node}: would write its share to {SEAL}/share, mode 400, owned by {USER}")
+		print(f"seal: would write the recovery ciphertext to {RECOVERY.relative_to(database.ROOT)}")
+		return
+	for node in [own, *rest]:
+		state = held(node)
+		if state is None:
+			fail(f"{node} could not be asked whether it holds a share")
+		if state:
+			fail(f"{node} already holds a share: the lock is already set")
+	others = {node: database.tailnet_ipv4(node) for node in rest}
+	succeeded, answer = forwarded(own, init_command(recipient, own, others))
+	ciphertext = armored(answer)
+	if ciphertext is not None:
+		RECOVERY.write_text(ciphertext)
+		print(f"seal: commit {RECOVERY.relative_to(database.ROOT)}, the root key encrypted to {recipient[:16]}...")
+	if not succeeded:
+		fail("setting the lock failed; what each core holds is said above")
+	if ciphertext is None:
+		fail("the first core answered something other than an age ciphertext; nothing was written here")
+
+
+def host_token(name):
+	"""HOST_TOKEN_<NAME>, from the environment or from infra's secrets.json by sops on a pipe, as
+	infra's own tasks read it; None when it is in neither. Never printed and never an argument."""
+	key = f"HOST_TOKEN_{name.upper()}"
+	if os.environ.get(key):
+		return os.environ[key]
+	read = subprocess.run(
+		["sops", "decrypt", "--extract", json.dumps([key]), "secrets.json"],
+		cwd=INFRA,
+		text=True,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.DEVNULL,
+	)
+	return read.stdout.strip() if read.returncode == 0 and read.stdout.strip() else None
+
+
+def node_token(host):
+	"""The token a node reads its secrets with, made from its host's token: lowercase hex."""
+	return hmac.new(host.encode(), NODE_TOKEN_MESSAGE, hashlib.sha256).hexdigest()
+
+
+def node_tokens(names, read=None):
+	"""`SECRETS_NODE_TOKENS`: `node:digest` for each of `names` whose host has a token, the digest
+	the SHA-256 of its read token, and the names that have none. `read` is `host_token`, looked up
+	when called."""
+	read = read or host_token
+	pairs, missing = [], []
+	for name in names:
+		host = read(name)
+		if host is None:
+			missing.append(name)
+			continue
+		pairs.append(f"{name}:{hashlib.sha256(node_token(host).encode()).hexdigest()}")
+	return " ".join(pairs), missing
+
+
+def token(arguments, dry):
+	if arguments:
+		fail("token takes nothing")
+	if not database.NODES.is_file():
+		fail(f"{database.NODES} is not there; clone infra beside this repository")
+	names = sorted(tomllib.loads(database.NODES.read_text()))
+	write = database.stored_secret(TOKEN, dry)
+	peer = database.stored_secret(PEER_TOKEN, dry)
+	digests, missing = node_tokens(names)
+	for name in missing:
+		print(f"seal: {name} has no HOST_TOKEN_{name.upper()} in infra's secrets.json; it reads no secrets")
+	read = [name for name in names if name not in missing]
+	placed = cores()
+	addresses = " ".join(database.tailnet_ipv4(node) for node in placed)
+	for node in placed:
+		if dry:
+			print(
+				f"seal: {node}: would set, keeping every other line, mode 600, in /data/apps/{APP}/secret.env:"
+				f" {TOKEN}=<redacted> {PEER_TOKEN}=<redacted> SECRETS_NODE_TOKENS=<digests of {', '.join(read)}>"
+			)
+			print(f"seal: {node}: would set in /data/apps/{APP}/config.env: CORES={addresses}")
+			continue
+		secret = {TOKEN: write, PEER_TOKEN: peer, "SECRETS_NODE_TOKENS": digests}
+		if not database.upsert(node, APP, "secret.env", secret):
+			fail(f"writing the tokens failed on {node}")
+		if not database.upsert(node, APP, "config.env", {"CORES": addresses}):
+			fail(f"writing CORES failed on {node}")
+	print(f"seal: {APP} reads them on its next deploy; `mise run //repos/infra:node redeploy <node> {APP}`")
+
+
+def unseal(arguments, dry):
+	if len(arguments) != 2:
+		fail("unseal takes a core and the recovery identity's file")
+	node, identity = arguments
+	if not NODE.match(node):
+		fail(f"`{node}` is not a node's name")
+	if not RECOVERY.is_file():
+		fail(f"{RECOVERY.relative_to(database.ROOT)} is missing: the lock was never set from here")
+	if dry:
+		print(f"seal: would open {RECOVERY.relative_to(database.ROOT)} with {identity} here")
+		print(f"seal: {node}: would send the root key to {APP} on port {PORT} with {TOKEN}")
+		return
+	token = os.environ.get(TOKEN)
+	if not token:
+		fail(f"{TOKEN} is not in secrets.json")
+	opened = subprocess.run(
+		["age", "--decrypt", "--identity", identity, str(RECOVERY)], stdout=subprocess.PIPE
+	)
+	if opened.returncode != 0:
+		fail("the recovery ciphertext did not open with that identity")
+	address = database.tailnet_ipv4(node)
+	request = urllib.request.Request(
+		f"http://{address}:{PORT}/v1/seal",
+		data=json.dumps({"key": opened.stdout.decode().strip()}).encode(),
+		headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
+		method="POST",
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as answered:
+			envelope = json.load(answered)
+	except urllib.error.HTTPError as error:
+		fail(f"{node}: {error.code} {error.read().decode(errors='replace')}")
+	except (urllib.error.URLError, TimeoutError) as error:
+		fail(f"{node}: {APP} did not answer: {error}")
+	print(f"seal: {node}: {json.dumps(envelope.get('data'))}")
+
+
+def main():
+	arguments = sys.argv[1:]
+	dry = "--dry-run" in arguments or "-n" in arguments
+	rest = [a for a in arguments[1:] if a not in ("--dry-run", "-n")]
+	verbs = {"init": init, "token": token, "unseal": unseal}
+	if not arguments or arguments[0] not in verbs:
+		fail(
+			"name one of init [--recipient age1pq1...], token or unseal <node> <identity>, and --dry-run to"
+			" only say what"
+		)
+	verbs[arguments[0]](rest, dry)
+
+
+if __name__ == "__main__":
+	main()

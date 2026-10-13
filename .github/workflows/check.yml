@@ -64,6 +64,7 @@ jobs:
           RUSTC_WRAPPER: sccache
           LEDGER_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
           REGISTRY_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
+          SECRETS_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
         run: |
           cargo test --workspace --locked
           sccache --show-stats

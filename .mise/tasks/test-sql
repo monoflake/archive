@@ -18,7 +18,7 @@ for _ in $(seq 1 60); do
 done
 docker exec "$name" pg_isready -U postgres -h 127.0.0.1 >/dev/null || { echo "test-sql: Postgres did not start in 60 seconds" >&2; exit 1; }
 cd "$ROOT"
-# One database for both services' tests: each test makes a schema of its own in it.
+# One database for every service's tests: each test makes a schema of its own in it.
 url="postgresql://postgres:test@127.0.0.1:$port/postgres"
-LEDGER_TEST_DATABASE_URL="$url" REGISTRY_TEST_DATABASE_URL="$url" \
-	cargo test -p ledger-service -p registry-service "$@"
+LEDGER_TEST_DATABASE_URL="$url" REGISTRY_TEST_DATABASE_URL="$url" SECRETS_TEST_DATABASE_URL="$url" \
+	cargo test -p ledger-service -p registry-service -p secrets-service "$@"

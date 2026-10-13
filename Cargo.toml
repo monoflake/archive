@@ -13,6 +13,7 @@ members = [
 	"apps/model/grok",
 	"apps/data/ledger",
 	"apps/data/registry",
+	"apps/data/secrets",
 	"apps/data/database",
 	"apps/data/store",
 	"apps/data/primary",
