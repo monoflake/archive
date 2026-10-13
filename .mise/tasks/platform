@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+#MISE description="Manage every kind the registry holds, read off its catalog: `platform <kind> list|get|create|patch [name-or-id] [--set field=value] [--json field=<json>] [--unset field] [--<item> <key>[,field=value...]] [--json] [--dry-run]`"
+"""The command line, the console's other face: every kind the registry holds, read off
+`GET /v1/kinds` at each run, so a kind or a field added there is managed here without a change. See
+spec/architecture/registry.md, "The command line is the console's other face", and RFC cpc2b.
+
+`list` and `get` read, with no token; `create` puts a resource at revision 0, `patch` reads it and
+merges the change at the revision read. A scalar is given by `--set field=value`, typed by the
+catalog before anything is sent; anything else by `--json field=<json>`; a list of objects one item
+at a time, by an option named for the item, `--identity email`. A field the catalog marks `secret`
+is asked for on the terminal with no echo and never taken from an argument, and `--dry-run` asks for
+none and shows each as hidden. Writes go as `operator`, with REGISTRY_TOKEN, to the first core that
+answers.
+"""
+
+import argparse
+import getpass
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def borrow(name):
+	"""A sibling task, which has no extension, loaded as a module; its `main` stays unrun."""
+	loader = importlib.machinery.SourceFileLoader(f"task_{name}", str(HERE / name))
+	module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+	loader.exec_module(module)
+	return module
+
+
+registry = borrow("registry")
+database = registry.database
+
+APP = "platform"
+# Who a change is recorded as made by.
+BY = "operator"
+# What a dry run shows in place of every secret value, none of which it asks for.
+HIDDEN = "<hidden>"
+# A resource's id as a list shows it: its first eight digits -- web's spec/console/design.md.
+SHORT = 8
+# The key of a list field's description holding its items' own fields.
+ITEM_FIELDS = "fields"
+VERBS = ("list", "get", "create", "patch")
+
+
+def fail(message):
+	sys.exit(f"{APP}: {message}")
+
+
+def cores():
+	"""The tailnet IPv4 of each core the registry runs on, in order, each found only when asked."""
+	for node in registry.placements():
+		yield database.tailnet_ipv4(node)
+
+
+def ask(method, path, body=None, secret=None):
+	"""The envelope of the first registry to answer, in the cores' order."""
+	for address in cores():
+		answer = registry.call(address, method, path, body, secret)
+		if answer is not None:
+			return answer
+	fail(f"no registry answered {method} {path}")
+
+
+def data_of(answer, what):
+	"""The `data` of a success; a refusal fails, with its code and message."""
+	if answer.get("status") == "success":
+		return answer["data"]
+	fail(f"{what}: refused {answer.get('code')}: {answer.get('message')}")
+
+
+def catalog():
+	return data_of(ask("GET", "/v1/kinds"), "GET /v1/kinds")["items"]
+
+
+def kind_named(kinds, word):
+	"""The kind `word` names, by its name or its plural."""
+	for kind in kinds:
+		if word in (kind["name"], plural_of(kind)):
+			return kind
+	fail(f"{word} is no kind the registry holds; it holds {listed(kinds)}")
+
+
+def plural_of(kind):
+	"""The kind's route segment, `/v1/<plural>`; a registry older than the catalog's `plural` answers
+	none, and its routes are the name and an `s`."""
+	return kind.get("plural") or f"{kind['name']}s"
+
+
+def listed(kinds):
+	return ", ".join(f"{kind['name']} ({plural_of(kind)})" for kind in kinds)
+
+
+def singular(name):
+	"""What one item of a list field is called, its option: `identities` gives `identity`."""
+	if name.endswith("ies"):
+		return name[:-3] + "y"
+	return name[:-1] if name.endswith("s") else name
+
+
+def is_secret(field):
+	"""Whether the catalog marks `field` written and never read back."""
+	return field.get("secret") is True
+
+
+def item_fields(field):
+	"""A list of objects' own fields, by name; empty for every other field."""
+	return {item["name"]: item for item in field.get(ITEM_FIELDS) or []}
+
+
+def key_of(field):
+	"""The item field naming an item: its first required `choice`."""
+	for item in field.get(ITEM_FIELDS) or []:
+		if item.get("required") and item.get("type") == "choice":
+			return item
+	fail(f"the catalog names no required choice among {field['name']}'s item fields")
+
+
+def item_options(kind):
+	"""Each list of objects by the option that adds one of its items, `--identity`."""
+	return {singular(field["name"]): field for field in kind["fields"] if item_fields(field)}
+
+
+def described(kind):
+	"""The kind's fields, one a line, as `--help` shows them."""
+	lines = [f"{kind['name']}'s fields, from the registry's catalog:"]
+	for field in kind["fields"]:
+		facts = [field["type"]]
+		if field.get("kind"):
+			facts.append(f"of a {field['kind']}, by id or name")
+		if field.get("choices"):
+			facts.append("one of " + "|".join(field["choices"]))
+		facts += [word for word in ("required", "secret") if field.get(word)]
+		if not field.get("editable", True):
+			facts.append("not editable")
+		lines.append(f"  {field['name']}: {', '.join(facts)}")
+		for item in field.get(ITEM_FIELDS) or []:
+			choices = f", one of {'|'.join(item['choices'])}" if item.get("choices") else ""
+			marks = "".join(f", {word}" for word in ("required", "secret") if item.get(word))
+			marks += "" if item.get("editable", True) else ", not editable"
+			lines.append(f"    {item['name']}: {item['type']}{choices}{marks}")
+	return "\n".join(lines)
+
+
+def parser_for(kind, verb):
+	usage = argparse.ArgumentParser(
+		prog=f"mise run {APP} {kind['name']} {verb}",
+		description=described(kind),
+		formatter_class=argparse.RawDescriptionHelpFormatter,
+	)
+	if verb != "list":
+		usage.add_argument("key", metavar="name-or-id" if verb != "create" else "name")
+	if verb in ("list", "get"):
+		usage.add_argument("--json", action="store_true", help="the registry's answer, as it is")
+		return usage
+	usage.add_argument(
+		"--set",
+		action="append",
+		default=[],
+		metavar="FIELD=VALUE",
+		help="a scalar, typed by the catalog; a list of choices comma-separated; a secret field named"
+		" alone, `--set field`, and asked for",
+	)
+	usage.add_argument(
+		"--json", action="append", default=[], metavar="FIELD=JSON", help="any field, as JSON"
+	)
+	if verb == "patch":
+		usage.add_argument(
+			"--unset", action="append", default=[], metavar="FIELD", help="take a field out"
+		)
+	for option, field in item_options(kind).items():
+		usage.add_argument(
+			f"--{option}",
+			action="append",
+			default=[],
+			dest=f"item:{field['name']}",
+			metavar=f"{key_of(field)['name'].upper()}[,FIELD=VALUE...]",
+			help=f"one of {field['name']}, its secret fields asked for; on patch it replaces the one"
+			" of that key and keeps the rest",
+		)
+	usage.add_argument("--dry-run", "-n", action="store_true", help="say what, send nothing")
+	return usage
+
+
+def typed(field, text, resolve):
+	"""`text` as `field` holds it, refused before anything is sent when it cannot be."""
+	name, type_ = field["name"], field["type"]
+	if type_ == "integer":
+		try:
+			return int(text)
+		except ValueError:
+			fail(f"{name} is an integer, not {text!r}")
+	if type_ == "boolean":
+		if text not in ("true", "false"):
+			fail(f"{name} is true or false, not {text!r}")
+		return text == "true"
+	if type_ == "choice":
+		if text not in field.get("choices", []):
+			fail(f"{name} is one of {', '.join(field['choices'])}, not {text!r}")
+		return text
+	if type_ == "reference":
+		return text if registry.is_id(text) else resolve(field["kind"], text)
+	if type_ == "list" and not item_fields(field):
+		values = [value.strip() for value in text.split(",") if value.strip()]
+		if field.get("choices"):
+			wrong = [value for value in values if value not in field["choices"]]
+			if wrong:
+				fail(f"{name} holds each of {', '.join(field['choices'])}, never {', '.join(wrong)}")
+			if len(set(values)) != len(values):
+				fail(f"{name} holds each choice once")
+		return values
+	if type_ == "string":
+		return text
+	what = "a list of objects" if item_fields(field) else f"an {type_}"
+	fail(f"{name} is {what}; give it by --json")
+
+
+def split(pair, option):
+	field, equals, value = pair.partition("=")
+	if not field:
+		fail(f"{option} takes FIELD=VALUE, not {pair!r}")
+	return field, equals, value
+
+
+def asked(prompt, required, dry):
+	"""A secret from the terminal, never echoed; a dry run asks for none."""
+	if dry:
+		return HIDDEN
+	value = getpass.getpass(f"{prompt}: ")
+	if not value and required:
+		fail(f"{prompt} is required")
+	return value or None
+
+
+def items(field, given, current, resolve, dry):
+	"""The list `field` is written as: each item given, named by its key and with its secret fields
+	asked for; on a patch the current items of every other key kept, in order."""
+	key = key_of(field)
+	fields = item_fields(field)
+	made = {}
+	for text in given:
+		value, *pairs = text.split(",")
+		item = {key["name"]: typed(key, value, resolve)}
+		if item[key["name"]] in made:
+			fail(f"{field['name']} names {value} twice")
+		for pair in pairs:
+			name, equals, raw = split(pair, f"--{singular(field['name'])}")
+			inner = fields.get(name)
+			if inner is None:
+				fail(f"{name} is not a field of {field['name']}'s items; they hold {', '.join(fields)}")
+			if is_secret(inner):
+				fail(f"{name} is secret, asked for on the terminal and never taken from an argument")
+			if not inner.get("editable", True):
+				fail(f"{name} is not editable; the registry writes it")
+			if not equals:
+				fail(f"--{singular(field['name'])} takes {name}=VALUE")
+			item[name] = typed(inner, raw, resolve)
+		for name, inner in fields.items():
+			if is_secret(inner):
+				prompt = f"{singular(field['name'])} {value}: {name}"
+				secret = asked(prompt, inner.get("required"), dry)
+				if secret is not None:
+					item[name] = secret
+		made[item[key["name"]]] = item
+	kept = [old for old in current or [] if old.get(key["name"]) not in made]
+	return kept + list(made.values())
+
+
+def secret_inside(field, value):
+	"""Whether a JSON value given for `field` carries a secret, at the top or in an item."""
+	if is_secret(field):
+		return True
+	secrets = {name for name, item in item_fields(field).items() if is_secret(item)}
+	if not secrets or not isinstance(value, list):
+		return False
+	return any(isinstance(item, dict) and secrets & item.keys() for item in value)
+
+
+def changes(kind, arguments, current, resolve, dry):
+	"""The spec a write sends, from the options given: on a create the whole of it, on a patch the
+	merge patch of what changes, `None` taking a key out."""
+	fields = {field["name"]: field for field in kind["fields"]}
+	spec = {}
+
+	def put(name, value):
+		if name in spec:
+			fail(f"{name} is given twice")
+		known = fields.get(name)
+		if known is not None and not known.get("editable", True):
+			fail(f"{name} is not editable")
+		spec[name] = value
+
+	for pair in arguments.set:
+		name, equals, value = split(pair, "--set")
+		field = fields.get(name)
+		if field is None:
+			fail(f"{name} is not a field of a {kind['name']}; --json {name}=<json> sends it as given")
+		if is_secret(field):
+			if equals:
+				fail(f"{name} is secret, asked for on the terminal and never taken from an argument")
+			put(name, asked(f"{kind['name']} {arguments.key}: {name}", True, dry))
+			continue
+		if not equals:
+			fail(f"--set takes {name}=VALUE")
+		put(name, typed(field, value, resolve))
+	for pair in arguments.json:
+		name, equals, text = split(pair, "--json")
+		try:
+			value = json.loads(text)
+		except ValueError:
+			fail(f"--json {name}= takes JSON, not {text!r}")
+		if secret_inside(fields.get(name, {}), value):
+			fail(f"{name} carries a secret, asked for on the terminal and never taken from an argument")
+		put(name, value)
+	for name in getattr(arguments, "unset", []):
+		if fields.get(name, {}).get("required"):
+			fail(f"{name} is required, so it is changed and never taken out")
+		put(name, None)
+	for field in fields.values():
+		given = getattr(arguments, f"item:{field['name']}", [])
+		if given:
+			put(field["name"], items(field, given, (current or {}).get(field["name"]), resolve, dry))
+	if current is None:
+		for field in fields.values():
+			if field["name"] in spec or not field.get("required"):
+				continue
+			if is_secret(field):
+				spec[field["name"]] = asked(f"{kind['name']} {arguments.key}: {field['name']}", True, dry)
+			elif item_fields(field):
+				option = singular(field["name"])
+				fail(f"{field['name']} is required: --{option} <{key_of(field)['name']}>")
+			else:
+				fail(f"{field['name']} is required: --set {field['name']}=<{field['type']}>")
+	return spec
+
+
+def resolver(kinds):
+	"""What turns a name into the id of a resource of a kind, by reading it."""
+
+	def resolve(kind, name):
+		plural = plural_of(kind_named(kinds, kind))
+		return data_of(ask("GET", f"/v1/{plural}/{name}"), f"{kind} {name}")["id"]
+
+	return resolve
+
+
+def cell(value, field):
+	"""A value as a table shows it: an id by its first eight digits."""
+	if value is None:
+		return "-"
+	if isinstance(value, bool):
+		return "true" if value else "false"
+	if isinstance(value, str):
+		return value[:SHORT] if field.get("type") == "reference" and registry.is_id(value) else value
+	if isinstance(value, (int, float)):
+		return str(value)
+	if isinstance(value, list) and all(not isinstance(v, (dict, list)) for v in value):
+		return ",".join(cell(v, {}) for v in value)
+	return json.dumps(value, separators=(",", ":"))
+
+
+def table(kind, resources):
+	fields = {field["name"]: field for field in kind["fields"]}
+	columns = kind.get("columns") or []
+	rows = [["id", "name", *columns]]
+	for resource in resources:
+		spec = resource.get("spec") or {}
+		rows.append(
+			[
+				resource["id"][:SHORT],
+				resource["name"],
+				*(cell(spec.get(column), fields.get(column, {})) for column in columns),
+			]
+		)
+	widths = [max(len(row[at]) for row in rows) for at in range(len(rows[0]))]
+	return "\n".join("  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip() for row in rows)
+
+
+def readable(kind, resource):
+	"""One resource, its spec a field a line, the catalog's order first and every other key after."""
+	spec = resource.get("spec") or {}
+	known = [field["name"] for field in kind["fields"]]
+	names = [name for name in known if name in spec] + sorted(set(spec) - set(known))
+	fields = {field["name"]: field for field in kind["fields"]}
+	width = max([len(name) for name in ("id", "revision", *names)])
+	lines = [f"{kind['name']} {resource['name']}"]
+	lines.append(f"  {'id'.ljust(width)}  {resource['id']}")
+	lines.append(f"  {'revision'.ljust(width)}  {resource['revision']}")
+	for name in names:
+		value = spec[name]
+		if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+			lines.append(f"  {name}")
+			for item in value:
+				lines.append("    " + "  ".join(f"{k}={cell(v, {})}" for k, v in item.items()))
+		elif isinstance(value, str):
+			lines.append(f"  {name.ljust(width)}  {value}")
+		else:
+			lines.append(f"  {name.ljust(width)}  {cell(value, fields.get(name, {}))}")
+	return "\n".join(lines)
+
+
+def written(answer, what):
+	data = data_of(answer, what)
+	if "task" in data:
+		print(f"{APP}: {what}: written, revision {data['revision']}, task {data['task']}")
+	else:
+		print(f"{APP}: {what}: unchanged")
+
+
+def write(method, path, body, what, dry):
+	if dry:
+		nodes = ", ".join(registry.placements())
+		print(
+			f"{APP}: would {method} {path}, to the first of {nodes} whose registry answers on"
+			f" {registry.PORT}, as Bearer <redacted>:"
+		)
+		print(json.dumps(body, indent=2))
+		return
+	secret = os.environ.get(registry.TOKEN)
+	if not secret:
+		fail(f"secrets.json has no {registry.TOKEN}; `registry token` makes it")
+	written(ask(method, path, body, secret), what)
+
+
+def usage_of(kinds):
+	return (
+		f"name a kind and a verb: `mise run {APP} <kind> {'|'.join(VERBS)} [name-or-id]`, a kind being"
+		f" one of {listed(kinds)}; `<kind> <verb> --help` says its fields"
+	)
+
+
+def main(arguments=None):
+	arguments = sys.argv[1:] if arguments is None else arguments
+	kinds = catalog()
+	if len(arguments) < 2 or arguments[1] not in VERBS:
+		if arguments and arguments[0] not in ("-h", "--help"):
+			kind = kind_named(kinds, arguments[0])
+			print(described(kind))
+		fail(usage_of(kinds))
+	kind = kind_named(kinds, arguments[0])
+	verb = arguments[1]
+	given = parser_for(kind, verb).parse_args(arguments[2:])
+	plural = plural_of(kind)
+	if verb == "list":
+		found = data_of(ask("GET", f"/v1/{plural}"), f"GET /v1/{plural}")["items"]
+		print(json.dumps(found, indent=2) if given.json else table(kind, found))
+		return
+	what = f"{kind['name']} {given.key}"
+	if verb == "get":
+		resource = data_of(ask("GET", f"/v1/{plural}/{given.key}"), what)
+		print(json.dumps(resource, indent=2) if given.json else readable(kind, resource))
+		return
+	resolve = resolver(kinds)
+	if verb == "create":
+		if registry.is_id(given.key):
+			fail(f"{given.key} has an id's shape, which a route reads as an id, never a name")
+		spec = changes(kind, given, None, resolve, given.dry_run)
+		body = {"by": BY, "revision": 0, "spec": spec}
+		write("PUT", f"/v1/{plural}/{given.key}", body, what, given.dry_run)
+		return
+	resource = data_of(ask("GET", f"/v1/{plural}/{given.key}"), what)
+	spec = changes(kind, given, resource.get("spec") or {}, resolve, given.dry_run)
+	if not spec:
+		fail("nothing to change: give --set, --json, --unset or an item")
+	body = {"by": BY, "revision": resource["revision"], "spec": spec}
+	what = f"{kind['name']} {resource['name']}"
+	write("PATCH", f"/v1/{plural}/{resource['id']}", body, what, given.dry_run)
+
+
+if __name__ == "__main__":
+	main()
