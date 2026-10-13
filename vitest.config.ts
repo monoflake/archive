@@ -25,7 +25,7 @@ export default defineConfig({
 				],
 				test: {
 					name: 'node',
-					include: ['{apps,libs}/**/*.test.ts'],
+					include: ['{apps,libs}/**/*.test.ts', '.mise/tasks/*.test.ts'],
 					exclude: ['**/node_modules/**', '**/*.svelte.test.ts'],
 				},
 			},

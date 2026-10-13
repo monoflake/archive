@@ -1,7 +1,7 @@
-# Builds the images and the Workers a push changed and leaves them as artifacts of this run. Nothing
-# is published and nothing here reaches a machine or Cloudflare: when the run ends, GitHub's webhook
-# tells the nodes and the deployer, and each fetches and checks what was built. See infra's
-# spec/architecture/host.md and spec/architecture/deployer.md.
+# Builds the images and the Workers a push changed and leaves them in the artifacts bucket under
+# this run, RFC q28g5. Nothing is published and nothing here reaches a machine or Cloudflare: when
+# the run ends, GitHub's webhook tells the nodes and the deployer, and each fetches and checks what
+# was built. See infra's spec/architecture/host.md and spec/architecture/deployer.md.
 name: Deploy
 
 on:
@@ -108,12 +108,27 @@ jobs:
           for app in $(printf '%s' "$APPS" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))'); do
             cp apps/*/"$app"/service.toml "$RUNNER_TEMP/declarations/$app.toml"
           done
-      - uses: actions/upload-artifact@v7
+      # The workspace's mise.toml alone, for the Node it pins, which runs the artifact script.
+      - uses: actions/checkout@v7
         with:
-          name: declarations
-          path: ${{ runner.temp }}/declarations/
-          retention-days: 7
-          if-no-files-found: error
+          repository: canmi21/canmi
+          path: .workspace
+          sparse-checkout: mise.toml
+          sparse-checkout-cone-mode: false
+      - id: node
+        run: echo "version=$(sed -n 's/^node = "\(.*\)"/\1/p' .workspace/mise.toml)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      # Into the artifacts bucket under this run; see RFC q28g5.
+      - env:
+          ARTIFACTS_ENDPOINT: ${{ vars.ARTIFACTS_ENDPOINT }}
+          ARTIFACTS_REGION: ${{ vars.ARTIFACTS_REGION }}
+          ARTIFACTS_BUCKET: ${{ vars.ARTIFACTS_BUCKET }}
+          ARTIFACTS_VIRTUAL_HOST: ${{ vars.ARTIFACTS_VIRTUAL_HOST }}
+          ARTIFACTS_WRITE_KEY_ID: ${{ secrets.ARTIFACTS_WRITE_KEY_ID }}
+          ARTIFACTS_WRITE_SECRET: ${{ secrets.ARTIFACTS_WRITE_SECRET }}
+        run: node .mise/tasks/artifact.ts declarations "$RUNNER_TEMP/declarations"
 
   build:
     needs: plan
@@ -153,14 +168,23 @@ jobs:
           mkdir -p "$RUNNER_TEMP/deploy"
           repos/platform/.mise/tasks/image "$APP" "$RUNNER_TEMP/deploy/image.tar"
           cp repos/platform/apps/*/"$APP"/service.toml "$RUNNER_TEMP/deploy/"
-      # The image layers are compressed already; the node needs it for as long as a deploy takes.
-      - uses: actions/upload-artifact@v7
+      # The Node the workspace pins, which runs the artifact script.
+      - id: node
+        run: echo "version=$(sed -n 's/^node = "\(.*\)"/\1/p' mise.toml)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v6
         with:
-          name: deploy-${{ matrix.app }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/deploy/
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: error
+          node-version: ${{ steps.node.outputs.version }}
+      # The image layers are compressed already, so the zip stores them. After it, the image's
+      # runs older than the newest two leave the bucket; see RFC q28g5.
+      - env:
+          ARTIFACTS_ENDPOINT: ${{ vars.ARTIFACTS_ENDPOINT }}
+          ARTIFACTS_REGION: ${{ vars.ARTIFACTS_REGION }}
+          ARTIFACTS_BUCKET: ${{ vars.ARTIFACTS_BUCKET }}
+          ARTIFACTS_VIRTUAL_HOST: ${{ vars.ARTIFACTS_VIRTUAL_HOST }}
+          ARTIFACTS_WRITE_KEY_ID: ${{ secrets.ARTIFACTS_WRITE_KEY_ID }}
+          ARTIFACTS_WRITE_SECRET: ${{ secrets.ARTIFACTS_WRITE_SECRET }}
+          NAME: deploy-${{ matrix.app }}-${{ matrix.arch }}
+        run: node repos/platform/.mise/tasks/artifact.ts "$NAME" "$RUNNER_TEMP/deploy" --store
 
   # A Worker is one artifact for every architecture: wrangler's bundle, its assets, its declaration
   # and its resolved config, packaged without a credential. Nothing deploys it here; until a Worker
@@ -196,10 +220,13 @@ jobs:
           pnpm install --frozen-lockfile --filter "{./$app}..."
           .mise/tasks/worker "$APP" "$RUNNER_TEMP/worker"
       # Hidden files included: SvelteKit's `.assetsignore` keeps its Worker out of the assets.
-      - uses: actions/upload-artifact@v7
-        with:
-          name: worker-${{ matrix.app }}
-          path: ${{ runner.temp }}/worker/
-          include-hidden-files: true
-          retention-days: 7
-          if-no-files-found: error
+      # After it, the Worker's runs older than the newest two leave the bucket; see RFC q28g5.
+      - env:
+          ARTIFACTS_ENDPOINT: ${{ vars.ARTIFACTS_ENDPOINT }}
+          ARTIFACTS_REGION: ${{ vars.ARTIFACTS_REGION }}
+          ARTIFACTS_BUCKET: ${{ vars.ARTIFACTS_BUCKET }}
+          ARTIFACTS_VIRTUAL_HOST: ${{ vars.ARTIFACTS_VIRTUAL_HOST }}
+          ARTIFACTS_WRITE_KEY_ID: ${{ secrets.ARTIFACTS_WRITE_KEY_ID }}
+          ARTIFACTS_WRITE_SECRET: ${{ secrets.ARTIFACTS_WRITE_SECRET }}
+          NAME: worker-${{ matrix.app }}
+        run: node repos/platform/.mise/tasks/artifact.ts "$NAME" "$RUNNER_TEMP/worker" --hidden
