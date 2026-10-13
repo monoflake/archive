@@ -134,6 +134,34 @@ class Shell(unittest.TestCase):
 		self.assertTrue((self.seal / "share").exists())
 		self.assertEqual(self.leftovers(), [])
 
+	def shell(self, script, *arguments):
+		return subprocess.run(
+			["sh", "-c", script, "sh", *arguments], env=self.env, text=True, capture_output=True
+		)
+
+	def test_prepare_makes_an_empty_seal_and_leaves_a_share_as_it_is(self):
+		for _ in range(2):
+			made = self.shell(seal.PREPARE, str(self.seal), seal.USER)
+			self.assertEqual((made.returncode, made.stdout.strip()), (0, "empty"), made.stderr)
+		self.assertEqual(stat.S_IMODE(self.seal.stat().st_mode), 0o700)
+		self.assertIn(f"chown {seal.USER} {self.seal}\n", self.log())
+		share = self.seal / "share"
+		share.write_text("share-of-tyo")
+		share.chmod(0o400)
+		again = self.shell(seal.PREPARE, str(self.seal), seal.USER)
+		self.assertEqual((again.returncode, again.stdout.strip()), (0, "held"))
+		self.assertEqual(share.read_text(), "share-of-tyo")
+		self.assertEqual(stat.S_IMODE(share.stat().st_mode), 0o400)
+		self.assertNotIn(str(share), self.log(), "prepare touched the share")
+
+	def test_an_empty_seal_is_absent_to_every_check_and_init_proceeds(self):
+		self.assertEqual(self.shell(seal.PREPARE, str(self.seal), seal.USER).returncode, 0)
+		self.assertEqual(self.shell(seal.HELD, str(self.seal)).stdout.strip(), "absent")
+		done = self.run_init()
+		self.assertEqual(done.returncode, 0, done.stderr)
+		self.assertEqual((self.seal / "share").read_text(), "share-of-tyo")
+		self.assertEqual(self.shell(seal.HELD, str(self.seal)).stdout.strip(), "held")
+
 	def test_a_share_is_never_written_over_and_never_empty(self):
 		def install(stdin):
 			return subprocess.run(
@@ -288,6 +316,26 @@ class Task(unittest.TestCase):
 			):
 				self.quietly(seal.init, "--recipient", RECIPIENT)
 			self.assertFalse(self.recovery.exists(), answer)
+
+	def test_prepare_reaches_every_core_and_refuses_any_other_node(self):
+		with mock.patch.object(seal.database, "ssh", return_value="empty") as reached:
+			said = self.quietly(seal.prepare)
+		self.assertEqual([call.args[0] for call in reached.call_args_list], ["tyo", "sin", "rdu"])
+		self.assertTrue(all(seal.shlex.quote(seal.PREPARE) in call.args[1] for call in reached.call_args_list))
+		self.assertIn("tyo: /data/seal is ready, empty", said)
+		with mock.patch.object(seal.database, "ssh", return_value="held") as reached:
+			said = self.quietly(seal.prepare, "sin")
+		self.assertEqual([call.args[0] for call in reached.call_args_list], ["sin"])
+		self.assertIn("holding its share", said)
+		for arguments in [["buf"], ["tyo", "buf"]]:
+			with mock.patch.object(seal.database, "ssh") as reached, self.assertRaises(SystemExit):
+				self.quietly(seal.prepare, *arguments)
+			reached.assert_not_called()
+		with mock.patch.object(seal.database, "ssh", return_value=None), self.assertRaises(SystemExit):
+			self.quietly(seal.prepare)
+		explode = mock.Mock(side_effect=AssertionError("reached a machine"))
+		with mock.patch.object(seal.database, "ssh", explode):
+			self.assertIn("would make /data/seal", self.quietly(seal.prepare, dry=True))
 
 	def test_unseal_checks_before_it_opens_anything(self):
 		explode = mock.Mock(side_effect=AssertionError("reached a machine"))

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-#MISE description="Set the secret service's lock: `seal init [--recipient age1pq1...]` splits a new root key among the cores once, to recovery.pub's post-quantum recipient unless another is given; `seal token` gives every core the service's tokens; `seal unseal <node> <identity>` opens a lone core with the recovery key, each with --dry-run"
+#MISE description="Set the secret service's lock: `seal init [--recipient age1pq1...]` splits a new root key among the cores once, to recovery.pub's post-quantum recipient unless another is given; `seal token` gives every core the service's tokens; `seal prepare [core...]` makes each core's empty /data/seal before the first deploy; `seal unseal <node> <identity>` opens a lone core with the recovery key, each with --dry-run"
 """The operator's half of the secret service's lock -- spec/architecture/secrets.md, RFC 231yq.
 
 `init` sets the lock once from `tyo`, the operator's agent forwarded for that run alone, accepted
 since `tyo` holds a share anyway; only the recovery ciphertext comes back here. `token` gives every
 core the service's tokens, each node's as the digest of what it derives from its `HOST_TOKEN` with
-`NODE_TOKEN_MESSAGE`. `unseal` opens a lone core with the offline key. `--dry-run` touches no
-machine and prints no secret.
+`NODE_TOKEN_MESSAGE`. `prepare` makes the directory host mounts, which must exist before the
+service is deployed. `unseal` opens a lone core with the offline key. `--dry-run` touches no machine
+and prints no secret. The order a first run takes is in the spec.
 """
 
 import hashlib
@@ -66,6 +67,16 @@ NODE = re.compile(r"^[a-z]{3}$")
 HELD = r"""set -eu
 mountpoint -q /data || { echo "/data is not mounted" >&2; exit 1; }
 if [ -e "$1/share" ]; then echo held; else echo absent; fi
+"""
+
+# Run on a core with the seal directory and the service's user as its arguments: the directory host
+# mounts, made that user's, mode 700, a share in it left as it is. Prints held or empty.
+PREPARE = r"""set -eu
+mountpoint -q /data || { echo "/data is not mounted" >&2; exit 1; }
+mkdir -p "$1"
+chown "$2" "$1"
+chmod 700 "$1"
+if [ -e "$1/share" ]; then echo held; else echo empty; fi
 """
 
 # Run on each core with a share on stdin, and the seal directory and the service's user as its
@@ -225,6 +236,22 @@ def init(arguments, dry):
 		fail("the first core answered something other than an age ciphertext; nothing was written here")
 
 
+def prepare(arguments, dry):
+	placed = cores()
+	for node in arguments:
+		if node not in placed:
+			fail(f"{node} is not a core: {SEAL} is made on {', '.join(placed)} alone")
+	for node in arguments or placed:
+		if dry:
+			print(f"seal: {node}: would make {SEAL}, owned by {USER}, mode 700, leaving a share as it is")
+			continue
+		command = f"sh -c {shlex.quote(PREPARE)} sh {shlex.quote(SEAL)} {shlex.quote(USER)}"
+		answer = database.ssh(node, command)
+		if answer not in ("held", "empty"):
+			fail(f"{node}: making {SEAL} failed")
+		print(f"seal: {node}: {SEAL} is ready, {'holding its share' if answer == 'held' else 'empty'}")
+
+
 def host_token(name):
 	"""HOST_TOKEN_<NAME>, from the environment or from infra's secrets.json by sops on a pipe, as
 	infra's own tasks read it; None when it is in neither. Never printed and never an argument."""
@@ -332,11 +359,11 @@ def main():
 	arguments = sys.argv[1:]
 	dry = "--dry-run" in arguments or "-n" in arguments
 	rest = [a for a in arguments[1:] if a not in ("--dry-run", "-n")]
-	verbs = {"init": init, "token": token, "unseal": unseal}
+	verbs = {"init": init, "token": token, "prepare": prepare, "unseal": unseal}
 	if not arguments or arguments[0] not in verbs:
 		fail(
-			"name one of init [--recipient age1pq1...], token or unseal <node> <identity>, and --dry-run to"
-			" only say what"
+			"name one of init [--recipient age1pq1...], token, prepare [core...] or unseal <node>"
+			" <identity>, and --dry-run to only say what"
 		)
 	verbs[arguments[0]](rest, dry)
 

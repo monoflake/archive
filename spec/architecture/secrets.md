@@ -37,6 +37,25 @@ than used.
   uses age's own program, pinned in the image, since the `age` crate cannot encrypt to an `age1pq1`
   recipient.
 
+## The first run
+
+**Once, in this order**, each step safe to run again:
+
+1. `mise run database grant platform secrets` makes `platform_secrets` and writes `DATABASE_URL` to
+   each core's `secret.env`.
+2. `mise run seal token` makes `SECRETS_TOKEN` and `SECRETS_PEER_TOKEN` in `secrets.json` the first
+   time, to be committed, and writes them to each core with every node's digest, and `CORES` to
+   `config.env`.
+3. `mise run seal prepare` makes each core's empty `/data/seal`, owned by the service, mode 700:
+   host mounts it, and Docker refuses the container while it is missing.
+4. The cores grant `secrets:peer` and `secrets:seal`, from infra's `CORE_GRANTS`, written to host's
+   `GRANTS` by `mise run //repos/infra:node <core>`.
+5. `mise run //repos/infra:node deploy <core> --run <run> --app secrets` on each core; each answers
+   `/health` `{"sealed": true}` and waits.
+6. `mise run seal init`, after its `--dry-run`, sets the lock, and `recovery.age` is committed.
+7. Each core's `GET /v1/seal` answers `{"sealed": false, "share": true}` within seconds, with no
+   restart; one core redeployed opens again from the other two.
+
 ## Who reads what
 
 **Writing and listing take `SECRETS_TOKEN`; a node reads only the secrets of the apps the registry

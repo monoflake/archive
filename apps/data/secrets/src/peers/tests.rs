@@ -101,6 +101,32 @@ async fn a_core_with_no_file_is_opened_by_two_peers_and_a_wrong_token_by_none() 
 	assert!(seal.share().is_none());
 }
 
+/// The order a first run takes: the directory made empty, the service started on it, and the share
+/// written there by the ceremony while it runs.
+#[tokio::test]
+async fn a_share_written_into_an_empty_seal_is_read_without_a_restart() {
+	let key = RootKey::generate();
+	let shares = seal::split(&key);
+	let peers = vec![core_holding(Some(shares[1].clone())).await];
+	let path = scratch("late").join("share");
+	let _ = std::fs::remove_file(&path);
+
+	let seal = Arc::new(Seal::default());
+	let every = Duration::from_millis(20);
+	let asking =
+		tokio::spawn(unseal(seal.clone(), client(), peers, PEER.into(), path.clone(), every));
+	tokio::time::sleep(Duration::from_millis(200)).await;
+	assert!(seal.is_sealed() && seal.share().is_none(), "opened with one share");
+
+	std::fs::write(&path, shares[0].to_json().as_bytes()).unwrap();
+	tokio::time::timeout(Duration::from_secs(10), asking)
+		.await
+		.expect("the share written was never read")
+		.unwrap();
+	assert_eq!(seal.with_key(|held| *held.bytes()), Some(*key.bytes()));
+	assert!(seal.share().unwrap() == shares[0]);
+}
+
 #[tokio::test]
 async fn a_share_file_that_is_not_one_is_not_held() {
 	let path = scratch("bad").join("share");
