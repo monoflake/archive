@@ -65,8 +65,9 @@ jobs:
             apps='["geo"]'
             workers='[]'
           elif [ "$EVENT" = workflow_dispatch ] && [ -n "$ASKED" ]; then
-            apps="$(printf '%s\n' $ASKED | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))')"
-            # The asked apps that are Workers; an image-only name asks for no Worker.
+            # The asked apps that have an image, and the asked ones that are Workers: a name that is
+            # one alone asks for nothing of the other.
+            apps="$(.mise/tasks/deployable --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([a for a in json.load(sys.stdin) if a in asked]))')"
             workers="$(.mise/tasks/deployable --workers --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([w for w in json.load(sys.stdin) if w in asked]))')"
           elif [ "$EVENT" = workflow_dispatch ] || [ -z "${BEFORE//0/}" ]; then
             apps="$(.mise/tasks/deployable --all)"
