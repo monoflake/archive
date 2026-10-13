@@ -16,8 +16,17 @@ Worker at a time.
 **It learns of a run from the hook, as a third receiver beside host and keeper.** The hook posts the
 same `{run, repository}` to `deployer.<suffix>/notice` through the bindings of the nodes the
 deployer's `service.toml` places it on, a list generated into the hook from that declaration as the
-gateway's table is from its services. Later the notice comes off the relay's log, and a deployer
-that was down catches up -- [relay.md](relay.md).
+gateway's table is from its services.
+
+**A run whose notice never came is taken anyway, as host takes one.** At start and every 15 minutes
+the deployer lists each source's successful `deploy.yml` runs on `main` from the 7 days CI keeps
+artifacts. A run it has no row of, newer than the oldest run of that repository it holds, was missed;
+a deployer that holds none misses none. Missed runs are taken oldest first through the path a notice
+takes, each Worker only from the newest run that built it, an older run's copy recorded as skipped.
+A run with any row counts as taken, failed or not: this recovers notices, not deploys. A run that
+built no Worker leaves no row, so it is remembered only until the deployer restarts. A lost notice
+changes nothing -- RFC jln34: run 38342906856 reached no receiver on 2026-10-13, GitHub's delivery
+timing out, and the deployer never took it.
 
 **It trusts nothing the notice says.** It asks GitHub for the run and refuses it unless it is one of
 its sources' `.github/workflows/deploy.yml`, on `main`, completed and successful -- host's own check

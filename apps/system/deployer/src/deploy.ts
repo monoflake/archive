@@ -33,7 +33,16 @@ export interface Rollback {
 	readonly version: string;
 }
 
-type Work = ({ kind: 'run' } & Notice) | ({ kind: 'rollback' } & Rollback);
+/**
+ * A run a notice never brought, taken as one would be: `passedOver` names each Worker a newer run
+ * built too, with that run, so it is recorded as passed over and never deployed from this one.
+ */
+export interface Missed extends Notice {
+	readonly passedOver: ReadonlyMap<string, number>;
+}
+
+type RunWork = { kind: 'run' } & Notice & { readonly passedOver?: ReadonlyMap<string, number> };
+type Work = RunWork | ({ kind: 'rollback' } & Rollback);
 
 export type Unpack = (zip: string, directory: string) => Promise<void>;
 
@@ -63,6 +72,8 @@ function messageOf(error: unknown): string {
 
 export class Deployer {
 	private readonly queue: Work[] = [];
+	/** The work being done now, off the queue. */
+	private current: Work | undefined;
 	private draining: Promise<void> | undefined;
 	private readonly parts: Parts;
 
@@ -84,6 +95,19 @@ export class Deployer {
 		this.enqueue({ kind: 'run', ...notice });
 	}
 
+	/** Queue a run its notice never brought, as `notice` does; see catch-up.ts. */
+	missed(missed: Missed): void {
+		this.enqueue({ kind: 'run', ...missed });
+	}
+
+	/** Whether `repository`'s `run` is being taken now, or waits to be. */
+	inFlight(repository: string, run: number): boolean {
+		const work = this.current ? [this.current, ...this.queue] : this.queue;
+		return work.some(
+			(each) => each.kind === 'run' && each.repository === repository && each.run === run,
+		);
+	}
+
 	/** Queue a rollback; the caller has checked the write token and that the Worker is owned. */
 	rollback(rollback: Rollback): void {
 		this.enqueue({ kind: 'rollback', ...rollback });
@@ -98,11 +122,14 @@ export class Deployer {
 	private async drain(): Promise<void> {
 		try {
 			for (let next = this.queue.shift(); next; next = this.queue.shift()) {
+				this.current = next;
 				try {
 					// oxlint-disable-next-line no-await-in-loop -- one deploy at a time, by design
 					await (next.kind === 'run' ? this.take(next) : this.roll(next));
 				} catch (error) {
 					this.log(`${next.kind === 'run' ? `run ${next.run}` : next.worker}: ${messageOf(error)}`);
+				} finally {
+					this.current = undefined;
 				}
 			}
 		} finally {
@@ -111,8 +138,8 @@ export class Deployer {
 		}
 	}
 
-	/** Every Worker `notice`'s run built, once the run is one of its sources' to deploy. */
-	private async take({ run, repository }: Notice): Promise<void> {
+	/** Every Worker the run built, once the run is one of its sources' to deploy. */
+	private async take({ run, repository, passedOver }: RunWork): Promise<void> {
 		const { config, github, store } = this.parts;
 		if (!config.sources.includes(repository)) {
 			this.log(`run ${run}: ${repository} is not a repository it deploys from`);
@@ -130,9 +157,28 @@ export class Deployer {
 		const { commit, artifacts } = built;
 		if (artifacts.length === 0) this.log(`run ${run} of ${repository} built no Worker`);
 		for (const artifact of artifacts) {
+			const newer = passedOver?.get(artifact.app);
+			if (newer !== undefined) {
+				this.passOver(repository, run, commit, artifact.app, newer);
+				continue;
+			}
 			// oxlint-disable-next-line no-await-in-loop -- one deploy at a time, by design
 			await this.deploy(repository, run, commit, artifact);
 		}
+	}
+
+	/** Record `worker` of a missed `run` as passed over for the `newer` run that built it too. */
+	private passOver(
+		repository: string,
+		run: number,
+		commit: string | null,
+		worker: string,
+		newer: number,
+	): void {
+		const { config, store } = this.parts;
+		const id = store.open(worker, repository, run, commit, isDry(config, worker));
+		store.skipped(id, `run ${newer} built it again, and is the one deployed`);
+		this.log(`${worker} from run ${run} is passed over for run ${newer}`);
 	}
 
 	private async deploy(

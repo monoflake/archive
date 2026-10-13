@@ -89,6 +89,25 @@ function causeOf(error: unknown): string {
 	return error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message;
 }
 
+/** The query that lists `workflow`'s successful runs on `main` created at `since` or later. */
+export function recentPath(workflow: string, since: Date): string {
+	const at = since.toISOString().replace(/\.\d{3}Z$/, 'Z');
+	return `/actions/workflows/${workflow}/runs?branch=main&status=success&created=%3E%3D${at}&per_page=100`;
+}
+
+/** The ids of `runs` that are `repository`'s to deploy, the oldest first. */
+export function deployable(runs: readonly (Run & { readonly id: number })[], repository: string) {
+	const ids = runs.flatMap((record) => {
+		try {
+			check(record.id, record, repository);
+			return [record.id];
+		} catch {
+			return [];
+		}
+	});
+	return [...new Set(ids)].toSorted((a, b) => a - b);
+}
+
 interface Listed {
 	readonly artifacts: readonly {
 		readonly id: number;
@@ -160,6 +179,21 @@ export class GitHub {
 		} catch (error) {
 			throw new Unread(`GitHub's answer for ${what} could not be read: ${causeOf(error)}`);
 		}
+	}
+
+	/**
+	 * `repository`'s runs to deploy created within `within` milliseconds before `now`, the oldest
+	 * first: one page, as host reads it, the last 100 being more than the gap between two passes.
+	 */
+	async recent(repository: string, within: number, now = new Date()): Promise<number[]> {
+		const workflow = WORKFLOW.split('/').at(-1) ?? WORKFLOW;
+		const path = recentPath(workflow, new Date(now.getTime() - within));
+		const listed = await this.json<{ workflow_runs: (Run & { id: number })[] }>(
+			repository,
+			path,
+			`the recent runs of ${repository}`,
+		);
+		return deployable(listed.workflow_runs, repository);
 	}
 
 	/** The `worker-` artifacts of `repository`'s `run`, once its record says it is one to deploy. */

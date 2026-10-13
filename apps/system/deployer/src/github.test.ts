@@ -88,6 +88,26 @@ describe('GitHub', () => {
 		expect(built).toEqual({ commit: 'abc', artifacts: [{ app: 'console', id: 1, digest }] });
 	});
 
+	it("lists the week's runs to deploy, the oldest first, those alone", async () => {
+		const { asked, client } = github({
+			'per_page=100': () =>
+				Response.json({
+					workflow_runs: [
+						{ ...run(), id: 9 },
+						{ ...run({ head_branch: 'feature' }), id: 8 },
+						{ ...run(), id: 7 },
+						{ ...run({ conclusion: 'failure' }), id: 6 },
+					],
+				}),
+		});
+		const now = new Date('2026-10-13T03:44:05.123Z');
+		const week = 7 * 24 * 60 * 60 * 1000;
+		expect(await client.recent('monoflake/platform', week, now)).toEqual([7, 9]);
+		expect(asked[0]!.url).toMatch(
+			/\/repos\/monoflake\/platform\/actions\/workflows\/deploy\.yml\/runs\?branch=main&status=success&created=%3E%3D2026-10-06T03:44:05Z&per_page=100$/,
+		);
+	});
+
 	it('refuses a run that is not one to deploy before listing anything', async () => {
 		const { asked, client } = github({
 			'/actions/runs/7': () => Response.json(run({ conclusion: 'failure' })),

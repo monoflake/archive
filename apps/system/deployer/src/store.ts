@@ -41,6 +41,12 @@ export interface Deploy {
 	readonly finished_at: string | null;
 }
 
+/** A run the deployer took, and a Worker it built, as `taken` answers them. */
+export interface Taken {
+	readonly run: number;
+	readonly worker: string;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS deploys (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +158,20 @@ export class Store {
 			)
 			.get(worker) as { run: number | null } | undefined;
 		return row?.run ?? null;
+	}
+
+	/**
+	 * Each run of `repository` it has a deploy row of, with the Worker the row names -- empty for a
+	 * run GitHub never gave. A run with any row was taken, whatever came of it: catching up recovers
+	 * notices, not deploys.
+	 */
+	taken(repository: string): Taken[] {
+		return this.db
+			.prepare(
+				`SELECT DISTINCT run, worker FROM deploys
+					WHERE repository = ? AND action = 'deploy' AND run IS NOT NULL`,
+			)
+			.all(repository) as unknown as Taken[];
 	}
 
 	advance(id: number, stage: 'admitting' | 'uploading'): void {

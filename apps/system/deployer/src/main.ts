@@ -6,6 +6,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
+import { CatchUp, every } from './catch-up.ts';
 import { configOf, tokenFor } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { GitHub } from './github.ts';
@@ -36,3 +37,7 @@ serve({
 		}),
 });
 console.log(`deployer: listening on ${config.port}${config.dry ? ', every deploy dry' : ''}`);
+
+// A run whose notice never came is taken anyway, at start and every 15 minutes; see catch-up.ts.
+const catchUp = new CatchUp({ sources: config.sources, store, github, deployer });
+every(() => catchUp.pass());
