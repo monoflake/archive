@@ -27,6 +27,8 @@ coverage/
 .env.*
 !.env.example
 *.age
+# The root key encrypted to the offline recovery key, the one ciphertext kept. See RFC 231yq.
+!recovery.age
 keys.txt
 age-key*.txt
 
