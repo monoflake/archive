@@ -5,7 +5,7 @@ name = "primary"
 display_name = "Database Primary"
 # Every node, so an app anywhere reaches the database as `primary:5432`. It keeps nothing, so a run
 # deploys it like any app; the moment it restarts, connections through it close and reconnect.
-placements = ["tyo", "nrt", "hnd", "gvx", "bru", "buf", "rdu", "sha"]
+placements = ["tyo", "nrt", "hnd", "gvx", "bru", "buf", "rdu", "sha", "sin"]
 
 # Health here; Postgres's own port, 5432, on every app's network beside it. See
 # spec/architecture/databases.md, "Where it runs, and which one writes".

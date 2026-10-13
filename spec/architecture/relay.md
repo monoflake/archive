@@ -6,7 +6,7 @@ is the same node"; a node that was away then never hears of it.
 
 ## Three nodes agree, and the rest pass it on
 
-**Three core nodes, one per failure domain, decide what happened: `rdu`, `buf` and `tyo`.** A
+**Three core nodes, one per failure domain, decide what happened: `tyo`, `sin` and `rdu`.** A
 message is committed once two of the three have confirmed it, and committed messages form one log,
 numbered in order and never rewritten. The nodes and their domains are infra's
 `spec/architecture/nodes.md`, "Three nodes are the core, named by the author"; three in three

@@ -17,7 +17,7 @@ export const SUFFIX = new URL(URLS.internal.app).hostname;
 export const ORIGIN = 'rdu';
 
 /** Asked in this order for the relay's state, and preferred in it when several run one label. */
-export const NODES = ['rdu', 'tyo', 'buf', 'gvx', 'sha', 'nrt', 'hnd', 'bru'] as const;
+export const NODES = ['rdu', 'tyo', 'buf', 'gvx', 'sha', 'nrt', 'hnd', 'bru', 'sin'] as const;
 
 /** How long a table read from the relay is used, and how long one node has to answer for it. */
 export const FRESH_MS = 15_000;
