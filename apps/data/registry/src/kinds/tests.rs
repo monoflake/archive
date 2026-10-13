@@ -25,7 +25,14 @@ fn example(kind: &Description) -> Value {
 			"canary": true,
 			"grants": ["database"],
 		}),
-		Kind::App => json!({ "placements": ["tyo", "sin"] }),
+		Kind::App => json!({
+			"placements": ["tyo", "sin"],
+			"release": {
+				"repository": "monoflake/platform",
+				"run": 7,
+				"commit": "0123456789abcdef0123456789abcdef01234567",
+			},
+		}),
 	}
 }
 
@@ -42,6 +49,7 @@ fn wrong_types(type_: Type) -> Vec<Value> {
 		Type::Boolean => vec![json!("yes"), json!(1), json!(null)],
 		Type::Choice => vec![json!("none of them"), json!(1), json!(null)],
 		Type::List => vec![json!("tyo"), json!(1), json!({}), json!(null)],
+		Type::Object => vec![json!("x"), json!(1), json!([]), json!(null)],
 	}
 }
 
@@ -139,6 +147,7 @@ fn a_kind_is_answered_in_the_shape_the_console_reads() {
 			"name": "app",
 			"fields": [
 				{ "name": "placements", "type": "list", "editable": true, "required": true },
+				{ "name": "release", "type": "object", "editable": true, "required": false },
 			],
 			"actions": [],
 			"columns": ["placements"],

@@ -21,7 +21,7 @@ pub fn routes() -> Router<Shared> {
 		.route("/v1/nodes", get(nodes))
 		.route("/v1/nodes/{name}", get(node).put(put_node))
 		.route("/v1/apps", get(apps))
-		.route("/v1/apps/{name}", get(app).put(put_app))
+		.route("/v1/apps/{name}", get(app).put(put_app).patch(patch_app))
 		.route("/v1/{kind}", any(no_such_kind))
 		.route("/v1/{kind}/{name}", any(no_such_kind))
 }
@@ -137,33 +137,86 @@ async fn put_node(
 	}
 }
 
-/// Sets where an app runs, held to the revision read.
+/// A write to an app's refusal, if it has one, or what it says: the same token as every write,
+/// and a name that is one DNS label.
+fn app_written(
+	registry: &Shared,
+	headers: &HeaderMap,
+	name: &str,
+	body: Result<axum::Json<Value>, JsonRejection>,
+) -> Result<Written, Response> {
+	if let Some(refusal) = refused(registry, headers) {
+		return Err(refusal);
+	}
+	if !app::name_is_valid(name) {
+		return Err(response::failure_with(
+			StatusCode::BAD_REQUEST,
+			"invalid_name",
+			"An app's name is one DNS label, as its service.toml names it",
+		));
+	}
+	written(body)
+}
+
+/// Sets an app's whole spec, held to the revision read.
 async fn put_app(
 	Path(name): Path<String>,
 	State(registry): State<Shared>,
 	headers: HeaderMap,
 	body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-	if let Some(refusal) = refused(&registry, &headers) {
-		return refusal;
-	}
-	if !app::name_is_valid(&name) {
-		return response::failure_with(
-			StatusCode::BAD_REQUEST,
-			"invalid_name",
-			"An app's name is one DNS label, as its service.toml names it",
-		);
-	}
-	let written = match written(body) {
+	let written = match app_written(&registry, &headers, &name, body) {
 		Ok(written) => written,
 		Err(refusal) => return refusal,
 	};
 	match app::spec(written.spec) {
 		Ok(spec) => set(&registry, Kind::App, &name, written.by, written.revision, spec).await,
-		Err(Refusal::Forbidden(message)) => {
+		Err(refusal) => refused_app(refusal),
+	}
+}
+
+/// Sets the keys of an app's spec given and keeps every other, held to the revision read as `PUT`
+/// is: a release is written often and by a machine, where it runs seldom and by a person, and
+/// neither erases the other. The spec it makes is checked whole.
+async fn patch_app(
+	Path(name): Path<String>,
+	State(registry): State<Shared>,
+	headers: HeaderMap,
+	body: Result<axum::Json<Value>, JsonRejection>,
+) -> Response {
+	let written = match app_written(&registry, &headers, &name, body) {
+		Ok(written) => written,
+		Err(refusal) => return refusal,
+	};
+	let Value::Object(given) = written.spec else {
+		let message = "`spec` is an object of the fields changed";
+		return response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message);
+	};
+	let kept = match registry.store.resource(Kind::App, &name).await {
+		Ok(Some(kept)) => kept,
+		Ok(None) => return response::failure(StatusCode::NOT_FOUND, "no_such_resource"),
+		Err(error) => return store_unavailable(error),
+	};
+	// Read outside the write's lock, so `set` holds the write to the same revision once more.
+	if kept.revision != written.revision {
+		return response::failure(StatusCode::CONFLICT, "invalid_revision");
+	}
+	let Value::Object(mut spec) = kept.spec else {
+		return store_unavailable(anyhow::anyhow!("{name}'s stored spec is not an object"));
+	};
+	spec.extend(given);
+	match app::spec(Value::Object(spec)) {
+		Ok(spec) => set(&registry, Kind::App, &name, written.by, written.revision, spec).await,
+		Err(refusal) => refused_app(refusal),
+	}
+}
+
+fn refused_app(refusal: Refusal) -> Response {
+	match refusal {
+		Refusal::Forbidden(message) => {
 			response::failure_with(StatusCode::BAD_REQUEST, "forbidden_field", message)
 		}
-		Err(Refusal::Invalid(message)) => {
+		Refusal::Invalid(message) => {
 			response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message)
 		}
 	}

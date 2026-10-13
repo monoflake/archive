@@ -20,6 +20,15 @@ again is safe. The record is the node's table from infra's `nodes.toml` with its
 the axes infra's `spec/architecture/nodes.md` declares are checked, every other key kept as given,
 so the node task can come to read it rather than the file.
 
+**An app is a record too: where it runs, and what it runs there.** Its spec is `placements`, the
+nodes it runs on, which a person sets, and `release`, the run of a repository that built what runs
+and the commit it built (`{"repository": "owner/repo", "run": n, "commit": "<40 hex>"}`), which the
+deployer on `tyo` writes after each run it takes -- RFC jln34. Absent, no release is recorded yet.
+`PUT /v1/apps/<name>` sets the whole spec; `PATCH` sets only the keys it is given and keeps the
+others, held to the revision read as `PUT` is, so a release written and an app moved never erase
+each other. `mise run registry import` writes placements by `PATCH` and creates an app it does not
+find by `PUT`, so running it again keeps every release.
+
 **Reading is open to the tailnet and writing takes a token**, `REGISTRY_TOKEN`, made once in the
 repository's secrets and written to the registry's nodes by `mise run registry token`; without one a
 registry answers reads and refuses writes. `mise run registry import` writes every node of

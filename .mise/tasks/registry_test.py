@@ -213,10 +213,10 @@ class Importing(unittest.TestCase):
 			raise AssertionError("a dry run asked a registry")
 
 		lines = self.run_import(True, unreachable)
-		puts = [line.split()[1] for line in lines if line.startswith("  PUT /v1/apps/")]
+		puts = [line.split()[1] for line in lines if line.startswith("  PATCH /v1/apps/")]
 		self.assertEqual(puts, ["/v1/apps/caddy", "/v1/apps/web", "/v1/apps/hub"])
 		web = registry.app_body("<read>", ["tyo", "sin"])
-		self.assertIn(f"  PUT /v1/apps/web {registry.json.dumps(web)}", lines)
+		self.assertIn(f"  PATCH /v1/apps/web {registry.json.dumps(web)}", lines)
 		self.assertIn("  skip aka", lines)
 		self.assertEqual(sum(line.startswith("  PUT /nodes/") for line in lines), 2)
 		self.assertNotIn("s3cret", "\n".join(lines))
@@ -240,6 +240,37 @@ class Importing(unittest.TestCase):
 		web = registry.app_body(0, ["tyo", "sin"])
 		self.assertEqual(put, [("100.64.0.1", "PUT", "/v1/apps/web", web, "s3cret")])
 
+	def test_a_rerun_keeps_the_release_an_app_already_has(self):
+		"""Against a registry answering as the registry does: `PUT` sets a spec whole, `PATCH` sets
+		the keys given and keeps the rest, each held to the revision read."""
+		release = {"repository": "monoflake/platform", "run": 7, "commit": "0" * 40}
+		held = {"web": {"revision": 4, "spec": {"placements": ["tyo"], "release": release}}}
+		written = []
+
+		def answered(addresses, method, path, body=None, secret=None):
+			if not path.startswith("/v1/apps/"):
+				return {"status": "success", "data": {}}
+			name = path.removeprefix("/v1/apps/")
+			app = held.get(name)
+			if method == "GET":
+				if app is None:
+					return {"status": "error", "code": "no_such_resource"}
+				return {"status": "success", "data": {"name": name, **app}}
+			written.append((method, name))
+			if body["revision"] != (app["revision"] if app else 0):
+				return {"status": "error", "code": "invalid_revision"}
+			spec = {**app["spec"], **body["spec"]} if method == "PATCH" else body["spec"]
+			held[name] = {"revision": 10 + len(written), "spec": spec}
+			return {"status": "success", "data": {"revision": held[name]["revision"]}}
+
+		self.run_import(False, answered)
+		self.assertEqual(held["web"]["spec"], {"placements": ["tyo", "sin"], "release": release})
+		self.assertEqual(written, [("PUT", "caddy"), ("PATCH", "web"), ("PUT", "hub")])
+
+	def test_an_app_held_is_patched_and_one_not_held_is_put(self):
+		self.assertEqual(registry.method_at(0), "PUT")
+		self.assertEqual(registry.method_at(12), "PATCH")
+
 	def test_a_source_not_cloned_fails_rather_than_leaving_its_apps_out(self):
 		(self.workspace / "repos/cue").rename(self.workspace / "elsewhere")
 		self.assertIn("canmi21/cue", self.failure())
@@ -258,7 +289,7 @@ class Importing(unittest.TestCase):
 		lines = self.run_import(True)
 		self.assertNotIn("secrets", "\n".join(lines))
 		hub = registry.app_body("<read>", ["tyo"])
-		self.assertIn(f"  PUT /v1/apps/hub {registry.json.dumps(hub)}", lines)
+		self.assertIn(f"  PATCH /v1/apps/hub {registry.json.dumps(hub)}", lines)
 
 	def test_a_checkout_without_main_fails_naming_it(self):
 		del self.main["cue"]

@@ -201,3 +201,91 @@ async fn a_node_is_one_resource_through_both_routes() {
 	let (_, body) = ask(router, "/v1/nodes/sin").await;
 	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(changed), &moved));
 }
+
+async fn patch(router: Router, path: &str, body: Value) -> (StatusCode, Value) {
+	let bearer = format!("Bearer {TOKEN}");
+	send(router, "PATCH", path, Some(&bearer), Some(body)).await
+}
+
+fn release(run: u64) -> Value {
+	json!({
+		"repository": "monoflake/platform",
+		"run": run,
+		"commit": "0123456789abcdef0123456789abcdef01234567",
+	})
+}
+
+#[tokio::test]
+async fn a_patch_is_refused_as_a_put_is_before_the_store_is_asked() {
+	let router = refusing(TOKEN);
+	let wrong = send(router.clone(), "PATCH", "/v1/apps/web", Some("Bearer s3cre"), None).await;
+	assert_eq!(code(&wrong), (StatusCode::UNAUTHORIZED, "invalid_token"));
+	let answer = patch(router.clone(), "/v1/apps/We", wanted(1, json!({}))).await;
+	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_name"));
+	for body in [wanted(1, json!(["tyo"])), json!({ "by": "test", "revision": 1 })] {
+		let answer = patch(router.clone(), "/v1/apps/web", body.clone()).await;
+		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_body"), "{body}");
+	}
+	let mut drifted = wanted(1, json!({}));
+	drifted["drift"] = json!({});
+	let answer = patch(router, "/v1/apps/web", drifted).await;
+	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "forbidden_field"));
+}
+
+#[tokio::test]
+async fn a_patch_sets_what_it_names_and_keeps_the_rest() {
+	let Some(router) = reached().await else { return };
+	let absent = wanted(0, json!({ "release": release(1) }));
+	let answer = patch(router.clone(), "/v1/apps/web", absent).await;
+	assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_resource"));
+
+	let (_, body) = put(router.clone(), "/v1/apps/web", wanted(0, placed(&["tyo"]))).await;
+	let created = body["data"]["revision"].as_i64().unwrap();
+	let (status, body) =
+		patch(router.clone(), "/v1/apps/web", wanted(created, json!({ "release": release(7) }))).await;
+	assert_eq!(status, StatusCode::OK);
+	let released = body["data"]["revision"].as_i64().unwrap();
+	let (_, body) = ask(router.clone(), "/v1/apps/web").await;
+	let spec = json!({ "placements": ["tyo"], "release": release(7) });
+	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(released), &spec));
+
+	// Where it runs, written by a person, keeps the release a machine wrote.
+	let moved = wanted(released, placed(&["tyo", "sin"]));
+	let (_, body) = patch(router.clone(), "/v1/apps/web", moved).await;
+	let placed_at = body["data"]["revision"].as_i64().unwrap();
+	let (_, body) = ask(router.clone(), "/v1/apps/web").await;
+	let spec = json!({ "placements": ["tyo", "sin"], "release": release(7) });
+	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(placed_at), &spec));
+
+	// The same again changes nothing.
+	let same = wanted(placed_at, json!({ "release": release(7) }));
+	let (status, body) = patch(router.clone(), "/v1/apps/web", same).await;
+	assert_eq!((status, &body["data"]), (StatusCode::OK, &json!({})));
+}
+
+#[tokio::test]
+async fn a_stale_or_malformed_patch_writes_nothing() {
+	let Some(router) = reached().await else { return };
+	let (_, body) = put(router.clone(), "/v1/apps/web", wanted(0, placed(&["tyo"]))).await;
+	let created = body["data"]["revision"].as_i64().unwrap();
+	let first = wanted(created, json!({ "release": release(7) }));
+	let (_, body) = patch(router.clone(), "/v1/apps/web", first).await;
+	let released = body["data"]["revision"].as_i64().unwrap();
+
+	let stale = wanted(created, json!({ "release": release(8) }));
+	let answer = patch(router.clone(), "/v1/apps/web", stale).await;
+	assert_eq!(code(&answer), (StatusCode::CONFLICT, "invalid_revision"));
+	let mut short = release(8);
+	short["commit"] = json!("0123");
+	for (spec, expected) in [
+		(json!({ "release": short }), "invalid_body"),
+		(json!({ "placements": "tyo" }), "invalid_body"),
+		(json!({ "image": "x" }), "forbidden_field"),
+	] {
+		let answer = patch(router.clone(), "/v1/apps/web", wanted(released, spec.clone())).await;
+		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, expected), "{spec}");
+	}
+	let (_, body) = ask(router, "/v1/apps/web").await;
+	let spec = json!({ "placements": ["tyo"], "release": release(7) });
+	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(released), &spec));
+}

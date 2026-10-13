@@ -54,6 +54,8 @@ pub enum Type {
 	Boolean,
 	Choice,
 	List,
+	/// A value of named keys of its own, as an app's `release`; app.rs holds its shape.
+	Object,
 }
 
 /// None yet: backing up or restarting comes with the controllers, RFC jln34.
@@ -85,7 +87,7 @@ pub const NODE: Description = Description {
 
 pub const APP: Description = Description {
 	kind: Kind::App,
-	fields: &[field("placements", Type::List, true)],
+	fields: &[field("placements", Type::List, true), field("release", Type::Object, false)],
 	actions: &[],
 	columns: &["placements"],
 };

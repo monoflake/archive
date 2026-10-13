@@ -184,8 +184,8 @@ def declarations(roots):
 
 
 def app_body(revision, placements, by=BY):
-	"""The body of `PUT /v1/apps/<name>`: who, the revision read, and the placements. See RFC
-	cpc2b."""
+	"""The body of `PUT` or `PATCH /v1/apps/<name>`: who, the revision read, and the placements.
+	See RFC cpc2b."""
 	return {"by": by, "revision": revision, "spec": {"placements": placements}}
 
 
@@ -223,6 +223,12 @@ def answered(addresses, method, path, body=None, secret=None):
 	fail(f"no registry answered {method} {path}")
 
 
+def method_at(revision):
+	"""`PUT` for an app the registry does not hold, at revision 0; `PATCH` for one it does, which
+	sets its placements and keeps its release, written by the hook -- RFC jln34."""
+	return "PUT" if revision == 0 else "PATCH"
+
+
 def revision_of(answer, name):
 	"""The revision `GET /v1/apps/<name>` answered, 0 for an app it does not hold."""
 	if answer.get("status") == "success":
@@ -256,13 +262,16 @@ def importing(dry):
 		for name, table in nodes.items():
 			body = request_body(table, addresses[name])
 			print(f"  PUT /nodes/{name} {json.dumps(body)}")
-		print(f"{APP}: then each app placed on nodes, at the revision GET /v1/apps/<name> answers:")
+		print(
+			f"{APP}: then each app placed on nodes, at the revision GET /v1/apps/<name> answers,"
+			" by PATCH, or by PUT where the registry does not hold it:"
+		)
 		for name, where in apps:
 			if where is None:
 				print(f"  skip {name}")
 			else:
 				body = app_body("<read>", where)
-				print(f"  PUT /v1/apps/{name} {json.dumps(body)}")
+				print(f"  PATCH /v1/apps/{name} {json.dumps(body)}")
 		return
 	for name, table in nodes.items():
 		body = request_body(table, addresses[name])
@@ -277,7 +286,7 @@ def importing(dry):
 			continue
 		revision = revision_of(answered(registries, "GET", f"/v1/apps/{name}"), name)
 		body = app_body(revision, where)
-		answer = answered(registries, "PUT", f"/v1/apps/{name}", body, secret)
+		answer = answered(registries, method_at(revision), f"/v1/apps/{name}", body, secret)
 		if answer.get("status") != "success":
 			fail(f"app {name}: {answer}")
 		made = answer["data"].get("revision")
