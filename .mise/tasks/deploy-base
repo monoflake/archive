@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+#MISE description="The commit a push's Deploy run plans against, printed, and nothing to build everything: `deploy-base`, in CI"
+# Kept identical in monoflake/platform, monoflake/infra and canmi21/cue, at .mise/tasks/deploy-base
+# in each, with its test beside it, so each repository is clonable on its own: a change to one is a
+# change to all three.
+"""The base a push's Deploy run plans against: the head commit of the last Deploy run on main that a
+push started and that succeeded, so every change since what was last built is built now.
+
+`github.event.before` is not that commit. GitHub keeps one pending run in a concurrency group and
+cancels the pending one when another push queues, so the next run's `before` is the cancelled run's
+own commit, and what that commit changed was never built. It is still the base when the API cannot
+answer, as before; and the whole of it is built when there is no such run, or HEAD does not descend
+from it. Which base was used, and why, goes to stderr. Reads `GITHUB_REPOSITORY`, `GH_TOKEN` (for
+`gh`) and `BEFORE`.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+WORKFLOW = "deploy.yml"
+BRANCH = "main"
+TIMEOUT_SECONDS = 30
+
+
+class Unanswered(Exception):
+	pass
+
+
+def runs_path(repository):
+	"""The newest run of the Deploy workflow on main a push started and that succeeded: a run a
+	schedule or a dispatch started built only what it was asked for, so it marks nothing built."""
+	query = f"branch={BRANCH}&event=push&status=success&per_page=1"
+	return f"repos/{repository}/actions/workflows/{WORKFLOW}/runs?{query}"
+
+
+def last_built(repository):
+	"""That run's head commit; None when there is none. Raises Unanswered when the API does not."""
+	if not repository:
+		raise Unanswered("GITHUB_REPOSITORY is not set")
+	try:
+		ran = subprocess.run(
+			["gh", "api", runs_path(repository)],
+			capture_output=True,
+			text=True,
+			timeout=TIMEOUT_SECONDS,
+		)
+	except (OSError, subprocess.TimeoutExpired) as error:
+		raise Unanswered(str(error)) from error
+	if ran.returncode != 0:
+		said = ran.stderr.strip().splitlines()
+		raise Unanswered(said[0] if said else f"gh exited {ran.returncode}")
+	try:
+		runs = json.loads(ran.stdout)["workflow_runs"]
+		return runs[0]["head_sha"] if runs else None
+	except (ValueError, KeyError, IndexError, TypeError) as error:
+		raise Unanswered(f"an answer it cannot read: {error!r}") from error
+
+
+def holds(commit, checkout=None):
+	"""Whether the checkout has `commit` and HEAD descends from it."""
+	known = ["git", "cat-file", "-e", f"{commit}^{{commit}}"]
+	descends = ["git", "merge-base", "--is-ancestor", commit, "HEAD"]
+	commands = (known, descends)
+	ran = (subprocess.run(command, capture_output=True, cwd=checkout) for command in commands)
+	return all(answer.returncode == 0 for answer in ran)
+
+
+def is_zero(commit):
+	"""No commit at all: GitHub's `before` for a branch's first push is forty zeros."""
+	return not commit.strip("0")
+
+
+def fallback(before, why):
+	if is_zero(before):
+		return "", f"{why}, and the push names no commit before it: building everything"
+	return before, f"{why}: planning against github.event.before, {before}"
+
+
+def base(asked, before, head, descends):
+	"""(base, why): the base to plan against, empty for everything. `asked()` answers the last
+	commit built or raises Unanswered; `descends(commit)` says whether HEAD descends from it."""
+	try:
+		built = asked()
+	except Unanswered as error:
+		return fallback(before, f"the API did not answer ({error})")
+	if built is None:
+		return "", "no Deploy run a push started on main has succeeded: building everything"
+	# A run re-run at the commit already built: what its own push changed, as a re-run always built.
+	if built == head:
+		return fallback(before, f"the last run built {built}, which is HEAD")
+	if not descends(built):
+		return "", f"the last run built {built}, which HEAD does not descend from: building everything"
+	return built, f"planning against {built}, the last Deploy run a push started on main to succeed"
+
+
+def main():
+	head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+	repository = os.environ.get("GITHUB_REPOSITORY", "")
+	chosen, why = base(lambda: last_built(repository), os.environ.get("BEFORE", ""), head, holds)
+	print(f"deploy-base: {why}", file=sys.stderr)
+	print(chosen)
+
+
+if __name__ == "__main__":
+	main()

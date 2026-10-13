@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: read
+  # For `deploy-base` to read which run last succeeded.
+  actions: read
 
 concurrency:
   group: deploy
@@ -60,6 +62,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
           ASKED: ${{ inputs.apps }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT" = schedule ]; then
             apps='["geo"]'
@@ -69,12 +72,20 @@ jobs:
             # one alone asks for nothing of the other.
             apps="$(.mise/tasks/deployable --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([a for a in json.load(sys.stdin) if a in asked]))')"
             workers="$(.mise/tasks/deployable --workers --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([w for w in json.load(sys.stdin) if w in asked]))')"
-          elif [ "$EVENT" = workflow_dispatch ] || [ -z "${BEFORE//0/}" ]; then
+          elif [ "$EVENT" = workflow_dispatch ]; then
             apps="$(.mise/tasks/deployable --all)"
             workers="$(.mise/tasks/deployable --workers --all)"
           else
-            apps="$(.mise/tasks/deployable --git "$BEFORE")"
-            workers="$(.mise/tasks/deployable --workers --git "$BEFORE")"
+            # Against what the last push's run built, not `before`: a pending run cancelled by a
+            # newer push leaves `before` past what it never built. It says which base, and why.
+            base="$(.mise/tasks/deploy-base)"
+            if [ -z "$base" ]; then
+              apps="$(.mise/tasks/deployable --all)"
+              workers="$(.mise/tasks/deployable --workers --all)"
+            else
+              apps="$(.mise/tasks/deployable --git "$base")"
+              workers="$(.mise/tasks/deployable --workers --git "$base")"
+            fi
           fi
           echo "apps=$apps" >> "$GITHUB_OUTPUT"
           echo "workers=$workers" >> "$GITHUB_OUTPUT"
