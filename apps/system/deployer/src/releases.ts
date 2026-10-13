@@ -14,6 +14,9 @@ const PATIENCE_MS = 3000;
 /** What the registry refuses of a release itself, never of the moment it was sent in. */
 const FINAL = new Set(['invalid_body', 'forbidden_field', 'invalid_name']);
 
+/** The code of a refusal outside the envelope, by its status: `http_405`. */
+const UNENVELOPED = 'http_';
+
 /** Who the registry records as having written a release. */
 const BY = 'deployer';
 
@@ -51,6 +54,15 @@ export function newer(release: Release, recorded: Partial<Release> | undefined):
 	return release.run > recorded.run;
 }
 
+/** `text` as JSON, or undefined where it is none, as an answer from no route of the registry's. */
+function parsed(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * The registry's `/v1/apps`, asked of each core in turn, the one that answered last first: one
  * that cannot be reached, is too slow or fails on its own side passes the question on.
@@ -84,7 +96,7 @@ export class Registry {
 		let why = 'no registry is configured';
 		for (const at of order) {
 			let answer: Response;
-			let body: unknown;
+			let text: string;
 			try {
 				// oxlint-disable-next-line no-await-in-loop -- each core only once the last failed
 				answer = await this.fetch(`http://${at}${path}`, {
@@ -93,7 +105,7 @@ export class Registry {
 					signal: AbortSignal.timeout(PATIENCE_MS),
 				});
 				// oxlint-disable-next-line no-await-in-loop -- the same
-				body = await answer.json();
+				text = await answer.text();
 			} catch (error) {
 				why = `${at}: ${error instanceof Error ? error.message : String(error)}`;
 				continue;
@@ -103,9 +115,19 @@ export class Registry {
 				continue;
 			}
 			this.last = at;
+			const body = parsed(text);
 			if (answer.ok) return unwrap<T>(body, `the registry at ${at}`);
-			const { code = 'unknown', message = '' } = body as { code?: string; message?: string };
-			throw new Refused(code, `the registry at ${at} answered ${code}: ${message}`);
+			const { code, message = '' } = (body ?? {}) as { code?: unknown; message?: unknown };
+			if (typeof code === 'string') {
+				throw new Refused(code, `the registry at ${at} answered ${code}: ${String(message)}`);
+			}
+			// Not the envelope: a route the registry does not have, as a 405 says before PATCH is
+			// deployed. Every core runs the same build, so it is the answer, not a core to pass over.
+			const said = text.trim() ? `: ${text.trim().slice(0, 120)}` : ', with no body';
+			throw new Refused(
+				`${UNENVELOPED}${answer.status}`,
+				`the registry at ${at} answered ${answer.status}${said}`,
+			);
 		}
 		throw new Error(`no registry answered: ${why}`);
 	}
@@ -210,7 +232,7 @@ export class Releases {
 				outcome = await registry.release(unwritten.app, release);
 			} catch (error) {
 				// Left unwritten, for the next flush: a notice's or the next pass's. A registry that did
-				// not answer will not answer the next one either, so the rest wait with it.
+				// not answer, or lacks the route, answers the next the same, so the rest wait with it.
 				const why = error instanceof Error ? error.message : String(error);
 				// A body the registry refuses is refused again however often it is sent.
 				if (error instanceof Refused && FINAL.has(error.code)) {
@@ -219,7 +241,7 @@ export class Releases {
 					continue;
 				}
 				this.log(`${of} is not written yet: ${why}`);
-				if (error instanceof Refused) continue;
+				if (error instanceof Refused && !error.code.startsWith(UNENVELOPED)) continue;
 				return;
 			}
 			store.written(unwritten, outcome);

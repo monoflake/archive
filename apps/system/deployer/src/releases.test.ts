@@ -141,6 +141,20 @@ describe('the registry', () => {
 		);
 	});
 
+	it('names the status of a refusal outside the envelope, asking no other core', async () => {
+		for (const [answer, said] of [
+			[new Response(null, { status: 405 }), '405, with no body'],
+			[new Response('Method Not Allowed', { status: 405 }), '405: Method Not Allowed'],
+		] as const) {
+			const { asked, registry } = registryOf([app(30), answer]);
+			// oxlint-disable-next-line no-await-in-loop -- one case at a time
+			const failed = await registry.release('geo', RELEASE).catch((error: Error) => error);
+			expect(failed).toBeInstanceOf(Error);
+			expect((failed as Error).message).toBe(`the registry at 100.64.0.1:12013 answered ${said}`);
+			expect(asked).toHaveLength(2);
+		}
+	});
+
 	it('does not ask the next core over a refusal, which every core would give', async () => {
 		const { asked, registry } = registryOf([app(30), refused(401, 'invalid_token')]);
 		await expect(registry.release('geo', RELEASE)).rejects.toThrow(/invalid_token/);
@@ -179,6 +193,14 @@ describe('the releases', () => {
 			"deployer: console's release from run 9 of monoflake/platform is not recorded: the registry has no console",
 			"deployer: geo's release from run 9 of monoflake/platform is not recorded: the registry at 100.64.0.1:12013 answered invalid_body: invalid_body",
 			"deployer: site's release from run 9 of monoflake/platform is not written yet: the registry at 100.64.0.1:12013 answered invalid_token: invalid_token",
+		]);
+	});
+
+	it('stops at a route the registry does not have, naming its status once', async () => {
+		const { store, logs } = await flushed([app(30), new Response(null, { status: 405 })]);
+		expect(store.unwritten()).toHaveLength(3);
+		expect(logs).toEqual([
+			"deployer: console's release from run 9 of monoflake/platform is not written yet: the registry at 100.64.0.1:12013 answered 405, with no body",
 		]);
 	});
 
