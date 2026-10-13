@@ -26,7 +26,8 @@ and the commit it built (`{"repository": "owner/repo", "run": n, "commit": "<40 
 deployer on `tyo` writes after each run it takes -- RFC jln34. Absent, no release is recorded yet.
 `PUT /v1/apps/<name>` sets the whole spec; `PATCH` sets only the keys it is given and keeps the
 others, held to the revision read as `PUT` is, so a release written and an app moved never erase
-each other. `mise run registry import` writes placements by `PATCH` and creates an app it does not
+each other. A node takes the same `PATCH`, so an operator's `retired` and an import never erase each
+other either. `mise run registry import` writes placements by `PATCH` and creates an app it does not
 find by `PUT`, so running it again keeps every release.
 
 **Reading is open to the tailnet and writing takes a token**, `REGISTRY_TOKEN`, made once in the
@@ -35,8 +36,10 @@ registry answers reads and refuses writes. `mise run registry token` gives the t
 its `service.toml` places it -- with `REGISTRY`, the cores' tailnet IPv4s, in its `config.env`, and
 every source host deploys from added to its `DEPLOY_SOURCES`, so every app host runs gets a release. It
 writes the platform's own `GITHUB_ACTIONS_TOKEN` beside them, the machine user's, and never an
-organization's own token -- RFC 024i3. `mise run registry import` writes every node of
-`nodes.toml` with its address, the one way in until the console writes it -- RFC dk6wz.
+organization's own token -- RFC 024i3. `mise run registry import` writes every node of `nodes.toml` with its address, the one way in
+until the console writes it -- RFC dk6wz: by `PATCH /v1/nodes/<name>` at the revision it reads, and
+by `PUT` for a node the registry does not hold, so it keeps every key `nodes.toml` does not carry,
+`retired` among them.
 
 ## Nodes and apps, as resources of a kind
 
@@ -46,7 +49,8 @@ the newest change the registry holds. `GET /v1/kinds` is the catalog the console
 kind's fields, which can be edited, and the columns a list shows first. A kind it does not hold is
 `404 no_such_kind`.
 
-- **`node`** -- `/v1/nodes` and `/v1/nodes/{name}`, the record above as its `spec`.
+- **`node`** -- `/v1/nodes` and `/v1/nodes/{name}`, the record above as its `spec`, set whole by
+  `PUT` and in part by `PATCH`.
 - **`app`** -- `/v1/apps` and `/v1/apps/{name}`, its `spec` being `placements`, the nodes it runs
   on, each named once. `?node=<name>` answers only the apps placed on that node, which is how host
   asks what its node should run -- infra's `spec/architecture/host.md`. `mise run registry import`
@@ -63,9 +67,11 @@ A write answers `{"revision": n}`, or `{}` when it changed nothing; it becomes a
 answering `202`, and `by` is taken from the request rather than the body, in a later wave -- RFC
 cpc2b. A resource's revision is the change that last wrote it, so every kind shares one sequence.
 
-**The routes before `/v1` stay until no relay reads them**, and they answer nodes alone: `GET
-/nodes`'s `change` and `GET /changes` pass over every other kind's rows, so placing an app is not a
-change a relay takes.
+**The routes before `/v1` are gone**: `GET /nodes`, `PUT` and `DELETE /nodes/{name}` and `GET
+/changes` were removed once every relay followed `/v1/nodes`, and each answers `404 no_such_route`.
+The `changes` table is kept whole as the history, the rows of a node the old `DELETE` removed
+included; no route reads it, and a resource that does not exist is at revision 0 whatever of it the
+history holds.
 
 ## Every relay follows it
 

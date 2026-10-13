@@ -1,17 +1,13 @@
-//! What every node's relay reads, and an operator writes, over the tailnet. See
-//! spec/architecture/registry.md. The routes outside `/v1` are the ones every relay in production
-//! reads, kept as they are until none does; `/v1` is in v1.rs.
+//! What every node's relay and host read, and an operator writes, over the tailnet: `/health`
+//! here, and the resources under `/v1` in v1.rs. See spec/architecture/registry.md.
 
-use crate::node;
 use crate::store::Store;
 use axum::Router;
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::get;
-use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub struct Registry {
@@ -22,16 +18,9 @@ pub struct Registry {
 
 pub type Shared = Arc<Registry>;
 
-/// A page of `GET /changes`, by default and at most.
-const DEFAULT_LIMIT: usize = 100;
-const MAX_LIMIT: usize = 500;
-
 pub fn routes(registry: Shared) -> Router {
 	Router::new()
 		.route("/health", get(health))
-		.route("/nodes", get(nodes))
-		.route("/nodes/{name}", axum::routing::put(put).delete(delete))
-		.route("/changes", get(changes))
 		.merge(v1::routes())
 		.fallback(|| async { response::failure(StatusCode::NOT_FOUND, "no_such_route") })
 		.with_state(registry)
@@ -43,15 +32,6 @@ async fn health(State(registry): State<Shared>) -> Response {
 		Ok(()) => response::success(StatusCode::OK, ()),
 		Err(error) => {
 			response::failure_with(StatusCode::SERVICE_UNAVAILABLE, "store_unavailable", error)
-		}
-	}
-}
-
-async fn nodes(State(registry): State<Shared>) -> Response {
-	match registry.store.nodes().await {
-		Ok(nodes) => response::success(StatusCode::OK, nodes),
-		Err(error) => {
-			response::failure_with(StatusCode::INTERNAL_SERVER_ERROR, "store_unavailable", error)
 		}
 	}
 }
@@ -88,115 +68,6 @@ fn invalid_name() -> Response {
 /// Who made a change: whoever the operator's task or the console says it is, never empty.
 fn by_is_valid(by: &str) -> bool {
 	!by.trim().is_empty()
-}
-
-#[derive(serde::Deserialize)]
-struct Put {
-	by: String,
-	node: Value,
-}
-
-/// Sets a node, appending the change; a record equal to the one kept writes nothing.
-async fn put(
-	Path(name): Path<String>,
-	State(registry): State<Shared>,
-	headers: HeaderMap,
-	body: Result<axum::Json<Put>, JsonRejection>,
-) -> Response {
-	if let Some(refusal) = refused(&registry, &headers) {
-		return refusal;
-	}
-	if !node::name_is_valid(&name) {
-		return invalid_name();
-	}
-	let Ok(axum::Json(Put { by, node })) = body else {
-		return response::failure(StatusCode::BAD_REQUEST, "invalid_body");
-	};
-	if !by_is_valid(&by) {
-		return response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", "`by` names who");
-	}
-	let record = match node::record(node) {
-		Ok(record) => record,
-		Err(message) => {
-			return response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message);
-		}
-	};
-	match registry.store.put(&name, &by, Value::Object(record)).await {
-		Ok(change) => response::success(StatusCode::OK, changed(change)),
-		Err(error) => {
-			response::failure_with(StatusCode::INTERNAL_SERVER_ERROR, "store_unavailable", error)
-		}
-	}
-}
-
-/// A write's answer: the change it appended, or `{}` when there was nothing to change.
-fn changed(change: Option<i64>) -> Value {
-	match change {
-		Some(change) => json!({ "change": change }),
-		None => json!({}),
-	}
-}
-
-#[derive(serde::Deserialize)]
-struct Delete {
-	by: String,
-}
-
-/// Deletes a node, appending the change; a node that is not there writes nothing.
-async fn delete(
-	Path(name): Path<String>,
-	State(registry): State<Shared>,
-	headers: HeaderMap,
-	body: Result<axum::Json<Delete>, JsonRejection>,
-) -> Response {
-	if let Some(refusal) = refused(&registry, &headers) {
-		return refusal;
-	}
-	if !node::name_is_valid(&name) {
-		return invalid_name();
-	}
-	let Ok(axum::Json(Delete { by })) = body else {
-		return response::failure(StatusCode::BAD_REQUEST, "invalid_body");
-	};
-	if !by_is_valid(&by) {
-		return response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", "`by` names who");
-	}
-	match registry.store.delete(&name, &by).await {
-		Ok(change) => response::success(StatusCode::OK, changed(change)),
-		Err(error) => {
-			response::failure_with(StatusCode::INTERNAL_SERVER_ERROR, "store_unavailable", error)
-		}
-	}
-}
-
-#[derive(serde::Deserialize)]
-struct ChangesAsked {
-	after: Option<String>,
-	limit: Option<String>,
-}
-
-/// `after` and `limit` that do not parse fall back to their defaults, and a `limit` out of range is
-/// brought into it, rather than failing a read that is otherwise well formed.
-fn page_asked(asked: &ChangesAsked) -> (i64, usize) {
-	let after = asked.after.as_deref().and_then(|text| text.parse().ok()).unwrap_or(0);
-	let limit = asked
-		.limit
-		.as_deref()
-		.and_then(|text| text.parse::<usize>().ok())
-		.unwrap_or(DEFAULT_LIMIT)
-		.clamp(1, MAX_LIMIT);
-	(after, limit)
-}
-
-/// Oldest first, every change numbered after `after`, a page at a time.
-async fn changes(State(registry): State<Shared>, Query(asked): Query<ChangesAsked>) -> Response {
-	let (after, limit) = page_asked(&asked);
-	match registry.store.changes(after, limit).await {
-		Ok(changes) => response::success(StatusCode::OK, json!({ "changes": changes })),
-		Err(error) => {
-			response::failure_with(StatusCode::INTERNAL_SERVER_ERROR, "store_unavailable", error)
-		}
-	}
 }
 
 mod v1;

@@ -168,7 +168,7 @@ async fn apps_are_filtered_by_the_node_they_are_placed_on() {
 }
 
 #[tokio::test]
-async fn a_node_is_one_resource_through_both_routes() {
+async fn a_node_is_set_and_read_with_its_revision() {
 	let Some(router) = reached().await else { return };
 	let answer = ask(router.clone(), "/v1/nodes/sin").await;
 	assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_node"));
@@ -182,20 +182,17 @@ async fn a_node_is_one_resource_through_both_routes() {
 	let (_, body) = ask(router.clone(), "/v1/nodes").await;
 	assert_eq!(body["data"], json!({ "items": [node], "revision": created }));
 
-	// An app written moves neither what the old routes answer nor a node's own revision.
-	put(router.clone(), "/v1/apps/web", wanted(0, placed(&["sin"]))).await;
-	let (_, body) = ask(router.clone(), "/nodes").await;
-	assert_eq!(body["data"], json!({ "nodes": { "sin": sin() }, "change": created }));
-	let (_, body) = ask(router.clone(), "/changes").await;
-	assert_eq!(body["data"]["changes"].as_array().unwrap().len(), 1);
+	// An app written moves the list's revision, never a node's own.
+	let (_, body) = put(router.clone(), "/v1/apps/web", wanted(0, placed(&["sin"]))).await;
+	let app_at = body["data"]["revision"].as_i64().unwrap();
+	let (_, body) = ask(router.clone(), "/v1/nodes").await;
+	assert_eq!(body["data"], json!({ "items": [node], "revision": app_at }));
 
-	// The old route writes the same record, and a writer that read before it is refused.
+	// A writer that read before another wrote is refused.
 	let mut moved = sin();
 	moved["address"] = json!("100.64.0.10");
-	let bearer = format!("Bearer {TOKEN}");
-	let old = json!({ "by": "test", "node": moved });
-	let (_, body) = send(router.clone(), "PUT", "/nodes/sin", Some(&bearer), Some(old)).await;
-	let changed = body["data"]["change"].as_i64().unwrap();
+	let (_, body) = put(router.clone(), "/v1/nodes/sin", wanted(created, moved.clone())).await;
+	let changed = body["data"]["revision"].as_i64().unwrap();
 	let answer = put(router.clone(), "/v1/nodes/sin", wanted(created, sin())).await;
 	assert_eq!(code(&answer), (StatusCode::CONFLICT, "invalid_revision"));
 	let (_, body) = ask(router, "/v1/nodes/sin").await;
@@ -288,4 +285,53 @@ async fn a_stale_or_malformed_patch_writes_nothing() {
 	let (_, body) = ask(router, "/v1/apps/web").await;
 	let spec = json!({ "placements": ["tyo"], "release": release(7) });
 	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(released), &spec));
+}
+
+#[tokio::test]
+async fn a_node_patch_is_refused_as_a_put_is_before_the_store_is_asked() {
+	let router = refusing(TOKEN);
+	let answer = patch(router.clone(), "/v1/nodes/SIN", wanted(1, json!({}))).await;
+	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_name"));
+	for body in [wanted(1, json!(["tyo"])), json!({ "by": "test", "revision": 1 })] {
+		let answer = patch(router.clone(), "/v1/nodes/sin", body.clone()).await;
+		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_body"), "{body}");
+	}
+	let mut reported = wanted(1, json!({ "retired": true }));
+	reported["status"] = json!({});
+	let answer = patch(router, "/v1/nodes/sin", reported).await;
+	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "forbidden_field"));
+}
+
+/// What the import does on a rerun: `nodes.toml`'s keys and the address, laid over a node an
+/// operator retired, which stays retired.
+#[tokio::test]
+async fn a_node_patch_sets_what_it_names_and_keeps_retired() {
+	let Some(router) = reached().await else { return };
+	let absent = wanted(0, json!({ "retired": true }));
+	let answer = patch(router.clone(), "/v1/nodes/sin", absent).await;
+	assert_eq!(code(&answer), (StatusCode::NOT_FOUND, "no_such_node"));
+
+	let (_, body) = put(router.clone(), "/v1/nodes/sin", wanted(0, sin())).await;
+	let created = body["data"]["revision"].as_i64().unwrap();
+	let retiring = wanted(created, json!({ "retired": true }));
+	let (_, body) = patch(router.clone(), "/v1/nodes/sin", retiring).await;
+	let retired = body["data"]["revision"].as_i64().unwrap();
+
+	let mut imported = sin();
+	imported["address"] = json!("100.64.0.10");
+	let rerun = wanted(retired, imported.clone());
+	let (status, body) = patch(router.clone(), "/v1/nodes/sin", rerun).await;
+	assert_eq!(status, StatusCode::OK);
+	let moved = body["data"]["revision"].as_i64().unwrap();
+	let (_, body) = ask(router.clone(), "/v1/nodes/sin").await;
+	let mut kept = imported;
+	kept["retired"] = json!(true);
+	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(moved), &kept));
+
+	let stale = patch(router.clone(), "/v1/nodes/sin", wanted(retired, json!({ "retired": false })));
+	assert_eq!(code(&stale.await), (StatusCode::CONFLICT, "invalid_revision"));
+	let unsure = patch(router.clone(), "/v1/nodes/sin", wanted(moved, json!({ "retired": "yes" })));
+	assert_eq!(code(&unsure.await), (StatusCode::BAD_REQUEST, "invalid_body"));
+	let (_, body) = ask(router, "/v1/nodes/sin").await;
+	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(moved), &kept));
 }

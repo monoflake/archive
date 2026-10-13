@@ -71,10 +71,10 @@ def placements():
 	return database.manifest_of(APP)["placements"]
 
 
-def request_body(table, address, by=BY):
-	"""The body of `PUT /nodes/<name>`: the node's table as nodes.toml has it, plus its tailnet
-	IPv4. See spec/architecture/registry.md."""
-	return {"by": by, "node": {**table, "address": address}}
+def request_body(table, address, revision, by=BY):
+	"""The body of `PUT` or `PATCH /v1/nodes/<name>`: who, the revision read, and the node's table as
+	nodes.toml has it, plus its tailnet IPv4. See spec/architecture/registry.md."""
+	return {"by": by, "revision": revision, "spec": {**table, "address": address}}
 
 
 def widened(current, wanted):
@@ -292,18 +292,23 @@ def answered(addresses, method, path, body=None, secret=None):
 
 
 def method_at(revision):
-	"""`PUT` for an app the registry does not hold, at revision 0; `PATCH` for one it does, which
-	sets its placements and keeps its release, written by the hook -- RFC jln34."""
+	"""`PUT` for what the registry does not hold, at revision 0; `PATCH` for what it does, which sets
+	only the keys given and keeps the rest: an app's release, written by the deployer -- RFC jln34 --
+	and a node's `retired`, written by an operator -- RFC qcyb3."""
 	return "PUT" if revision == 0 else "PATCH"
 
 
-def revision_of(answer, name):
-	"""The revision `GET /v1/apps/<name>` answered, 0 for an app it does not hold."""
+# The code each kind's `GET /v1/<kind>s/<name>` answers for one the registry does not hold.
+ABSENT = {"node": "no_such_node", "app": "no_such_resource"}
+
+
+def revision_of(answer, name, kind="app"):
+	"""The revision `GET /v1/<kind>s/<name>` answered, 0 for one it does not hold."""
 	if answer.get("status") == "success":
 		return answer["data"]["revision"]
-	if answer.get("code") == "no_such_resource":
+	if answer.get("code") == ABSENT[kind]:
 		return 0
-	fail(f"app {name}: {answer}")
+	fail(f"{kind} {name}: {answer}")
 
 
 def load_nodes():
@@ -324,12 +329,14 @@ def importing(dry):
 	registries = [addresses[core] for core in cores]
 	if dry:
 		print(
-			f"{APP}: would PUT each of {len(nodes)} nodes, by {BY!r}, to the first of"
-			f" {', '.join(cores)} whose registry answers on {PORT}, as Bearer <redacted>:"
+			f"{APP}: would write each of {len(nodes)} nodes, by {BY!r}, at the revision"
+			f" GET /v1/nodes/<name> answers, by PATCH, or by PUT where the registry does not hold it,"
+			f" to the first of {', '.join(cores)} whose registry answers on {PORT}, as Bearer"
+			" <redacted>:"
 		)
 		for name, table in nodes.items():
-			body = request_body(table, addresses[name])
-			print(f"  PUT /nodes/{name} {json.dumps(body)}")
+			body = request_body(table, addresses[name], "<read>")
+			print(f"  PATCH /v1/nodes/{name} {json.dumps(body)}")
 		print(
 			f"{APP}: then each app placed on nodes, at the revision GET /v1/apps/<name> answers,"
 			" by PATCH, or by PUT where the registry does not hold it:"
@@ -342,12 +349,14 @@ def importing(dry):
 				print(f"  PATCH /v1/apps/{name} {json.dumps(body)}")
 		return
 	for name, table in nodes.items():
-		body = request_body(table, addresses[name])
-		answer = answered(registries, "PUT", f"/nodes/{name}", body, secret)
+		path = f"/v1/nodes/{name}"
+		revision = revision_of(answered(registries, "GET", path), name, "node")
+		body = request_body(table, addresses[name], revision)
+		answer = answered(registries, method_at(revision), path, body, secret)
 		if answer.get("status") != "success":
 			fail(f"{name}: {answer}")
-		change = answer["data"].get("change")
-		print(f"{APP}: {name}: " + ("unchanged" if change is None else f"changed, change {change}"))
+		made = answer["data"].get("revision")
+		print(f"{APP}: {name}: " + ("unchanged" if made is None else f"changed, revision {made}"))
 	for name, where in apps:
 		if where is None:
 			print(f"{APP}: app {name}: skipped, not placed on nodes")

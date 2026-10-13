@@ -25,20 +25,20 @@ NODE = tomllib.loads(
 
 class Body(unittest.TestCase):
 	def test_the_table_is_kept_whole_and_the_address_added(self):
-		body = registry.request_body(NODE, "100.64.0.1")
-		self.assertEqual(body["by"], "import")
-		self.assertEqual(body["node"], {**NODE, "address": "100.64.0.1"})
-		self.assertEqual(body["node"]["grants"], ["hub:peer"])
+		body = registry.request_body(NODE, "100.64.0.1", 5)
+		self.assertEqual((body["by"], body["revision"]), ("import", 5))
+		self.assertEqual(body["spec"], {**NODE, "address": "100.64.0.1"})
+		self.assertEqual(body["spec"]["grants"], ["hub:peer"])
 
 	def test_the_table_given_is_not_changed(self):
 		before = dict(NODE)
-		registry.request_body(NODE, "100.64.0.1")
+		registry.request_body(NODE, "100.64.0.1", 0)
 		self.assertEqual(NODE, before)
 
 	def test_optional_keys_stay_absent_when_the_table_lacks_them(self):
 		table = {"tier": "datacenter", "domain": "oci", "system": "alpine"}
 		self.assertEqual(
-			registry.request_body(table, "100.64.0.2")["node"],
+			registry.request_body(table, "100.64.0.2", 0)["spec"],
 			{"tier": "datacenter", "domain": "oci", "system": "alpine", "address": "100.64.0.2"},
 		)
 
@@ -87,6 +87,12 @@ class Placements(unittest.TestCase):
 		self.assertEqual(registry.revision_of(absent, "web"), 0)
 		with self.assertRaises(SystemExit):
 			registry.revision_of({"status": "error", "code": "store_unavailable"}, "web")
+
+	def test_a_node_the_registry_does_not_hold_is_at_revision_zero(self):
+		absent = {"status": "error", "code": "no_such_node", "message": "No node has this name"}
+		self.assertEqual(registry.revision_of(absent, "sin", "node"), 0)
+		with self.assertRaises(SystemExit):
+			registry.revision_of(absent, "web")
 
 
 class Sources(unittest.TestCase):
@@ -218,7 +224,9 @@ class Importing(unittest.TestCase):
 		web = registry.app_body("<read>", ["tyo", "sin"])
 		self.assertIn(f"  PATCH /v1/apps/web {registry.json.dumps(web)}", lines)
 		self.assertIn("  skip aka", lines)
-		self.assertEqual(sum(line.startswith("  PUT /nodes/") for line in lines), 2)
+		self.assertEqual(sum(line.startswith("  PATCH /v1/nodes/") for line in lines), 2)
+		tyo = registry.request_body(self.NODES["tyo"], "100.64.0.1", "<read>")
+		self.assertIn(f"  PATCH /v1/nodes/tyo {registry.json.dumps(tyo)}", lines)
 		self.assertNotIn("s3cret", "\n".join(lines))
 
 	def test_a_run_puts_each_app_at_the_revision_it_read(self):
@@ -226,13 +234,20 @@ class Importing(unittest.TestCase):
 
 		def answered(addresses, method, path, body=None, secret=None):
 			asked.append((addresses[0], method, path, body, secret))
+			if method == "GET" and path == "/v1/nodes/tyo":
+				return {"status": "success", "data": {"name": "tyo", "revision": 3}}
 			if method == "GET":
-				return {"status": "error", "code": "no_such_resource"}
-			if path.startswith("/v1/apps/"):
+				absent = "no_such_node" if path.startswith("/v1/nodes/") else "no_such_resource"
+				return {"status": "error", "code": absent}
+			if path.startswith("/v1/apps/") or path == "/v1/nodes/sin":
 				return {"status": "success", "data": {"revision": 9}}
 			return {"status": "success", "data": {}}
 
 		lines = self.run_import(False, answered)
+		self.assertIn("registry: sin: changed, revision 9", lines)
+		nodes = [entry for entry in asked if entry[1] != "GET" and "/nodes/" in entry[2]]
+		at = [(method, path, body["revision"]) for _, method, path, body, _ in nodes]
+		self.assertEqual(at, [("PATCH", "/v1/nodes/tyo", 3), ("PUT", "/v1/nodes/sin", 0)])
 		self.assertIn("registry: app hub: changed, revision 9", lines)
 		self.assertIn("registry: app aka: skipped, not placed on nodes", lines)
 		self.assertIn("registry: tyo: unchanged", lines)
@@ -248,6 +263,8 @@ class Importing(unittest.TestCase):
 		written = []
 
 		def answered(addresses, method, path, body=None, secret=None):
+			if method == "GET" and path.startswith("/v1/nodes/"):
+				return {"status": "error", "code": "no_such_node"}
 			if not path.startswith("/v1/apps/"):
 				return {"status": "success", "data": {}}
 			name = path.removeprefix("/v1/apps/")
@@ -266,6 +283,36 @@ class Importing(unittest.TestCase):
 		self.run_import(False, answered)
 		self.assertEqual(held["web"]["spec"], {"placements": ["tyo", "sin"], "release": release})
 		self.assertEqual(written, [("PUT", "caddy"), ("PATCH", "web"), ("PUT", "hub")])
+
+	def test_a_rerun_keeps_a_node_retired_in_the_registry(self):
+		"""Against a registry answering as the registry does: an operator retired tyo there, and
+		nodes.toml says nothing of it; the import sets what nodes.toml carries and keeps the rest."""
+		retired = {**self.NODES["tyo"], "address": "100.64.0.9", "retired": True}
+		held = {"tyo": {"revision": 5, "spec": retired}}
+		written = []
+
+		def answered(addresses, method, path, body=None, secret=None):
+			if not path.startswith("/v1/nodes/"):
+				if method == "GET":
+					return {"status": "error", "code": "no_such_resource"}
+				return {"status": "success", "data": {}}
+			name = path.removeprefix("/v1/nodes/")
+			node = held.get(name)
+			if method == "GET":
+				if node is None:
+					return {"status": "error", "code": "no_such_node"}
+				return {"status": "success", "data": {"name": name, **node}}
+			written.append((method, name))
+			if body["revision"] != (node["revision"] if node else 0):
+				return {"status": "error", "code": "invalid_revision"}
+			spec = {**node["spec"], **body["spec"]} if method == "PATCH" else body["spec"]
+			held[name] = {"revision": 10 + len(written), "spec": spec}
+			return {"status": "success", "data": {"revision": held[name]["revision"]}}
+
+		self.run_import(False, answered)
+		tyo = {**self.NODES["tyo"], "address": "100.64.0.1", "retired": True}
+		self.assertEqual(held["tyo"]["spec"], tyo)
+		self.assertEqual(written, [("PATCH", "tyo"), ("PUT", "sin")])
 
 	def test_an_app_held_is_patched_and_one_not_held_is_put(self):
 		self.assertEqual(registry.method_at(0), "PUT")

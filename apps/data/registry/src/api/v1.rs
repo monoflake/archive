@@ -19,7 +19,7 @@ pub fn routes() -> Router<Shared> {
 	Router::new()
 		.route("/v1/kinds", get(kinds))
 		.route("/v1/nodes", get(nodes))
-		.route("/v1/nodes/{name}", get(node).put(put_node))
+		.route("/v1/nodes/{name}", get(node).put(put_node).patch(patch_node))
 		.route("/v1/apps", get(apps))
 		.route("/v1/apps/{name}", get(app).put(put_app).patch(patch_app))
 		.route("/v1/{kind}", any(no_such_kind))
@@ -114,27 +114,100 @@ fn written(body: Result<axum::Json<Value>, JsonRejection>) -> Result<Written, Re
 	Ok(Written { by, revision, spec })
 }
 
-/// Sets a node, held to the revision read, with its spec checked as `PUT /nodes` checks a record.
+/// A write to a node's refusal, if it has one, or what it says: the same token as every write,
+/// and a name that is an IATA code.
+fn node_written(
+	registry: &Shared,
+	headers: &HeaderMap,
+	name: &str,
+	body: Result<axum::Json<Value>, JsonRejection>,
+) -> Result<Written, Response> {
+	if let Some(refusal) = refused(registry, headers) {
+		return Err(refusal);
+	}
+	if !node::name_is_valid(name) {
+		return Err(invalid_name());
+	}
+	written(body)
+}
+
+/// Sets a node's whole spec, held to the revision read, checked as node.rs checks a record.
 async fn put_node(
 	Path(name): Path<String>,
 	State(registry): State<Shared>,
 	headers: HeaderMap,
 	body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-	if let Some(refusal) = refused(&registry, &headers) {
-		return refusal;
-	}
-	if !node::name_is_valid(&name) {
-		return invalid_name();
-	}
-	let written = match written(body) {
+	let written = match node_written(&registry, &headers, &name, body) {
 		Ok(written) => written,
 		Err(refusal) => return refusal,
 	};
-	match node::record(written.spec) {
-		Ok(record) => set(&registry, Kind::Node, &name, written.by, written.revision, record).await,
+	set_node(&registry, &name, written.by, written.revision, written.spec).await
+}
+
+/// Sets the keys of a node's spec given and keeps every other, as `PATCH /v1/apps` does: the
+/// import writes what `nodes.toml` says, and an operator's `retired` is kept -- RFC qcyb3.
+async fn patch_node(
+	Path(name): Path<String>,
+	State(registry): State<Shared>,
+	headers: HeaderMap,
+	body: Result<axum::Json<Value>, JsonRejection>,
+) -> Response {
+	let written = match node_written(&registry, &headers, &name, body) {
+		Ok(written) => written,
+		Err(refusal) => return refusal,
+	};
+	match merged(&registry, Kind::Node, &name, written.revision, written.spec).await {
+		Ok(spec) => set_node(&registry, &name, written.by, written.revision, spec).await,
+		Err(refusal) => refusal,
+	}
+}
+
+async fn set_node(
+	registry: &Shared,
+	name: &str,
+	by: String,
+	revision: i64,
+	spec: Value,
+) -> Response {
+	match node::record(spec) {
+		Ok(record) => set(registry, Kind::Node, name, by, revision, record).await,
 		Err(message) => response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message),
 	}
+}
+
+/// What a `PATCH` makes: `given` laid over the spec kept, which is still at `revision`. Read
+/// outside the write's lock, so `set` holds the write to the same revision once more; the spec it
+/// makes is checked whole by the kind's own rules.
+async fn merged(
+	registry: &Shared,
+	kind: Kind,
+	name: &str,
+	revision: i64,
+	given: Value,
+) -> Result<Value, Response> {
+	let Value::Object(given) = given else {
+		let message = "`spec` is an object of the fields changed";
+		return Err(response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message));
+	};
+	let kept = match registry.store.resource(kind, name).await {
+		Ok(Some(kept)) => kept,
+		Ok(None) => {
+			return Err(match kind {
+				Kind::Node => response::failure(StatusCode::NOT_FOUND, "no_such_node"),
+				Kind::App => response::failure(StatusCode::NOT_FOUND, "no_such_resource"),
+			});
+		}
+		Err(error) => return Err(store_unavailable(error)),
+	};
+	if kept.revision != revision {
+		return Err(response::failure(StatusCode::CONFLICT, "invalid_revision"));
+	}
+	let Value::Object(mut spec) = kept.spec else {
+		return Err(store_unavailable(anyhow::anyhow!("{name}'s stored spec is not an object")));
+	};
+	spec.extend(given);
+	Ok(Value::Object(spec))
 }
 
 /// A write to an app's refusal, if it has one, or what it says: the same token as every write,
@@ -177,7 +250,7 @@ async fn put_app(
 
 /// Sets the keys of an app's spec given and keeps every other, held to the revision read as `PUT`
 /// is: a release is written often and by a machine, where it runs seldom and by a person, and
-/// neither erases the other. The spec it makes is checked whole.
+/// neither erases the other.
 async fn patch_app(
 	Path(name): Path<String>,
 	State(registry): State<Shared>,
@@ -188,24 +261,11 @@ async fn patch_app(
 		Ok(written) => written,
 		Err(refusal) => return refusal,
 	};
-	let Value::Object(given) = written.spec else {
-		let message = "`spec` is an object of the fields changed";
-		return response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message);
+	let spec = match merged(&registry, Kind::App, &name, written.revision, written.spec).await {
+		Ok(spec) => spec,
+		Err(refusal) => return refusal,
 	};
-	let kept = match registry.store.resource(Kind::App, &name).await {
-		Ok(Some(kept)) => kept,
-		Ok(None) => return response::failure(StatusCode::NOT_FOUND, "no_such_resource"),
-		Err(error) => return store_unavailable(error),
-	};
-	// Read outside the write's lock, so `set` holds the write to the same revision once more.
-	if kept.revision != written.revision {
-		return response::failure(StatusCode::CONFLICT, "invalid_revision");
-	}
-	let Value::Object(mut spec) = kept.spec else {
-		return store_unavailable(anyhow::anyhow!("{name}'s stored spec is not an object"));
-	};
-	spec.extend(given);
-	match app::spec(Value::Object(spec)) {
+	match app::spec(spec) {
 		Ok(spec) => set(&registry, Kind::App, &name, written.by, written.revision, spec).await,
 		Err(refusal) => refused_app(refusal),
 	}
