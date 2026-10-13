@@ -3,11 +3,12 @@
 """The operator's half of the platform's registry. See spec/architecture/registry.md and RFC ja5hm.
 
 `token` writes the registry's write token on every node it runs on, made and kept in secrets.json
-the first time, and gives each writer the token, the cores to write to and every source host deploys
-from; `import` reads infra's nodes.toml and puts each node into the registry, then puts
-where each app runs, from every repository host deploys from, held to the revision it read, which is
-safe to run again. Values move over SSH on stdin, never on a command line, and `--dry-run` touches
-no machine and prints no secret. It borrows the database task's helpers rather than copying them.
+the first time, and gives each writer the token, the cores to write to, every source host deploys
+from and the GitHub token it reads their runs with; `import` reads infra's nodes.toml and puts each
+node into the registry, then puts where each app runs, from every repository host deploys from,
+held to the revision it read, which is safe to run again. Values move over SSH on stdin, never on a
+command line, and `--dry-run` touches no machine and prints no secret. It borrows the database
+task's helpers rather than copying them.
 """
 
 import ast
@@ -49,8 +50,13 @@ TIMEOUT_SECONDS = 10
 # The apps that write to the registry while they run, each on the nodes its service.toml places it:
 # the deployer, recording each app's release from every run it takes -- RFC jln34. Each is given
 # the token, the cores as `REGISTRY`, and every source host deploys from added to its own
-# `DEPLOY_SOURCES`, so no app host runs is left without a release.
+# `DEPLOY_SOURCES`, so no app host runs is left without a release -- and `GITHUB_ACTIONS_TOKEN`,
+# which reads those sources' runs. An owner's own token, `GITHUB_ACTIONS_TOKEN_<OWNER>`, is the
+# author's, kept apart and never written here -- RFC 024i3.
 WRITERS = ("deployer",)
+# The token a writer reads the platform's runs with, from secrets.json; never made here.
+GITHUB = "GITHUB_ACTIONS_TOKEN"
+
 # The variables a writer is told, in its config.env.
 CORES = "REGISTRY"
 SOURCES = "DEPLOY_SOURCES"
@@ -84,12 +90,13 @@ def configured(node, app, key):
 	return database.ssh(node, f"if [ -f {path} ]; then sed -n 's/^{key}=//p' {path}; fi")
 
 
-def wire(node, writer, value, cores, sources, dry):
-	"""Give `writer` on `node` the token in its secret.env, and in its config.env the cores and its
-	own sources widened by `sources`, keeping every other line."""
+def wire(node, writer, value, github, cores, sources, dry):
+	"""Give `writer` on `node` the token and the GitHub token in its secret.env, and in its
+	config.env the cores and its own sources widened by `sources`, keeping every other line."""
 	where = f"/data/apps/{writer}"
 	if dry:
 		print(f"{APP}: {node}: would set in {where}/secret.env: {TOKEN}=<redacted>")
+		print(f"{APP}: {node}: would set in {where}/secret.env: {GITHUB}=<redacted>")
 		print(f"{APP}: {node}: would set in {where}/config.env: {CORES}={cores}")
 		print(
 			f"{APP}: {node}: would set in {where}/config.env: {SOURCES}=<what it names>, then each of"
@@ -99,8 +106,8 @@ def wire(node, writer, value, cores, sources, dry):
 	current = configured(node, writer, SOURCES)
 	if current is None:
 		fail(f"reading {SOURCES} of {writer} failed on {node}")
-	if not database.upsert(node, writer, "secret.env", {TOKEN: value}):
-		fail(f"writing {TOKEN} for {writer} failed on {node}")
+	if not database.upsert(node, writer, "secret.env", {TOKEN: value, GITHUB: github}):
+		fail(f"writing {TOKEN} and {GITHUB} for {writer} failed on {node}")
 	pairs = {CORES: cores, SOURCES: widened(current, sources)}
 	if not database.upsert(node, writer, "config.env", pairs):
 		fail(f"writing {CORES} and {SOURCES} for {writer} failed on {node}")
@@ -119,9 +126,12 @@ def token(dry):
 			fail(f"writing {TOKEN} failed on {node}")
 	addresses = " ".join(database.tailnet_ipv4(core) for core in cores)
 	sources = host_sources()
+	github = os.environ.get(GITHUB)
+	if not github:
+		fail(f"secrets.json has no {GITHUB}, which every writer reads its sources' runs with")
 	for writer in WRITERS:
 		for node in database.manifest_of(writer)["placements"]:
-			wire(node, writer, value, addresses, sources, dry)
+			wire(node, writer, value, github, addresses, sources, dry)
 	for app in (APP, *WRITERS):
 		redeploy = f"mise run //repos/infra:node redeploy <node> {app}"
 		print(f"{APP}: {app} reads it on its next deploy; `{redeploy}`")

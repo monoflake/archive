@@ -321,9 +321,10 @@ class Token(unittest.TestCase):
 	and the deployer on tyo with what its config.env names."""
 
 	SECRET = "s3cret-never-printed"
+	GITHUB = "github-never-printed"
 	SOURCES = ["monoflake/infra", "monoflake/platform", "canmi21/cue"]
 
-	def run_token(self, dry, current="monoflake/platform canmi21/web"):
+	def run_token(self, dry, current="monoflake/platform canmi21/web", github=GITHUB):
 		self.written = []
 		self.asked = []
 
@@ -346,6 +347,8 @@ class Token(unittest.TestCase):
 			stack.enter_context(mock.patch.object(database, "upsert", upsert))
 			stack.enter_context(mock.patch.object(database, "ssh", ssh))
 			stack.enter_context(mock.patch.object(registry, "host_sources", lambda: self.SOURCES))
+			if github is not None:
+				stack.enter_context(mock.patch.dict(os.environ, {registry.GITHUB: github}))
 			stack.enter_context(contextlib.redirect_stdout(printed))
 			registry.token(dry)
 		return printed.getvalue()
@@ -355,12 +358,15 @@ class Token(unittest.TestCase):
 		self.assertEqual(self.written, [])
 		self.assertEqual(self.asked, [])
 		self.assertNotIn(self.SECRET, printed)
+		self.assertNotIn(self.GITHUB, printed)
 		for line in [
 			"registry: tyo: would set, keeping every other line, mode 600, in"
 			" /data/apps/registry/secret.env: REGISTRY_TOKEN=<redacted>",
 			"registry: sin: would set, keeping every other line, mode 600, in"
 			" /data/apps/registry/secret.env: REGISTRY_TOKEN=<redacted>",
 			"registry: tyo: would set in /data/apps/deployer/secret.env: REGISTRY_TOKEN=<redacted>",
+			"registry: tyo: would set in /data/apps/deployer/secret.env:"
+			" GITHUB_ACTIONS_TOKEN=<redacted>",
 			"registry: tyo: would set in /data/apps/deployer/config.env:"
 			" REGISTRY=100.64.0.1 100.64.0.2",
 			"registry: tyo: would set in /data/apps/deployer/config.env: DEPLOY_SOURCES=<what it"
@@ -371,13 +377,14 @@ class Token(unittest.TestCase):
 	def test_a_run_gives_the_registry_and_the_deployer_the_token_and_widens_the_sources(self):
 		printed = self.run_token(False)
 		self.assertNotIn(self.SECRET, printed)
+		self.assertNotIn(self.GITHUB, printed)
 		token = {"REGISTRY_TOKEN": self.SECRET}
 		self.assertEqual(
 			self.written,
 			[
 				("tyo", "registry", "secret.env", token),
 				("sin", "registry", "secret.env", token),
-				("tyo", "deployer", "secret.env", token),
+				("tyo", "deployer", "secret.env", {**token, "GITHUB_ACTIONS_TOKEN": self.GITHUB}),
 				(
 					"tyo",
 					"deployer",
@@ -393,6 +400,19 @@ class Token(unittest.TestCase):
 		self.assertEqual(node, "tyo")
 		self.assertIn("/data/apps/deployer/config.env", command)
 		self.assertIn("s/^DEPLOY_SOURCES=//p", command)
+
+	def test_the_deployer_is_given_the_platforms_github_token_and_no_owners_own(self):
+		self.run_token(False)
+		[(_, _, _, pairs)] = [write for write in self.written if write[1:3] == ("deployer", "secret.env")]
+		self.assertEqual(set(pairs), {"REGISTRY_TOKEN", "GITHUB_ACTIONS_TOKEN"})
+
+	def test_no_github_token_in_secrets_json_writes_nothing_to_a_writer(self):
+		with mock.patch.dict(os.environ, {}, clear=False):
+			os.environ.pop(registry.GITHUB, None)
+			with self.assertRaises(SystemExit) as failed:
+				self.run_token(False, github=None)
+		self.assertIn("secrets.json has no GITHUB_ACTIONS_TOKEN", str(failed.exception.code))
+		self.assertEqual([app for _, app, _, _ in self.written], ["registry", "registry"])
 
 	def test_a_deployer_that_names_no_sources_is_given_hosts(self):
 		self.run_token(False, current="")

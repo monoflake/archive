@@ -33,7 +33,9 @@ find by `PUT`, so running it again keeps every release.
 repository's secrets and written to the registry's nodes by `mise run registry token`; without one a
 registry answers reads and refuses writes. `mise run registry token` gives the token to the registry's writers too -- the deployer, wherever
 its `service.toml` places it -- with `REGISTRY`, the cores' tailnet IPv4s, in its `config.env`, and
-every source host deploys from added to its `DEPLOY_SOURCES`, so every app host runs gets a release. `mise run registry import` writes every node of
+every source host deploys from added to its `DEPLOY_SOURCES`, so every app host runs gets a release. It
+writes the platform's own `GITHUB_ACTIONS_TOKEN` beside them, the machine user's, and never an
+organization's own token -- RFC 024i3. `mise run registry import` writes every node of
 `nodes.toml` with its address, the one way in until the console writes it -- RFC dk6wz.
 
 ## Nodes and apps, as resources of a kind
