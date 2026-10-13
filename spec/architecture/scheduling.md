@@ -248,3 +248,9 @@ all.** A job says which it is.
   one instance. One instance holds a lease the others can see, kept in the platform's Postgres, and
   runs the job while it holds it: the copy on the node leading the database, by a confirmed write
   carrying a fencing number -- RFC bhybp. It is not built yet.
+
+**Work of many steps is a task run as a workflow, in Cloudflare Workflows' API, the ledger its
+coordinator** -- RFC 23wgz. Its steps run in workerd's isolates and are replayed from what the ledger
+kept, each result at most 1 MiB. A workflow declares how its leases are taken: `quorum`, the default
+and always the platform's own, on the primary and confirmed by two cores, or `local`, on the node it
+began on, for work whose loss or repetition costs nothing. It is not built yet.
