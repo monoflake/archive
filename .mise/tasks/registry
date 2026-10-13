@@ -14,6 +14,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -34,6 +35,8 @@ def borrow(name):
 database = borrow("database")
 # The workspace this repository is cloned into, where repos.toml says which directory is which.
 WORKSPACE = database.REPOS.parent
+# The bookmark every source's declarations are read at: what is committed, not what is checked out.
+MAIN = "main"
 
 APP = "registry"
 PORT = 12013
@@ -134,13 +137,34 @@ def checkouts(sources, repos, root):
 	return found
 
 
+def jj(root, *arguments):
+	"""What jj printed, run in the checkout at `root`, failing with what it said. It never snapshots
+	the working copy, which may hold another session's work in progress."""
+	ran = subprocess.run(
+		["jj", "--ignore-working-copy", "-R", str(root), *arguments],
+		cwd=root,
+		text=True,
+		capture_output=True,
+	)
+	if ran.returncode != 0:
+		said = ran.stderr.strip().splitlines()
+		fail(f"jj {' '.join(arguments)} in {root}: {said[0] if said else f'exit {ran.returncode}'}")
+	return ran.stdout
+
+
+def committed(root, path):
+	"""`path` as `main` holds it in the checkout at `root`."""
+	return jj(root, "file", "show", "-r", MAIN, path)
+
+
 def source_roots(workspace=None):
-	"""The checkout of every repository host deploys from, in DEPLOY_SOURCES' order."""
+	"""The checkout of every repository host deploys from, in the order DEPLOY_SOURCES names them
+	on infra's `main`."""
 	workspace = workspace or WORKSPACE
-	node_task = workspace / "repos/infra/.mise/tasks/node"
-	if not node_task.is_file():
-		fail(f"{node_task} is not there; clone infra beside this repository")
-	sources = deploy_sources(node_task.read_text())
+	infra = workspace / "repos/infra"
+	if not infra.is_dir():
+		fail(f"{infra} is not there; clone infra beside this repository")
+	sources = deploy_sources(committed(infra, ".mise/tasks/node"))
 	listed = workspace / "repos.toml"
 	if not listed.is_file():
 		fail(f"{listed} is not there; it says which directory each repository is cloned in")
@@ -149,11 +173,14 @@ def source_roots(workspace=None):
 
 
 def declarations(roots):
-	"""Every service.toml under each root's apps/, at any depth: cue keeps its one level up."""
+	"""Every service.toml under each root's apps/ on its `main`, at any depth, since cue keeps its
+	one level up. What is committed, never the working tree: an app another session has not
+	committed is not yet anybody's to place."""
 	for root in roots:
-		for path in sorted(root.glob("apps/**/service.toml")):
-			if {"node_modules", "target"}.isdisjoint(path.relative_to(root).parts):
-				yield path, tomllib.loads(path.read_text())
+		listed = jj(root, "file", "list", "-r", MAIN, 'root-glob:"apps/**/service.toml"')
+		for path in sorted(listed.splitlines()):
+			if {"node_modules", "target"}.isdisjoint(Path(path).parts):
+				yield root / path, tomllib.loads(committed(root, path))
 
 
 def app_body(revision, placements, by=BY):

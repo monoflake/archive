@@ -38,7 +38,8 @@ kind's fields, which can be edited, and the columns a list shows first. A kind i
   on, each named once. `?node=<name>` answers only the apps placed on that node, which is how host
   asks what its node should run -- infra's `spec/architecture/host.md`. `mise run registry import`
   writes each app's placements from its `service.toml`, in every repository host deploys from --
-  infra's `DEPLOY_SOURCES`, each found by `repos.toml`, and a source not cloned stops it; a Worker's,
+  infra's `DEPLOY_SOURCES`, each found by `repos.toml`, read from each one's `main` and never its
+  working tree, and a source not cloned stops it; a Worker's,
   placed on `workers`, is not the registry's. The import sets each app back to what git declares, so once the console
   writes placements it stops importing apps -- RFC dk6wz.
 

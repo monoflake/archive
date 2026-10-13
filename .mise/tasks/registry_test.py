@@ -111,11 +111,32 @@ def write(path, text):
 	path.write_text(text)
 
 
+class Jj(unittest.TestCase):
+	def run_jj(self, returncode, stdout="", stderr=""):
+		ran = mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
+		with mock.patch.object(registry.subprocess, "run", return_value=ran) as run:
+			answer = registry.jj(Path("/w/repos/cue"), "file", "show", "-r", "main", "a")
+		return answer, run.call_args
+
+	def test_it_reads_main_without_snapshotting_the_working_copy(self):
+		answer, call = self.run_jj(0, stdout="name = 'hub'\n")
+		self.assertEqual(answer, "name = 'hub'\n")
+		jj = ["jj", "--ignore-working-copy", "-R", "/w/repos/cue"]
+		self.assertEqual(call.args[0], [*jj, "file", "show", "-r", "main", "a"])
+		self.assertEqual(call.kwargs["cwd"], Path("/w/repos/cue"))
+
+	def test_what_jj_refuses_fails_with_what_it_said(self):
+		with self.assertRaises(SystemExit) as failed:
+			self.run_jj(1, stderr="Error: Revision `main` doesn't exist\nHint: ...\n")
+		self.assertIn("/w/repos/cue: Error: Revision `main` doesn't exist", str(failed.exception.code))
+
+
 class Importing(unittest.TestCase):
-	"""`import` run whole over a workspace made for it: infra's node task, repos.toml and three
-	checkouts, cue's declarations one level shallower than the others', as they are. Every machine it
-	would reach is stood in for, so a name it shadows, a source it misses or a branch it breaks fails
-	here rather than on the operator's terminal."""
+	"""`import` run whole over a workspace made for it: repos.toml, three checkouts on disk, and what
+	each one's `main` holds -- infra's node task, and cue's declarations one level shallower than the
+	others', as they are -- served by a jj stood in for. Every machine it would reach is stood in for
+	too, so a name it shadows, a source it misses or a branch it breaks fails here rather than on the
+	operator's terminal."""
 
 	NODES = {"tyo": {**NODE}, "sin": {"tier": "datacenter", "domain": "oci", "system": "debian"}}
 
@@ -123,32 +144,52 @@ class Importing(unittest.TestCase):
 		made = tempfile.TemporaryDirectory()
 		self.addCleanup(made.cleanup)
 		self.workspace = Path(made.name)
-		repos = self.workspace / "repos"
 		write(
 			self.workspace / "repos.toml",
 			'[repos]\ninfra = "monoflake:infra"\nplatform = "monoflake:platform"\ncue = "canmi21:cue"\n'
 			'web = "canmi21:web"\n',
 		)
-		write(
-			repos / "infra/.mise/tasks/node",
-			'DEPLOY_SOURCES = "monoflake/infra=infra monoflake/platform=platform canmi21/cue=canmi"\n',
+		# Each checkout's `main`, by its directory: path to what the bookmark holds there.
+		self.main = {"infra": {}, "platform": {}, "cue": {}}
+		for checkout in self.main:
+			(self.workspace / "repos" / checkout).mkdir(parents=True)
+		self.main["infra"][".mise/tasks/node"] = (
+			'DEPLOY_SOURCES = "monoflake/infra=infra monoflake/platform=platform canmi21/cue=canmi"\n'
 		)
-		self.declare("infra/apps/network/caddy", "caddy", ["tyo", "sin"])
-		self.declare("platform/apps/site/web", "web", ["tyo", "sin"])
-		self.declare("platform/apps/edge/aka", "aka", ["workers"])
-		self.declare("platform/apps/site/web/node_modules/x", "x", ["tyo"])
-		self.declare("cue/apps/hub", "hub", ["tyo"])
+		self.declare("infra", "apps/network/caddy", "caddy", ["tyo", "sin"])
+		self.declare("platform", "apps/site/web", "web", ["tyo", "sin"])
+		self.declare("platform", "apps/edge/aka", "aka", ["workers"])
+		self.declare("platform", "apps/site/web/node_modules/x", "x", ["tyo"])
+		self.declare("cue", "apps/hub", "hub", ["tyo"])
 
-	def declare(self, directory, name, placements):
+	def declare(self, checkout, directory, name, placements, committed=True):
+		"""A service.toml on `checkout`'s main, or in its working tree alone where not committed."""
 		listed = ", ".join(f'"{node}"' for node in placements)
-		path = self.workspace / "repos" / directory / "service.toml"
-		write(path, f'name = "{name}"\nplacements = [{listed}]\n')
+		text = f'name = "{name}"\nplacements = [{listed}]\n'
+		path = f"{directory}/service.toml"
+		if committed:
+			self.main[checkout][path] = text
+		else:
+			write(self.workspace / "repos" / checkout / path, text)
+
+	def jj(self, root, *arguments):
+		"""jj as the import runs it, over `self.main`; a checkout missing there has no `main`."""
+		tree = self.main.get(Path(root).name)
+		if tree is None or arguments[2:4] != ("-r", "main"):
+			registry.fail(f"jj {' '.join(arguments)} in {root}: Error: Revision `main` doesn't exist")
+		if arguments[:2] == ("file", "list"):
+			self.assertEqual(arguments[4], 'root-glob:"apps/**/service.toml"')
+			declared = [path for path in tree if path.startswith("apps/")]
+			return "".join(f"{path}\n" for path in declared if path.endswith("/service.toml"))
+		self.assertEqual(arguments[:2], ("file", "show"))
+		return tree[arguments[4]]
 
 	def run_import(self, dry, answered=None):
 		addresses = {"tyo": "100.64.0.1", "sin": "100.64.0.2"}
 		printed = io.StringIO()
 		with contextlib.ExitStack() as stack:
 			stack.enter_context(mock.patch.object(registry, "WORKSPACE", self.workspace))
+			stack.enter_context(mock.patch.object(registry, "jj", self.jj))
 			stack.enter_context(mock.patch.object(registry, "load_nodes", lambda: self.NODES))
 			stack.enter_context(mock.patch.object(registry, "placements", lambda: ["tyo", "sin"]))
 			stack.enter_context(
@@ -208,8 +249,22 @@ class Importing(unittest.TestCase):
 		self.assertIn("monoflake/platform", self.failure())
 
 	def test_one_name_in_two_repositories_fails(self):
-		self.declare("cue/apps/web", "web", ["sin"])
+		self.declare("cue", "apps/web", "web", ["sin"])
 		self.assertIn("web is declared twice", self.failure())
+
+	def test_what_is_not_committed_is_not_imported(self):
+		self.declare("platform", "apps/data/secrets", "secrets", ["tyo"], committed=False)
+		self.declare("cue", "apps/hub", "hub", ["sin"], committed=False)
+		lines = self.run_import(True)
+		self.assertNotIn("secrets", "\n".join(lines))
+		hub = registry.app_body("<read>", ["tyo"])
+		self.assertIn(f"  PUT /v1/apps/hub {registry.json.dumps(hub)}", lines)
+
+	def test_a_checkout_without_main_fails_naming_it(self):
+		del self.main["cue"]
+		failed = self.failure()
+		self.assertIn(str(self.workspace / "repos/cue"), failed)
+		self.assertIn("`main`", failed)
 
 
 if __name__ == "__main__":
