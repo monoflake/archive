@@ -362,3 +362,45 @@ async fn a_node_patch_sets_what_it_names_and_keeps_retired() {
 mod accounts;
 mod ids;
 mod values;
+
+/// The committed schema, as every reader in another language is held to it -- RFC bq3vn.
+fn catalog_validator() -> jsonschema::Validator {
+	jsonschema::validator_for(&committed("catalog.schema.json")).unwrap()
+}
+
+/// A file committed beside the crate, read as it is now.
+fn committed(file: &str) -> Value {
+	let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+	serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn invalid(validator: &jsonschema::Validator, instance: &Value) -> Vec<String> {
+	validator
+		.iter_errors(instance)
+		.map(|error| format!("{}: {error}", error.instance_path()))
+		.collect()
+}
+
+#[tokio::test]
+async fn the_catalog_answered_is_valid_against_its_committed_schema() {
+	let (status, body) = ask(refusing(TOKEN), "/v1/kinds").await;
+	assert_eq!(status, StatusCode::OK);
+	let validator = catalog_validator();
+	assert_eq!(invalid(&validator, &body["data"]), Vec::<String>::new());
+	// The schema has teeth: a type it does not name, or a kind without its plural, is refused.
+	let mut wrong = body["data"].clone();
+	wrong["items"][0]["fields"][0]["type"] = json!("secret");
+	assert!(!invalid(&validator, &wrong).is_empty());
+	let mut unplural = body["data"].clone();
+	unplural["items"][1].as_object_mut().unwrap().remove("plural");
+	assert!(!invalid(&validator, &unplural).is_empty());
+}
+
+/// The catalog committed for readers, held to the same schema it is answered by.
+#[test]
+fn the_catalog_kept_for_readers_is_valid_against_its_schema() {
+	let kinds = committed("catalog.json");
+	assert!(kinds.is_array(), "catalog.json holds the kinds, as the answer's `items`");
+	let errors = invalid(&catalog_validator(), &json!({ "items": kinds }));
+	assert!(errors.is_empty(), "{errors:?}");
+}

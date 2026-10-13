@@ -1,0 +1,142 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "Catalog",
+	"description": "What `GET /v1/kinds` answers inside the envelope: every kind the registry holds. Its JSON\nSchema is `catalog.schema.json`, made from this type and committed, which every reader in\nanother language is derived from -- RFC bq3vn and the workspace's spec/json.md.",
+	"type": "object",
+	"properties": {
+		"items": {
+			"type": "array",
+			"items": {
+				"$ref": "#/$defs/Description"
+			}
+		}
+	},
+	"required": [
+		"items"
+	],
+	"$defs": {
+		"Action": {
+			"description": "None yet: backing up or restarting comes with the controllers, RFC jln34.",
+			"not": {}
+		},
+		"Description": {
+			"description": "One kind as the catalog describes it.",
+			"type": "object",
+			"properties": {
+				"actions": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/Action"
+					}
+				},
+				"columns": {
+					"description": "The fields a list shows first, in order.",
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"fields": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/Field"
+					}
+				},
+				"name": {
+					"$ref": "#/$defs/Kind"
+				},
+				"plural": {
+					"description": "Its collection's segment of a route, `/v1/<plural>`, so no reader derives one.",
+					"type": "string"
+				}
+			},
+			"required": [
+				"name",
+				"plural",
+				"fields",
+				"actions",
+				"columns"
+			]
+		},
+		"Field": {
+			"type": "object",
+			"properties": {
+				"choices": {
+					"description": "What a `choice` may be, or each item of a `list` of choices, each once; empty for every other\nfield.",
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"editable": {
+					"description": "False for what only the registry writes, as an identity's `secret`, which is read and never\nsent.",
+					"type": "boolean"
+				},
+				"fields": {
+					"description": "The fields of each item of a `list` of objects, as an account's `identities`, in this same\nshape; an item's identifying field is its first required `choice`. Empty for every other\nfield.",
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/Field"
+					}
+				},
+				"kind": {
+					"description": "The kind a `reference` names a resource of, by its id; absent, never null, for every other\nfield.",
+					"$ref": "#/$defs/Kind"
+				},
+				"name": {
+					"type": "string"
+				},
+				"required": {
+					"type": "boolean"
+				},
+				"secret": {
+					"description": "Written and never read back, as an identity's `value`, which the secret service keeps and the\nregistry answers by its name alone; beside its ordinary `type`.",
+					"type": "boolean"
+				},
+				"type": {
+					"$ref": "#/$defs/Type"
+				}
+			},
+			"required": [
+				"name",
+				"type",
+				"editable",
+				"required"
+			]
+		},
+		"Kind": {
+			"description": "Every kind of resource the registry holds, answered by its name.",
+			"type": "string",
+			"enum": [
+				"node",
+				"app",
+				"account",
+				"domain"
+			]
+		},
+		"Type": {
+			"oneOf": [
+				{
+					"type": "string",
+					"enum": [
+						"string",
+						"integer",
+						"boolean",
+						"choice",
+						"list"
+					]
+				},
+				{
+					"description": "A value of named keys of its own, as an app's `release`; app.rs holds its shape.",
+					"type": "string",
+					"const": "object"
+				},
+				{
+					"description": "The id of a resource of the field's `kind`, as a node's `account`, which the console draws as\na choice among them -- RFC 2kuvi.",
+					"type": "string",
+					"const": "reference"
+				}
+			]
+		}
+	}
+}

@@ -3,7 +3,7 @@
 //! takes the same token. See RFC cpc2b.
 
 use super::{Shared, by_is_valid, invalid_name, refused};
-use crate::kinds::{self, CATALOG, Kind, Refusal};
+use crate::kinds::{self, Kind, Refusal};
 use crate::secrets::{self, Secrets, Untaken};
 use crate::store::{Key, Resource, Set};
 use crate::{account, app, domain, node, task};
@@ -47,7 +47,7 @@ fn resources(kind: Kind) -> Router<Shared> {
 }
 
 async fn kinds() -> Response {
-	response::success(StatusCode::OK, json!({ "items": CATALOG }))
+	response::success(StatusCode::OK, kinds::ANSWER)
 }
 
 async fn no_such_kind() -> Response {

@@ -3,10 +3,11 @@
 //! own module accepts.
 
 use crate::{account, node};
+use schemars::JsonSchema;
 use serde::Serialize;
 
 /// Every kind of resource the registry holds, answered by its name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
 	Node,
@@ -63,7 +64,7 @@ pub enum Refusal {
 }
 
 /// One kind as the catalog describes it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Description {
 	#[serde(rename = "name")]
 	pub kind: Kind,
@@ -75,7 +76,7 @@ pub struct Description {
 	pub columns: &'static [&'static str],
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Field {
 	pub name: &'static str,
 	#[serde(rename = "type")]
@@ -84,8 +85,10 @@ pub struct Field {
 	/// field.
 	#[serde(skip_serializing_if = "<[_]>::is_empty")]
 	pub choices: &'static [&'static str],
-	/// The kind a `reference` names a resource of, by its id; none for every other field.
+	/// The kind a `reference` names a resource of, by its id; absent, never null, for every other
+	/// field.
 	#[serde(skip_serializing_if = "Option::is_none")]
+	#[schemars(with = "Kind")]
 	pub kind: Option<Kind>,
 	/// The fields of each item of a `list` of objects, as an account's `identities`, in this same
 	/// shape; an item's identifying field is its first required `choice`. Empty for every other
@@ -102,7 +105,7 @@ pub struct Field {
 	pub required: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Type {
 	String,
@@ -118,7 +121,7 @@ pub enum Type {
 }
 
 /// None yet: backing up or restarting comes with the controllers, RFC jln34.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub enum Action {}
 
 const fn field(name: &'static str, type_: Type, required: bool) -> Field {
@@ -230,6 +233,39 @@ pub const DOMAIN: Description = Description {
 };
 
 pub const CATALOG: &[Description] = &[NODE, APP, ACCOUNT, DOMAIN];
+
+/// What `GET /v1/kinds` answers inside the envelope: every kind the registry holds. Its JSON
+/// Schema is `catalog.schema.json`, made from this type and committed, which every reader in
+/// another language is derived from -- RFC bq3vn and the workspace's spec/json.md.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Catalog {
+	pub items: &'static [Description],
+}
+
+pub const ANSWER: Catalog = Catalog { items: CATALOG };
+
+/// The schema as written to `catalog.schema.json`. As the answer is written, not read: a field
+/// left out when empty is not required.
+pub fn schema() -> String {
+	let settings = schemars::generate::SchemaSettings::draft2020_12().for_serialize();
+	written(&settings.into_generator().into_root_schema_for::<Catalog>())
+}
+
+/// The kinds as written to `catalog.json`, what `GET /v1/kinds` answers as its `items`: a reader's
+/// tests load it whole, values included, rather than keep a copy of their own -- RFC bq3vn.
+pub fn catalog() -> String {
+	written(&CATALOG)
+}
+
+/// `value` indented with tabs and ending in a newline, as `mise run fmt` leaves JSON; a check still
+/// compares what a file holds, never its text, so the formatter owns its layout.
+fn written(value: &impl Serialize) -> String {
+	let mut written = Vec::new();
+	let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
+	let mut serializer = serde_json::Serializer::with_formatter(&mut written, formatter);
+	value.serialize(&mut serializer).expect("the catalog is JSON");
+	String::from_utf8(written).expect("JSON is UTF-8") + "\n"
+}
 
 #[cfg(test)]
 mod tests;

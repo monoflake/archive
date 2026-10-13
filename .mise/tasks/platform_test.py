@@ -1,5 +1,5 @@
-"""platform's command line against a fake registry on 127.0.0.1, its catalog that of
-apps/data/registry/src/kinds.rs: `python3 .mise/tasks/platform_test.py`."""
+"""platform's command line against a fake registry on 127.0.0.1, answering the registry's own
+apps/data/registry/catalog.json: `python3 .mise/tasks/platform_test.py`."""
 
 import contextlib
 import copy
@@ -22,63 +22,9 @@ loader.exec_module(platform)
 TOKEN = "token-for-the-fake"
 SECRET_VALUE = "me-at-example-dot-com"
 
+# The fake answers the catalog the registry generates, never a copy of it -- RFC bq3vn.
+CATALOG = json.loads((HERE.parent.parent / "apps/data/registry/catalog.json").read_text())
 
-def field(name, type_, required=False, **more):
-	return {"name": name, "type": type_, "editable": True, "required": required, **more}
-
-
-CATALOG = [
-	{
-		"name": "node",
-		"plural": "nodes",
-		"fields": [
-			field("address", "string", True),
-			field("tier", "choice", True, choices=["datacenter", "home", "transient"]),
-			field("domain", "reference", True, kind="domain"),
-			field("system", "choice", True, choices=["debian", "alpine"]),
-			field("core", "boolean"),
-			field("expiry", "integer"),
-			field("retired", "boolean"),
-			field("account", "reference", kind="account"),
-			field("roles", "list", choices=["compute", "storage", "core"]),
-		],
-		"actions": [],
-		"columns": ["address", "tier", "domain", "system"],
-	},
-	{
-		"name": "app",
-		"plural": "apps",
-		"fields": [field("placements", "list", True), field("release", "object")],
-		"actions": [],
-		"columns": ["placements"],
-	},
-	{
-		"name": "account",
-		"plural": "accounts",
-		"fields": [
-			field("provider", "string", True),
-			field(
-				"identities",
-				"list",
-				True,
-				fields=[
-					field("kind", "choice", True, choices=["user_id", "tenancy", "email"]),
-					field("value", "string", secret=True),
-					{**field("secret", "string"), "editable": False},
-				],
-			),
-		],
-		"actions": [],
-		"columns": ["provider"],
-	},
-	{
-		"name": "domain",
-		"plural": "domains",
-		"fields": [field("note", "string")],
-		"actions": [],
-		"columns": ["note"],
-	},
-]
 
 DOMAIN_ID = "00000000000000d1"
 NODE_ID = "abd3922110a78032"

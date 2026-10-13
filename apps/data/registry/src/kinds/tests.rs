@@ -255,3 +255,30 @@ fn a_kind_is_answered_in_the_shape_the_console_reads() {
 	let tier = serde_json::to_value(&NODE.fields[1]).unwrap();
 	assert_eq!(tier["choices"], json!(["datacenter", "home", "transient"]));
 }
+
+/// The committed `file`, beside the crate, holds what `made` makes now, so a type or a value
+/// changed without it fails here, where it changed -- RFC bq3vn. `REGENERATE=1` writes it instead.
+fn committed(file: &str, made: &str) {
+	let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+	if std::env::var("REGENERATE").is_ok_and(|value| value == "1") {
+		std::fs::write(path, made).unwrap();
+		return;
+	}
+	let committed = std::fs::read_to_string(path).unwrap_or_default();
+	let held = |text: &str| serde_json::from_str::<Value>(text).ok();
+	assert!(
+		held(&committed).is_some() && held(&committed) == held(made),
+		"apps/data/registry/{file} is not what the catalog makes; write it again with \
+		 `REGENERATE=1 cargo test -p registry-service committed_catalog` and commit it"
+	);
+}
+
+#[test]
+fn committed_catalog_schema() {
+	committed("catalog.schema.json", &schema());
+}
+
+#[test]
+fn committed_catalog_json() {
+	committed("catalog.json", &catalog());
+}
