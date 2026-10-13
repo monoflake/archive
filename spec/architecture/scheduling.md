@@ -37,6 +37,10 @@ Decided on 2026-10-07, in place of a database whose durable state was objects in
 
 ## A bucket is logical, a store is physical, and either may be many of the other
 
+**A bucket is the abstraction an app sees, a store is where bytes are kept, and the platform is the
+layer between.** Both are resources in the registry, a bucket with its quota in logical bytes, a
+store with its capacity and the reserve kept free below it in physical bytes -- RFC vh1bl.
+
 **A bucket is the platform's, never a provider's: one entrance, holding a scope's names, the
 content they point to and the stores that content is on.** The names are records in Postgres, the
 content is addressed by its BLAKE3 hash -- the cid of [resource.md](resource.md) -- and the bytes are
@@ -175,7 +179,8 @@ and never what a site is.
 **Nothing in a bucket is readable by being there**, the site's included: what the site serves today
 is read by its Worker, which answers anyone only because there are no accounts yet.
 
-**A reference is one row in the bucket's Postgres: a holder, a key, a content type and the cid it
+**A reference is one row in the scope's index, an embedded SQLite its bucket service alone writes --
+RFC vh1bl: a holder, a key, a content type and the cid it
 points to.** The holder is a principal of any kind above. Whoever holds a reference to a cid may read
 it, and nobody else. So content held by user A, by user B and by `public` reads for both of them and
 for anyone; once `public`'s reference is revoked, user C reads nothing and A and B still do. The same

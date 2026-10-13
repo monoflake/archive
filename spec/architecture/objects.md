@@ -1,5 +1,9 @@
 # Objects: an S3 surface over an app's own directory
 
+**This is to become a store, behind the bucket service rather than in front of an app** -- RFC
+vh1bl: Versity over a node's disk, one kind of store among several. What follows is how it runs
+today, while no app uses it.
+
 What R2 is to a Worker, this is to an app on a node: an app that declares it gets an S3 endpoint,
 credentials and its buckets, and never sees how they are kept. The keeping is Versity S3 Gateway
 over plain files, run by host beside the app. Nothing uses it yet; it is built so the first app
