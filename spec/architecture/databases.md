@@ -34,8 +34,8 @@ core, named by the author".
 - **A commit is confirmed by `ANY 1` of the other two cores, under Patroni's quorum mode**, since
   RFC bhybp: `synchronous_mode: quorum`, `synchronous_node_count: 1` and `synchronous_commit = on`
   by default, which put `ANY 1 (rdu, sin)` in `synchronous_standby_names` while `tyo` leads. Inside
-  Asia that is one round trip to `sin`, about 75 ms a commit; `rdu`, about 150 ms, confirms when
-  `sin` cannot. `buf`, `gvx` and `sha` are tagged `nosync` beside `nofailover`, so a commit is never
+  Asia that is one round trip to `sin`, 74.7 ms a commit measured on 2026-10-13 against 2.2 ms
+  committed locally; `rdu`, about 180 ms away, confirms when `sin` cannot. `buf`, `gvx` and `sha` are tagged `nosync` beside `nofailover`, so a commit is never
   waited on by a member that cannot lead. **What can be replayed** -- a ledger event, a reported
   status, a measurement -- sets `synchronous_commit = local` in its transaction and commits at once,
   as the ledger's task and event writes do; what must not be disputed -- a resource's `spec`, a
