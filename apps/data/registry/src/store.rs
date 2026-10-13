@@ -80,6 +80,8 @@ const fn table(kind: Kind) -> (&'static str, &'static str) {
 	match kind {
 		Kind::Node => ("nodes", "record"),
 		Kind::App => ("apps", "spec"),
+		Kind::Account => ("accounts", "spec"),
+		Kind::Domain => ("domains", "spec"),
 	}
 }
 

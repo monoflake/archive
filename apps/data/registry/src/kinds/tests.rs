@@ -1,5 +1,5 @@
 use super::*;
-use crate::app;
+use crate::{account, app, domain};
 use serde_json::{Value, json};
 
 /// Whether `kind`'s validation stores `spec`.
@@ -7,6 +7,8 @@ fn accepts(kind: &Description, spec: Value) -> bool {
 	match kind.kind {
 		Kind::Node => node::record(spec).is_ok(),
 		Kind::App => app::spec(spec).is_ok(),
+		Kind::Account => account::spec(spec).is_ok(),
+		Kind::Domain => domain::spec(spec).is_ok(),
 	}
 }
 
@@ -36,6 +38,11 @@ fn example(kind: &Description) -> Value {
 				"commit": "0123456789abcdef0123456789abcdef01234567",
 			},
 		}),
+		Kind::Account => json!({
+			"provider": "oracle",
+			"identities": [{ "kind": "email", "secret": "platform/registry/OCI_2_EMAIL" }],
+		}),
+		Kind::Domain => json!({ "note": "Oracle's Tokyo and Singapore, one card" }),
 	}
 }
 
@@ -53,7 +60,25 @@ fn wrong_types(type_: Type) -> Vec<Value> {
 		Type::Choice => vec![json!("none of them"), json!(1), json!(null)],
 		Type::List => vec![json!("tyo"), json!(1), json!({}), json!(null)],
 		Type::Object => vec![json!("x"), json!(1), json!([]), json!(null)],
+		// Neither an id nor, during the expand, the code it held before.
+		Type::Reference => vec![json!(1), json!(null), json!(["x"]), json!("0123456789ABCDEF")],
 	}
+}
+
+/// A reference names the kind it points at, and no other field names one.
+#[test]
+fn a_field_names_a_kind_exactly_where_it_is_a_reference() {
+	for kind in CATALOG {
+		for field in kind.fields {
+			assert_eq!(field.kind.is_some(), field.type_ == Type::Reference, "{}", field.name);
+		}
+	}
+	let account = NODE.fields.iter().find(|field| field.name == "account").unwrap();
+	let answered = serde_json::to_value(account).unwrap();
+	assert_eq!(
+		answered,
+		json!({ "name": "account", "type": "reference", "kind": "account", "editable": true, "required": false })
+	);
 }
 
 #[test]
@@ -116,10 +141,10 @@ fn every_choice_is_taken_and_only_a_choice_or_a_list_has_them() {
 	}
 }
 
-/// A node keeps a key the catalog does not name as given, and an app refuses one; neither checks
-/// a key the catalog leaves out.
+/// A node keeps a key the catalog does not name as given, and every other kind refuses one; none
+/// checks a key the catalog leaves out.
 #[test]
-fn a_key_outside_the_catalog_is_kept_by_a_node_and_refused_by_an_app() {
+fn a_key_outside_the_catalog_is_kept_by_a_node_and_refused_by_every_other_kind() {
 	for kind in CATALOG {
 		let example = example(kind);
 		let named = |key: &str| kind.fields.iter().any(|field| field.name == key);

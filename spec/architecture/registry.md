@@ -24,8 +24,8 @@ so the node task can come to read it rather than the file.
 nodes it runs on, which a person sets, and `release`, the run of a repository that built what runs
 and the commit it built (`{"repository": "owner/repo", "run": n, "commit": "<40 hex>"}`), which the
 deployer on `tyo` writes after each run it takes -- RFC jln34. Absent, no release is recorded yet.
-`PUT /v1/apps/<name>` sets the whole spec; `PATCH` sets only the keys it is given and keeps the
-others, held to the revision read as `PUT` is, so a release written and an app moved never erase
+`PUT /v1/apps/<name>` sets the whole spec; `PATCH` sets only the keys it is given, takes out a key given `null`
+-- RFC 7386's merge patch -- and keeps the others, held to the revision read as `PUT` is, so a release written and an app moved never erase
 each other. A node takes the same `PATCH`, so an operator's `retired` and an import never erase each
 other either. `mise run registry import` writes placements by `PATCH` and creates an app it does not
 find by `PUT`, so running it again keeps every release.
@@ -59,22 +59,33 @@ takes `?name=` to find one by name. Every row of the history carries the id of t
 changed. What refers to a resource -- a placement, a release -- still holds its name, until those
 references move to ids in a contract of their own.
 
-- **`node`** -- `/v1/nodes` and `/v1/nodes/{id}`, the record above as its `spec`, set whole by
-  `PUT` and in part by `PATCH`. Beside the axes `nodes.toml` declares it holds the fields RFC 32hd9
-  gives a node: `hosting`, `datacenter` or `selfhost`; `account`, its failure domain, written as
-  `domain` is; and `roles`, one or more of `compute`, `storage` and `core`, each once. While
-  `nodes.toml` still declares `tier`, `domain` and `core`, the import writes both, the new from the
-  old -- `home` is `selfhost`, `domain` is `account`, and every node `compute`, a core `core` too --
-  and the relay reads `roles`, falling back to `core`. The old keys go once `nodes.toml` writes the
-  new.
-- **`app`** -- `/v1/apps` and `/v1/apps/{id}`, its `spec` being `placements`, the nodes it runs
-  on, each named once. `?node=<name>` answers only the apps placed on that node, which is how host
-  asks what its node should run -- infra's `spec/architecture/host.md`. `mise run registry import`
-  writes each app's placements from its `service.toml`, in every repository host deploys from --
-  infra's `DEPLOY_SOURCES`, each found by `repos.toml`, read from each one's `main` and never its
-  working tree, and a source not cloned stops it; a Worker's,
-  placed on `workers`, is not the registry's. The import sets each app back to what git declares, so once the console
-  writes placements it stops importing apps -- RFC dk6wz.
+- **`node`** -- `/v1/nodes` and `/v1/nodes/{id}`, the record above as its `spec`, set whole by `PUT`
+  and in part by `PATCH`. Beside the axes `nodes.toml` declares it holds the fields RFC 32hd9 gives
+  a node: `hosting`, `datacenter` or `selfhost`; `account`, the id of the `account` it is under,
+  which a `selfhost` node has none of; `domain`, the id of the `domain` it fails with; and `roles`,
+  one or more of `compute`, `storage` and `core`, each once. A node naming an account or a domain
+  the registry does not hold is refused `invalid_resource`. Until `nodes.toml` declares them, the
+  import derives them from its `tier`, `domain` and `core` -- `home` is `selfhost`; a provider's
+  code such as `oci-2` names the domain it is, made when missing, and a `selfhost` node's domain is
+  the one named for it; every node is `compute`, a core `core` too -- and writes the domain's id,
+  the code living on as its name. It makes no account, since an account needs an identity only the
+  author holds: it links a node to the account named by its code once the author has written that
+  account, and until then the node has none. Meanwhile `account` and `domain` are read by shape: 16
+  hexadecimal digits are a reference, anything else the provider's code they held before, which no
+  code's shape can be mistaken for. The relay reads `roles`, falling back to `core`. The old forms
+  are refused once `nodes.toml` writes the new.
+- **`account`** -- `/v1/accounts` and `/v1/accounts/{id}`: a paid account at a provider, named as
+  the provider's code was, `oci-2`, which is how the import finds it. Only the author writes one,
+  through the API, never the import. Its `spec` is its `provider` as a whole word, `oracle` or
+  `azure`, and `identities`, one to three, each exactly `{kind, secret}` and each kind at most once,
+  so an account always keeps at least one way to be known: `kind` one of `user_id`, `tenancy` and
+  `email`, the three set for now and another discussed when they fall short; `secret` the full name
+  the secret service keys its value by, `scope/app/NAME`. The value is kept there and never here,
+  since every reader of the tailnet reads the registry -- [secrets.md](secrets.md) -- and an
+  identity carrying any other key is refused.
+- **`domain`** -- `/v1/domains` and `/v1/domains/{id}`: what fails together, its `spec` an optional
+  `note`, grouped by the author through the nodes that name it. A node's `account` and `domain` are
+  of the catalog's `reference` type, naming the kind they point to.
 
 **A write carries the revision it read**, `{"by", "revision", "spec"}` with `revision` 0 for what
 does not exist yet, and one made after another change is refused `409 invalid_revision`. A body

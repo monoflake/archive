@@ -2,26 +2,14 @@
 //! the registry keeps of it, so any other key is refused rather than kept. See RFC ja5hm and
 //! RFC cpc2b.
 
+use crate::kinds;
+pub use crate::kinds::Refusal;
 use crate::node;
 use serde_json::{Map, Value};
 
-/// Why a spec is not stored, said for whoever sent it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Refusal {
-	/// A key the kind does not let be written.
-	Forbidden(String),
-	/// A key it does, holding what it cannot be.
-	Invalid(String),
-}
-
-/// One DNS label, as every service's `name` is: lowercase letters, digits and inner hyphens.
+/// One DNS label, as every service's `name` is; see `kinds::label_is_valid`.
 pub fn name_is_valid(name: &str) -> bool {
-	(1..=63).contains(&name.len())
-		&& name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-		&& !name.starts_with('-')
-		&& !name.ends_with('-')
-		// A route would read it as an id -- RFC 2kuvi.
-		&& !crate::kinds::is_id(name)
+	kinds::label_is_valid(name)
 }
 
 /// Every key an app's spec may hold.

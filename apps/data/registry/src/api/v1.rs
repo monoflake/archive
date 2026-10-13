@@ -1,13 +1,11 @@
-//! The control contract's first slice: nodes and apps as resources of a kind, and the catalog that
-//! describes them, under `/v1`. Reading is open as the routes above it are, and writing takes the
-//! same token. See RFC cpc2b.
+//! The control contract: every kind's resources, and the catalog that describes them, under `/v1`,
+//! each kind's routes the same handlers. Reading is open as the routes above it are, and writing
+//! takes the same token. See RFC cpc2b.
 
 use super::{Shared, by_is_valid, invalid_name, refused};
-use crate::app::{self, Refusal};
-use crate::kinds::{CATALOG, Kind};
-use crate::node;
+use crate::kinds::{self, CATALOG, Kind, Refusal};
 use crate::store::{Key, Resource, Set};
-use crate::task;
+use crate::{account, app, domain, node, task};
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
@@ -16,15 +14,35 @@ use axum::response::Response;
 use axum::routing::{any, get};
 use serde_json::{Map, Value, json};
 
+/// Every kind the registry holds, each answered at `/v1/<plural>`.
+const KINDS: [Kind; 4] = [Kind::Node, Kind::App, Kind::Account, Kind::Domain];
+
 pub fn routes() -> Router<Shared> {
-	Router::new()
-		.route("/v1/kinds", get(kinds))
-		.route("/v1/nodes", get(nodes))
-		.route("/v1/nodes/{key}", get(node).put(put_node).patch(patch_node))
-		.route("/v1/apps", get(apps))
-		.route("/v1/apps/{key}", get(app).put(put_app).patch(patch_app))
-		.route("/v1/{kind}", any(no_such_kind))
-		.route("/v1/{kind}/{name}", any(no_such_kind))
+	let mut router = Router::new().route("/v1/kinds", get(kinds));
+	for kind in KINDS {
+		router = router.merge(resources(kind));
+	}
+	router.route("/v1/{kind}", any(no_such_kind)).route("/v1/{kind}/{name}", any(no_such_kind))
+}
+
+/// One kind's collection and its members, by id or by name.
+fn resources(kind: Kind) -> Router<Shared> {
+	let plural = kind.plural();
+	let one = get(move |Path(key): Path<String>, State(registry): State<Shared>| {
+		found_answer(registry, kind, key)
+	})
+	.put(move |Path(key): Path<String>, State(registry): State<Shared>, headers: HeaderMap, body| {
+		put(registry, kind, key, headers, body)
+	})
+	.patch(
+		move |Path(key): Path<String>, State(registry): State<Shared>, headers: HeaderMap, body| {
+			patch(registry, kind, key, headers, body)
+		},
+	);
+	let list = get(move |State(registry): State<Shared>, Query(asked): Query<Asked>| {
+		listed(registry, kind, asked)
+	});
+	Router::new().route(&format!("/v1/{plural}"), list).route(&format!("/v1/{plural}/{{key}}"), one)
 }
 
 async fn kinds() -> Response {
@@ -40,40 +58,23 @@ fn store_unavailable(error: anyhow::Error) -> Response {
 }
 
 #[derive(serde::Deserialize)]
-struct NodesAsked {
+struct Asked {
 	name: Option<String>,
-}
-
-/// Every node, or the one `?name=` names; the list's revision is the newest change either way.
-async fn nodes(State(registry): State<Shared>, Query(asked): Query<NodesAsked>) -> Response {
-	match registry.store.resources(Kind::Node).await {
-		Ok(mut listed) => {
-			if let Some(name) = &asked.name {
-				listed.items.retain(|node| node.name == *name);
-			}
-			response::success(StatusCode::OK, listed)
-		}
-		Err(error) => store_unavailable(error),
-	}
-}
-
-#[derive(serde::Deserialize)]
-struct AppsAsked {
+	/// An app's alone: those placed on the node named.
 	node: Option<String>,
-	name: Option<String>,
 }
 
-/// Every app, or only those placed on `?node=`, or the one `?name=` names; the list's revision is
-/// the newest change either way, since a filter narrows what is answered rather than what it was
-/// read at.
-async fn apps(State(registry): State<Shared>, Query(asked): Query<AppsAsked>) -> Response {
-	match registry.store.resources(Kind::App).await {
+/// Every resource of a kind, or the one `?name=` names, or the apps placed on `?node=`; the list's
+/// revision is the newest change either way, since a filter narrows what is answered rather than
+/// what it was read at.
+async fn listed(registry: Shared, kind: Kind, asked: Asked) -> Response {
+	match registry.store.resources(kind).await {
 		Ok(mut listed) => {
-			if let Some(node) = &asked.node {
+			if let (Kind::App, Some(node)) = (kind, &asked.node) {
 				listed.items.retain(|app| app::is_placed_on(&app.spec, node));
 			}
 			if let Some(name) = &asked.name {
-				listed.items.retain(|app| app.name == *name);
+				listed.items.retain(|resource| resource.name == *name);
 			}
 			response::success(StatusCode::OK, listed)
 		}
@@ -88,7 +89,9 @@ type Refused = Box<Response>;
 fn absent(kind: Kind) -> Response {
 	match kind {
 		Kind::Node => response::failure(StatusCode::NOT_FOUND, "no_such_node"),
-		Kind::App => response::failure(StatusCode::NOT_FOUND, "no_such_resource"),
+		Kind::App | Kind::Account | Kind::Domain => {
+			response::failure(StatusCode::NOT_FOUND, "no_such_resource")
+		}
 	}
 }
 
@@ -101,16 +104,9 @@ async fn found(registry: &Shared, kind: Kind, key: &str) -> Result<Resource, Ref
 	}
 }
 
-async fn node(Path(key): Path<String>, State(registry): State<Shared>) -> Response {
-	match found(&registry, Kind::Node, &key).await {
-		Ok(node) => response::success(StatusCode::OK, node),
-		Err(refusal) => *refusal,
-	}
-}
-
-async fn app(Path(key): Path<String>, State(registry): State<Shared>) -> Response {
-	match found(&registry, Kind::App, &key).await {
-		Ok(app) => response::success(StatusCode::OK, app),
+async fn found_answer(registry: Shared, kind: Kind, key: String) -> Response {
+	match found(&registry, kind, &key).await {
+		Ok(resource) => response::success(StatusCode::OK, resource),
 		Err(refusal) => *refusal,
 	}
 }
@@ -123,7 +119,7 @@ struct Written {
 	spec: Value,
 }
 
-/// The body of a `PUT`, or its refusal. `status` and `drift` are a controller's and the platform's
+/// The body of a write, or its refusal. `status` and `drift` are a controller's and the platform's
 /// to write, never a person's, so a body carrying either is refused whatever it holds.
 fn written(body: Result<axum::Json<Value>, JsonRejection>) -> Result<Written, Refused> {
 	let invalid = |message: &str| {
@@ -165,15 +161,14 @@ fn asked(
 	if let Key::Name(name) = Key::of(key) {
 		match kind {
 			Kind::Node if !node::name_is_valid(name) => return Err(Box::new(invalid_name())),
-			Kind::App if !app::name_is_valid(name) => {
+			Kind::App | Kind::Account | Kind::Domain if !kinds::label_is_valid(name) => {
 				return Err(Box::new(response::failure_with(
 					StatusCode::BAD_REQUEST,
 					"invalid_name",
-					"An app's name is one DNS label, as its service.toml names it, and never 16 \
-					 hexadecimal digits, which is an id",
+					"A name is one DNS label, and never 16 hexadecimal digits, which is an id",
 				)));
 			}
-			Kind::Node | Kind::App => {}
+			Kind::Node | Kind::App | Kind::Account | Kind::Domain => {}
 		}
 	}
 	written(body)
@@ -188,57 +183,56 @@ async fn named(registry: &Shared, kind: Kind, key: &str) -> Result<String, Refus
 	}
 }
 
-/// Sets a node's whole spec, held to the revision read, checked as node.rs checks a record.
-async fn put_node(
-	Path(key): Path<String>,
-	State(registry): State<Shared>,
+/// Sets a resource's whole spec, held to the revision read.
+async fn put(
+	registry: Shared,
+	kind: Kind,
+	key: String,
 	headers: HeaderMap,
 	body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-	let written = match asked(&registry, &headers, Kind::Node, &key, body) {
+	let written = match asked(&registry, &headers, kind, &key, body) {
 		Ok(written) => written,
 		Err(refusal) => return *refusal,
 	};
-	match named(&registry, Kind::Node, &key).await {
-		Ok(name) => set_node(&registry, &name, written.by, written.revision, written.spec).await,
+	let name = match named(&registry, kind, &key).await {
+		Ok(name) => name,
+		Err(refusal) => return *refusal,
+	};
+	match checked(&registry, kind, written.spec).await {
+		Ok(spec) => set(&registry, kind, &name, written.by, written.revision, spec).await,
 		Err(refusal) => *refusal,
 	}
 }
 
-/// Sets the keys of a node's spec given and keeps every other, as `PATCH /v1/apps` does: the
-/// import writes what `nodes.toml` says, and an operator's `retired` is kept -- RFC qcyb3.
-async fn patch_node(
-	Path(key): Path<String>,
-	State(registry): State<Shared>,
+/// Sets the keys of a resource's spec given and keeps every other, held to the revision read as
+/// `PUT` is: an app's release written by a machine and its placements by a person, or a node's
+/// `retired` by an operator and the rest by the import, never erase each other.
+async fn patch(
+	registry: Shared,
+	kind: Kind,
+	key: String,
 	headers: HeaderMap,
 	body: Result<axum::Json<Value>, JsonRejection>,
 ) -> Response {
-	let written = match asked(&registry, &headers, Kind::Node, &key, body) {
+	let written = match asked(&registry, &headers, kind, &key, body) {
 		Ok(written) => written,
 		Err(refusal) => return *refusal,
 	};
-	match merged(&registry, Kind::Node, &key, written.revision, written.spec).await {
-		Ok((name, spec)) => set_node(&registry, &name, written.by, written.revision, spec).await,
+	let (name, spec) = match merged(&registry, kind, &key, written.revision, written.spec).await {
+		Ok(merged) => merged,
+		Err(refusal) => return *refusal,
+	};
+	match checked(&registry, kind, spec).await {
+		Ok(spec) => set(&registry, kind, &name, written.by, written.revision, spec).await,
 		Err(refusal) => *refusal,
-	}
-}
-
-async fn set_node(
-	registry: &Shared,
-	name: &str,
-	by: String,
-	revision: i64,
-	spec: Value,
-) -> Response {
-	match node::record(spec) {
-		Ok(record) => set(registry, Kind::Node, name, by, revision, record).await,
-		Err(message) => response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message),
 	}
 }
 
 /// What a `PATCH` makes, and the name of what it writes: `given` laid over the spec kept, which is
-/// still at `revision`. Read outside the write's lock, so `set` holds the write to the same
-/// revision once more; the spec it makes is checked whole by the kind's own rules.
+/// still at `revision`, a key given `null` taken out, as a JSON merge patch does. Read outside the
+/// write's lock, so `set` holds the write to the same revision once more; the spec it makes is
+/// checked whole by the kind's own rules.
 async fn merged(
 	registry: &Shared,
 	kind: Kind,
@@ -260,56 +254,59 @@ async fn merged(
 		let broken = anyhow::anyhow!("{name}'s stored spec is not an object");
 		return Err(Box::new(store_unavailable(broken)));
 	};
-	spec.extend(given);
+	for (key, value) in given {
+		if value.is_null() {
+			spec.remove(&key);
+		} else {
+			spec.insert(key, value);
+		}
+	}
 	Ok((kept.name, Value::Object(spec)))
 }
 
-/// Sets an app's whole spec, held to the revision read.
-async fn put_app(
-	Path(key): Path<String>,
-	State(registry): State<Shared>,
-	headers: HeaderMap,
-	body: Result<axum::Json<Value>, JsonRejection>,
-) -> Response {
-	let written = match asked(&registry, &headers, Kind::App, &key, body) {
-		Ok(written) => written,
-		Err(refusal) => return *refusal,
+/// `spec` as its kind stores it, or why it is not stored.
+async fn checked(
+	registry: &Shared,
+	kind: Kind,
+	spec: Value,
+) -> Result<Map<String, Value>, Refused> {
+	let spec = match kind {
+		Kind::Node => node::record(spec)
+			.map_err(|message| response::failure_with(StatusCode::BAD_REQUEST, "invalid_body", message)),
+		Kind::App => app::spec(spec).map_err(refused_spec),
+		Kind::Account => account::spec(spec).map_err(refused_spec),
+		Kind::Domain => domain::spec(spec).map_err(refused_spec),
 	};
-	let name = match named(&registry, Kind::App, &key).await {
-		Ok(name) => name,
-		Err(refusal) => return *refusal,
-	};
-	match app::spec(written.spec) {
-		Ok(spec) => set(&registry, Kind::App, &name, written.by, written.revision, spec).await,
-		Err(refusal) => refused_app(refusal),
+	let spec = spec.map_err(Box::new)?;
+	if kind == Kind::Node {
+		referenced(registry, &spec).await?;
 	}
+	Ok(spec)
 }
 
-/// Sets the keys of an app's spec given and keeps every other, held to the revision read as `PUT`
-/// is: a release is written often and by a machine, where it runs seldom and by a person, and
-/// neither erases the other.
-async fn patch_app(
-	Path(key): Path<String>,
-	State(registry): State<Shared>,
-	headers: HeaderMap,
-	body: Result<axum::Json<Value>, JsonRejection>,
-) -> Response {
-	let written = match asked(&registry, &headers, Kind::App, &key, body) {
-		Ok(written) => written,
-		Err(refusal) => return *refusal,
-	};
-	let (name, spec) = match merged(&registry, Kind::App, &key, written.revision, written.spec).await
-	{
-		Ok(merged) => merged,
-		Err(refusal) => return *refusal,
-	};
-	match app::spec(spec) {
-		Ok(spec) => set(&registry, Kind::App, &name, written.by, written.revision, spec).await,
-		Err(refusal) => refused_app(refusal),
+/// A node's account and domain, where each names an id, are resources the registry holds.
+async fn referenced(registry: &Shared, record: &Map<String, Value>) -> Result<(), Refused> {
+	for (key, kind) in [("account", Kind::Account), ("domain", Kind::Domain)] {
+		let Some(id) = record.get(key).and_then(Value::as_str).filter(|id| kinds::is_id(id)) else {
+			continue;
+		};
+		match registry.store.resource(kind, Key::Id(id)).await {
+			Ok(Some(_)) => {}
+			Ok(None) => {
+				let message = format!("`{key}` names no {} the registry holds", kind.name());
+				return Err(Box::new(response::failure_with(
+					StatusCode::BAD_REQUEST,
+					"invalid_resource",
+					message,
+				)));
+			}
+			Err(error) => return Err(Box::new(store_unavailable(error))),
+		}
 	}
+	Ok(())
 }
 
-fn refused_app(refusal: Refusal) -> Response {
+fn refused_spec(refusal: Refusal) -> Response {
 	match refusal {
 		Refusal::Forbidden(message) => {
 			response::failure_with(StatusCode::BAD_REQUEST, "forbidden_field", message)

@@ -1,6 +1,7 @@
 //! What a node's name and record have to be before either is stored. The keys checked are the ones
 //! every reader relies on; any other is kept as given. See spec/architecture/registry.md.
 
+use crate::kinds;
 use serde_json::{Map, Value};
 use std::net::Ipv4Addr;
 
@@ -30,8 +31,8 @@ pub fn record(node: Value) -> Result<Map<String, Value>, String> {
 	if !TIERS.contains(&text("tier")?) {
 		return Err(format!("`tier` is one of {}", TIERS.join(", ")));
 	}
-	if !domain_is_valid(text("domain")?) {
-		return Err("`domain` is a provider code, as `oci` or `oci-2`".into());
+	if !reference_or_code(text("domain")?) {
+		return Err("`domain` is a domain's id, or a provider code, as `oci` or `oci-2`".into());
 	}
 	if !SYSTEMS.contains(&text("system")?) {
 		return Err(format!("`system` is one of {}", SYSTEMS.join(", ")));
@@ -53,8 +54,8 @@ pub fn record(node: Value) -> Result<Map<String, Value>, String> {
 	{
 		return Err(format!("`hosting` is one of {}", HOSTINGS.join(", ")));
 	}
-	if record.get("account").is_some_and(|account| !account.as_str().is_some_and(domain_is_valid)) {
-		return Err("`account` is a provider code, as `oci` or `oci-2`".into());
+	if record.get("account").is_some_and(|account| !account.as_str().is_some_and(reference_or_code)) {
+		return Err("`account` is an account's id, or a provider code, as `oci` or `oci-2`".into());
 	}
 	if record.get("roles").is_some_and(|roles| !roles_are_valid(roles)) {
 		return Err(format!("`roles` is a list of one or more of {}, each once", ROLES.join(", ")));
@@ -68,6 +69,13 @@ fn roles_are_valid(roles: &Value) -> bool {
 		&& roles.iter().enumerate().all(|(index, role)| {
 			role.as_str().is_some_and(|role| ROLES.contains(&role)) && !roles[..index].contains(role)
 		})
+}
+
+/// A node's `account` or `domain`: the id of the resource it names, which the API checks the
+/// registry holds, or, until `nodes.toml` writes ids, the provider's code it held before -- RFC
+/// 32hd9. Read by shape, and no code has an id's.
+fn reference_or_code(value: &str) -> bool {
+	kinds::is_id(value) || domain_is_valid(value)
 }
 
 /// `oci`, `az`, `oci-2`: the provider, and which of its accounts when there is more than one.
@@ -208,6 +216,18 @@ mod tests {
 			[json!(["compute"]), json!(["storage", "core"]), json!(["core", "storage", "compute"])]
 		{
 			assert!(record(with("roles", roles.clone())).is_ok(), "{roles}");
+		}
+	}
+
+	#[test]
+	fn an_account_or_a_domain_is_an_id_or_until_then_a_code() {
+		for key in ["account", "domain"] {
+			for value in ["0123456789abcdef", "oci-2", "int"] {
+				assert!(record(with(key, json!(value))).is_ok(), "{key}: {value}");
+			}
+			for value in ["0123456789ABCDEF", "0123456789abcde", "oci 2", ""] {
+				assert!(record(with(key, json!(value))).is_err(), "{key}: {value}");
+			}
 		}
 	}
 

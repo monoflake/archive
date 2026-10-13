@@ -126,7 +126,7 @@ async fn the_second_migration_keeps_every_change_as_a_node_s() {
 		.unwrap()
 		.get(0);
 
-	assert_eq!(store.migrate().await.unwrap(), [2, 3]);
+	assert_eq!(store.migrate().await.unwrap(), [2, 3, 4]);
 	let kind: String =
 		client.query_one("SELECT kind FROM changes WHERE id = $1", &[&id]).await.unwrap().get(0);
 	assert_eq!(kind, "node");
@@ -248,7 +248,7 @@ async fn the_third_migration_gives_every_resource_an_id_and_every_row_its_resour
 	)
 	.await;
 
-	assert_eq!(store.migrate().await.unwrap(), [3]);
+	assert_eq!(store.migrate().await.unwrap(), [3, 4]);
 	let id = |kind, name: &'static str| {
 		let store = &store;
 		async move { store.resource(kind, Key::Name(name)).await.unwrap().unwrap().id }
@@ -378,4 +378,22 @@ async fn an_id_is_sixteen_digits_every_one_drawn() {
 		let seen: std::collections::BTreeSet<u8> = ids.iter().map(|id| id.as_bytes()[place]).collect();
 		assert_eq!(seen.len(), 16, "digit {place} takes only {seen:?}");
 	}
+}
+
+/// An account and a domain are kept as every resource is, each with an id and a history row.
+#[tokio::test]
+async fn an_account_and_a_domain_are_held_as_every_resource_is() {
+	let Some(store) = store().await else { return };
+	let account =
+		changed(&store, Kind::Account, "oci", "test", 0, json!({ "provider": "oracle" })).await;
+	let domain = changed(&store, Kind::Domain, "oci", "test", 0, json!({})).await;
+	let accounts = store.resources(Kind::Account).await.unwrap();
+	let domains = store.resources(Kind::Domain).await.unwrap();
+	assert_eq!((accounts.items.len(), domains.items.len()), (1, 1));
+	assert_eq!((accounts.items[0].revision, domains.items[0].revision), (account, domain));
+	assert!(kinds::is_id(&accounts.items[0].id) && kinds::is_id(&domains.items[0].id));
+	assert_ne!(accounts.items[0].id, domains.items[0].id);
+	assert!(store.resources(Kind::Node).await.unwrap().items.is_empty(), "one name, kinds apart");
+	let kinds: Vec<String> = history(&store).await.into_iter().map(|row| row.kind).collect();
+	assert_eq!(kinds, ["account", "domain"]);
 }

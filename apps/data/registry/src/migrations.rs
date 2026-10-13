@@ -91,6 +91,28 @@ pub const MIGRATIONS: &[Migration] = &[
 				);
 		"#,
 	},
+	// Each kept as an app is, its id made as every id is. See RFC 32hd9.
+	Migration {
+		version: 4,
+		name: "accounts and domains",
+		kind: Kind::Expand,
+		sql: r#"
+			CREATE TABLE accounts (
+				name text COLLATE "C" PRIMARY KEY,
+				id text COLLATE "C" NOT NULL DEFAULT registry_id(),
+				spec jsonb NOT NULL,
+				updated_at timestamptz NOT NULL DEFAULT now()
+			);
+			CREATE UNIQUE INDEX accounts_by_id ON accounts (id);
+			CREATE TABLE domains (
+				name text COLLATE "C" PRIMARY KEY,
+				id text COLLATE "C" NOT NULL DEFAULT registry_id(),
+				spec jsonb NOT NULL,
+				updated_at timestamptz NOT NULL DEFAULT now()
+			);
+			CREATE UNIQUE INDEX domains_by_id ON domains (id);
+		"#,
+	},
 ];
 
 /// The advisory lock every registry takes before migrating: "registry" in ASCII.

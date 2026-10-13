@@ -107,7 +107,7 @@ async fn the_catalog_is_answered_without_the_store() {
 	assert_eq!(status, StatusCode::OK);
 	let items = body["data"]["items"].as_array().unwrap();
 	let names: Vec<&str> = items.iter().map(|kind| kind["name"].as_str().unwrap()).collect();
-	assert_eq!(names, ["node", "app"]);
+	assert_eq!(names, ["node", "app", "account", "domain"]);
 	assert_eq!(body["data"]["items"][1]["fields"][0]["name"], "placements");
 	// RFC 32hd9's, so the console draws them.
 	let fields = body["data"]["items"][0]["fields"].as_array().unwrap();
@@ -116,7 +116,7 @@ async fn the_catalog_is_answered_without_the_store() {
 	let hosting =
 		json!({ "name": "hosting", "type": "choice", "choices": ["datacenter", "selfhost"] });
 	let roles = json!({ "name": "roles", "type": "list", "choices": ["compute", "storage", "core"] });
-	let account = json!({ "name": "account", "type": "string" });
+	let account = json!({ "name": "account", "type": "reference", "kind": "account" });
 	for (named, expected) in [("hosting", hosting), ("roles", roles), ("account", account)] {
 		let mut expected = expected;
 		expected.as_object_mut().unwrap().extend(optional.as_object().unwrap().clone());
@@ -359,4 +359,5 @@ async fn a_node_patch_sets_what_it_names_and_keeps_retired() {
 	assert_eq!((&body["data"]["revision"], &body["data"]["spec"]), (&json!(moved), &kept));
 }
 
+mod accounts;
 mod ids;
