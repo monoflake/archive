@@ -28,6 +28,23 @@ pub(crate) enum Message {
 	Flush { deadline: Instant, answer: oneshot::Sender<usize> },
 }
 
+#[cfg(not(any(feature = "aws-lc-rs", feature = "ring")))]
+compile_error!(
+	"libs/ledger sends over TLS: enable its feature `aws-lc-rs`, the default, or `ring`"
+);
+
+/// The TLS provider this build's feature names: aws-lc-rs whenever it is on, ring only alone, so a
+/// build with both still has one, chosen the same way every time.
+#[cfg(feature = "aws-lc-rs")]
+fn provider() -> rustls::crypto::CryptoProvider {
+	rustls::crypto::aws_lc_rs::default_provider()
+}
+
+#[cfg(all(feature = "ring", not(feature = "aws-lc-rs")))]
+fn provider() -> rustls::crypto::CryptoProvider {
+	rustls::crypto::ring::default_provider()
+}
+
 /// How long one `POST` may take before the ledger counts as not answering.
 const PATIENCE: Duration = Duration::from_secs(10);
 
@@ -173,8 +190,8 @@ pub(crate) async fn deliver(
 	// Roots compiled in rather than read from the system: an image built from scratch has none. The
 	// provider is named rather than left to the build's features, which may enable two.
 	let https = hyper_rustls::HttpsConnectorBuilder::new()
-		.with_provider_and_webpki_roots(rustls::crypto::ring::default_provider())
-		.expect("ring supports TLS 1.2 and 1.3")
+		.with_provider_and_webpki_roots(provider())
+		.expect("either provider supports TLS 1.2 and 1.3")
 		.https_or_http()
 		.enable_http1()
 		.build();

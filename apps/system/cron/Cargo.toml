@@ -20,7 +20,8 @@ hyper = { version = "1.11.1", features = ["client", "http1"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "webpki-tokio"] }
 hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
 jiff = { version = "0.2", features = ["serde"] }
-ledger = { path = "../../../libs/ledger" }
+# Its own clients are built on ring, so the ledger's are too: one provider in the build.
+ledger = { path = "../../../libs/ledger", default-features = false, features = ["ring"] }
 mimalloc = "0.1.52"
 response = { version = "2.0.0", features = ["axum"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }

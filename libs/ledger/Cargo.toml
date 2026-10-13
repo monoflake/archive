@@ -13,16 +13,24 @@ workspace = true
 bytes = "1.12.1"
 http-body-util = "0.1.5"
 hyper = { version = "1.11.1", features = ["client", "http1"] }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "tokio"] }
 jiff = { version = "0.2", features = ["serde"] }
-# The crypto provider named, never chosen by what the rest of a build enables: with `aws-lc-rs` and
-# `ring` both on, rustls cannot choose and the sending task panics, every record with it.
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
+# The crypto provider is a feature below, and named in code, never chosen by what the rest of a
+# build enables: with both on, rustls cannot choose, and the sending task panics with every record.
+rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "time"] }
 monoflake = { path = "../sdk" }
+
+# Which TLS provider the client sends with: `aws-lc-rs`, run on x86_64 and arm64 alike, unless a
+# service picks `ring`, as one whose own clients are built on ring does, so a build holds one. With
+# both on, aws-lc-rs is named; with neither, the crate does not compile. See src/deliver.rs.
+[features]
+default = ["aws-lc-rs"]
+aws-lc-rs = ["rustls/aws_lc_rs", "hyper-rustls/aws-lc-rs"]
+ring = ["rustls/ring", "hyper-rustls/ring"]
 
 [dev-dependencies]
 # A ledger to send to in tests, on 127.0.0.1, as the services' own tests stand one up.

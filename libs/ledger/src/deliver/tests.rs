@@ -158,3 +158,12 @@ async fn dropping_the_oldest_is_said_once_per_streak() {
 	until(|| saying(&lines, "dropping the oldest") == 1).await;
 	assert_eq!(saying(&lines, "dropping the oldest"), 1, "{lines:?}");
 }
+
+/// aws-lc-rs whenever its feature is on, ring when it is on alone: one provider, named, whatever
+/// else the build enables. Run with `--no-default-features --features ring`, and with both, too.
+#[test]
+fn the_provider_is_the_one_the_features_name() {
+	let named = if cfg!(feature = "aws-lc-rs") { "AwsLcRs" } else { "Ring" };
+	assert_eq!(format!("{:?}", super::provider().secure_random), named);
+	assert!(!super::provider().cipher_suites.is_empty());
+}

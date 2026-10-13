@@ -14,7 +14,8 @@ anyhow = "1.0.104"
 axum = "0.8.9"
 base64 = "0.23.1"
 jiff = { version = "0.2", features = ["serde"] }
-ledger = { path = "../../../libs/ledger" }
+# Its own clients are built on ring, so the ledger's are too: one provider in the build.
+ledger = { path = "../../../libs/ledger", default-features = false, features = ["ring"] }
 bytes = "1.12.1"
 chromiumoxide = { version = "0.9.1", default-features = false }
 futures-util = "0.3.34"
