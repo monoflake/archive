@@ -30,9 +30,10 @@ Decided on 2026-10-07, in place of a database whose durable state was objects in
   included, and is started elsewhere when its node goes.
 - **Storage is its scope's bucket**, reached through an S3-compatible API that does four things:
   put, get, delete and list. There are no versions; a key names its newest content.
-- **A database is SQLite or Postgres.** An instance may keep a small SQLite inside itself for its own
-  working state, which it can rebuild and which does not move with it; data that must outlive an
-  instance, or is shared across apps, is in Postgres, a primary and its replicas.
+- **A database is SQLite by default, and Postgres when an app declares it** -- RFC kloyq. The SQLite
+  is embedded in the app with one instance writing it, and its WAL is shipped to the scope's bucket,
+  so it outlives its node and is restored wherever its writer moves. Postgres is for several writers
+  or several apps on one dataset, never in the platform's own cluster.
 
 ## A bucket is logical, a store is physical, and either may be many of the other
 
@@ -102,8 +103,8 @@ figure the platform states rather than one anybody types.
 
 ## A scope is an organization, and only the boundary isolates
 
-**A scope is an organization's data: one bucket, and a Postgres holding the database of each app the
-organization runs.** Compute keeps nothing, so everything with state is some organization's; an app
+**A scope is an organization's data: one bucket, and the database of each app the organization
+runs** -- SQLite unless the app declares Postgres. Compute keeps nothing, so everything with state is some organization's; an app
 runs wherever it is placed and reaches its scope's bucket and its own database there. Inside a scope
 the apps share the bucket; across scopes nothing is shared. The organizations are the workspace's
 `spec/architecture/ship-cloud.md`, "Tenancy", and there are two today:

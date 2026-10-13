@@ -276,6 +276,9 @@ app's data outside its subvolume, where a snapshot of the app no longer covers i
 copies of one database in a cluster cannot be restored alone -- and would be one more resident
 every service waits on and falls with.
 
+**One instance writes it, and its WAL is to be shipped off the node** to its scope's bucket, so it
+outlives the disk it is on -- RFC kloyq; not built yet.
+
 A service that one day needs what SQLite cannot give -- several processes or machines writing one
 dataset, heavy concurrent writes, a feature only PostgreSQL has -- gets a PostgreSQL of its own, in
 its own subvolume and stopped with it, never one shared by all. Nothing here needs it yet.
