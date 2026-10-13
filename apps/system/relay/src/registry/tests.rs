@@ -1,11 +1,11 @@
 use super::*;
 
 fn node(address: &str, core: bool) -> Node {
-	Node { address: address.into(), core, retired: false }
+	Node { address: address.into(), roles: None, core, retired: false }
 }
 
 fn retired(address: &str) -> Node {
-	Node { address: address.into(), core: false, retired: true }
+	Node { address: address.into(), roles: None, core: false, retired: true }
 }
 
 fn peer(name: &str, address: &str) -> Peer {
@@ -26,7 +26,8 @@ fn taken(nodes: &[(&str, Node)], revision: i64) -> Taken {
 	Taken { nodes, revision }
 }
 
-const RDU: (&str, Node) = ("rdu", Node { address: String::new(), core: true, retired: false });
+const RDU: (&str, Node) =
+	("rdu", Node { address: String::new(), roles: None, core: true, retired: false });
 
 /// An answer as the registry gives it, with keys a relay does not read and `core` left out.
 #[test]
@@ -146,6 +147,42 @@ fn the_core_is_asked_first_then_every_other_peer() {
 	);
 	// Before any answer is taken, every peer, from `RELAY_PEERS`.
 	assert_eq!(asked(None), pairs(&[("buf", "100.64.0.2"), ("tyo", "100.64.0.1")]));
+}
+
+/// `roles` decides where it is given, during the expand that writes it beside `core`.
+#[test]
+fn a_core_is_named_by_its_roles_and_by_core_without_them() {
+	let with = |roles: &[&str], core: bool| Node {
+		roles: Some(roles.iter().map(|role| (*role).to_owned()).collect()),
+		..node("100.64.0.1", core)
+	};
+	assert!(with(&["compute", "core"], false).is_core());
+	assert!(!with(&["compute", "storage"], true).is_core());
+	assert!(node("100.64.0.1", true).is_core());
+	assert!(!node("100.64.0.1", false).is_core());
+
+	let held = held(&[peer("buf", "100.64.0.2:12012")]);
+	let listed = [("tyo", with(&["compute", "core"], false)), ("sin", with(&["compute"], true))];
+	let asked = candidates(Some(&taken(&listed, 7)), &held);
+	let names: Vec<&str> = asked.iter().map(|(name, _)| name.as_str()).collect();
+	assert_eq!(names, ["tyo", "buf"]);
+}
+
+/// A version-2 file written before `roles` still loads, and one written with them keeps them.
+#[test]
+fn a_cache_with_or_without_roles_is_read() {
+	let data = tempfile::tempdir().unwrap();
+	let before = r#"{ "version": 2, "revision": 4, "nodes": {
+		"tyo": { "address": "100.64.0.1", "core": true } } }"#;
+	std::fs::write(data.path().join(FILE), before).unwrap();
+	let read = cached(data.path()).unwrap().unwrap();
+	assert_eq!(read, taken(&[("tyo", node("100.64.0.1", true))], 4));
+	assert!(read.nodes["tyo"].is_core());
+
+	let roles = Node { roles: Some(vec!["compute".into()]), ..node("100.64.0.1", true) };
+	let kept = taken(&[("tyo", roles)], 5);
+	cache(data.path(), &kept).unwrap();
+	assert_eq!(cached(data.path()).unwrap(), Some(kept));
 }
 
 #[test]

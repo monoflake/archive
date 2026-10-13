@@ -45,10 +45,26 @@ const VERSION: u32 = 2;
 pub struct Node {
 	/// Its tailnet IPv4.
 	pub address: String,
+	/// `compute`, `storage` and `core`, as words; absent from a node written before them, whose
+	/// `core` says instead. See spec/architecture/registry.md, "Nodes and apps, as resources of a
+	/// kind".
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub roles: Option<Vec<String>>,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub core: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub retired: bool,
+}
+
+impl Node {
+	/// Whether it is a core node: by `roles` where it has them, `core` ignored, and by `core` where
+	/// it has none.
+	pub fn is_core(&self) -> bool {
+		match &self.roles {
+			Some(roles) => roles.iter().any(|role| role == "core"),
+			None => self.core,
+		}
+	}
 }
 
 /// One node of `GET /v1/nodes`; its `kind` and `revision` are passed over.
@@ -146,7 +162,7 @@ fn candidates(taken: Option<&Taken>, held: &BTreeMap<String, Peer>) -> Vec<(Stri
 	let core = taken
 		.into_iter()
 		.flat_map(|taken| &taken.nodes)
-		.filter(|(_, listed)| listed.core && !listed.retired)
+		.filter(|(_, listed)| listed.is_core() && !listed.retired)
 		.map(|(name, listed)| (name.clone(), listed.address.clone()));
 	let mut asked: Vec<(String, String)> = core.collect();
 	for peer in held.values() {
