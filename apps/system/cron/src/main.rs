@@ -24,8 +24,8 @@ async fn main() -> anyhow::Result<()> {
 	let listen = std::env::var("LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{PORT}"));
 
 	let store = Store::open(&directory.join(store::FILE))?;
-	let cron =
-		Cron::new(store, ledger::Ledger::start(), Arc::new(Network::new()), reach::origin().to_owned());
+	let ledger = ledger::Ledger::start();
+	let cron = Cron::new(store, ledger.clone(), Arc::new(Network::new()), reach::origin().to_owned());
 
 	// No table yet is an empty one: host writes it on its next deploy.
 	let seen = table::modified(&directory);
@@ -42,6 +42,12 @@ async fn main() -> anyhow::Result<()> {
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("cron: listening on {listen}, keeping {}", directory.display());
 	axum::serve(listener, cron::api::routes(cron)).with_graceful_shutdown(stopped()).await?;
+	// What the ledger still holds goes with the process unless it is sent now, within host's twenty
+	// seconds. See spec/architecture/ledger.md, "Pushed to, never asking".
+	let unsent = ledger.flush(std::time::Duration::from_secs(5)).await;
+	if unsent > 0 {
+		eprintln!("cron: {unsent} ledger items not sent before stopping");
+	}
 	Ok(())
 }
 

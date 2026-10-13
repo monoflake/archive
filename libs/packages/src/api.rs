@@ -48,9 +48,18 @@ pub async fn serve<D: Driver>(
 	// spec/architecture/apt.md, "The door".
 	std::fs::set_permissions(&socket, std::os::unix::fs::PermissionsExt::from_mode(0o666))?;
 	eprintln!("{}: answering on {}", D::SERVICE, socket.display());
+	let ledger = state.ledger.clone();
 	axum::serve(listener, routes(state)).with_graceful_shutdown(stopped()).await?;
 
 	let _ = std::fs::remove_file(&socket);
+	// What the ledger still holds goes with the process unless it is sent now, within host's twenty
+	// seconds. See spec/architecture/ledger.md, "Pushed to, never asking".
+	if let Some(ledger) = ledger {
+		let unsent = ledger.flush(std::time::Duration::from_secs(5)).await;
+		if unsent > 0 {
+			eprintln!("{}: {unsent} ledger items not sent before stopping", D::SERVICE);
+		}
+	}
 	Ok(())
 }
 

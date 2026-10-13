@@ -41,11 +41,18 @@ async fn main() -> anyhow::Result<()> {
 		Ok(bytes) => bytes.parse()?,
 		Err(_) => shot::store::CAPACITY,
 	};
-	let shot = Shot::new(Store::open(&data, capacity)?, browser, Some(ledger::Ledger::start()));
+	let ledger = ledger::Ledger::start();
+	let shot = Shot::new(Store::open(&data, capacity)?, browser, Some(ledger.clone()));
 	shot.start();
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("shot: listening on {listen}, keeping captures in {}", data.display());
 	axum::serve(listener, shot::api::routes(shot)).with_graceful_shutdown(stopped()).await?;
+	// What the ledger still holds goes with the process unless it is sent now, within host's twenty
+	// seconds. See spec/architecture/ledger.md, "Pushed to, never asking".
+	let unsent = ledger.flush(std::time::Duration::from_secs(5)).await;
+	if unsent > 0 {
+		eprintln!("shot: {unsent} ledger items not sent before stopping");
+	}
 	Ok(())
 }
 

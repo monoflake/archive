@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
 	let mut writing = Archive::open(&path)?;
 	let reading = Arc::new(Mutex::new(Archive::open(&path)?));
 	let ledger = ledger::Ledger::start();
+	let flushed = ledger.clone();
 
 	let (to_status, from_rounds) = mpsc::unbounded_channel::<Round>();
 	match database {
@@ -93,6 +94,12 @@ async fn main() -> anyhow::Result<()> {
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("probe: listening on {listen}, keeping {}", path.display());
 	axum::serve(listener, api::routes(state)).with_graceful_shutdown(stopped()).await?;
+	// What the ledger still holds goes with the process unless it is sent now, within host's twenty
+	// seconds. See spec/architecture/ledger.md, "Pushed to, never asking".
+	let unsent = flushed.flush(std::time::Duration::from_secs(5)).await;
+	if unsent > 0 {
+		eprintln!("probe: {unsent} ledger items not sent before stopping");
+	}
 	Ok(())
 }
 
