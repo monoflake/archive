@@ -494,9 +494,12 @@ class Token(unittest.TestCase):
 
 	SECRET = "s3cret-never-printed"
 	GITHUB = "github-never-printed"
+	KEY = {"ARTIFACTS_READ_KEY_ID": "key-id-never-printed", "ARTIFACTS_READ_SECRET": "key-never-printed"}
 	SOURCES = ["monoflake/infra", "monoflake/platform", "canmi21/cue"]
 
-	def run_token(self, dry, current="monoflake/platform canmi21/web", github=GITHUB, worker=True):
+	def run_token(
+		self, dry, current="monoflake/platform canmi21/web", github=GITHUB, worker=True, key=KEY
+	):
 		self.written = []
 		self.asked = []
 		self.wrangled = []
@@ -531,6 +534,7 @@ class Token(unittest.TestCase):
 			stack.enter_context(mock.patch.object(registry, "CONSOLE_DIRECTORY", HERE))
 			if github is not None:
 				stack.enter_context(mock.patch.dict(os.environ, {registry.GITHUB: github}))
+			stack.enter_context(mock.patch.dict(os.environ, key))
 			stack.enter_context(contextlib.redirect_stdout(printed))
 			registry.token(dry)
 		return printed.getvalue()
@@ -548,6 +552,8 @@ class Token(unittest.TestCase):
 		self.assertIn(console, printed.splitlines())
 		self.assertNotIn(self.SECRET, printed)
 		self.assertNotIn(self.GITHUB, printed)
+		for held in self.KEY.values():
+			self.assertNotIn(held, printed)
 		for line in [
 			"registry: tyo: would set, keeping every other line, mode 600, in"
 			" /data/apps/registry/secret.env: REGISTRY_TOKEN=<redacted>",
@@ -560,6 +566,14 @@ class Token(unittest.TestCase):
 			" REGISTRY=100.64.0.1 100.64.0.2",
 			"registry: tyo: would set in /data/apps/deployer/config.env: DEPLOY_SOURCES=<what it"
 			" names>, then each of monoflake/infra monoflake/platform canmi21/cue it does not",
+			"registry: tyo: would set in /data/apps/deployer/secret.env:"
+			" ARTIFACTS_READ_KEY_ID=<redacted>",
+			"registry: tyo: would set in /data/apps/deployer/secret.env:"
+			" ARTIFACTS_READ_SECRET=<redacted>",
+			*(
+				f"registry: tyo: would set in /data/apps/deployer/config.env: {name}={told}"
+				for name, told in registry.ARTIFACTS.items()
+			),
 		]:
 			self.assertIn(line, printed.splitlines())
 
@@ -573,7 +587,12 @@ class Token(unittest.TestCase):
 			[
 				("tyo", "registry", "secret.env", token),
 				("sin", "registry", "secret.env", token),
-				("tyo", "deployer", "secret.env", {**token, "GITHUB_ACTIONS_TOKEN": self.GITHUB}),
+				(
+					"tyo",
+					"deployer",
+					"secret.env",
+					{**token, "GITHUB_ACTIONS_TOKEN": self.GITHUB, **self.KEY},
+				),
 				(
 					"tyo",
 					"deployer",
@@ -581,6 +600,7 @@ class Token(unittest.TestCase):
 					{
 						"REGISTRY": "100.64.0.1 100.64.0.2",
 						"DEPLOY_SOURCES": "monoflake/platform canmi21/web monoflake/infra canmi21/cue",
+						**registry.ARTIFACTS,
 					},
 				),
 			],
@@ -593,7 +613,40 @@ class Token(unittest.TestCase):
 	def test_the_deployer_is_given_the_platforms_github_token_and_no_owners_own(self):
 		self.run_token(False)
 		[(_, _, _, pairs)] = [write for write in self.written if write[1:3] == ("deployer", "secret.env")]
-		self.assertEqual(set(pairs), {"REGISTRY_TOKEN", "GITHUB_ACTIONS_TOKEN"})
+		self.assertEqual(
+			set(pairs),
+			{"REGISTRY_TOKEN", "GITHUB_ACTIONS_TOKEN", "ARTIFACTS_READ_KEY_ID", "ARTIFACTS_READ_SECRET"},
+		)
+
+	def test_the_bucket_is_named_in_config_env_and_its_key_kept_in_secret_env(self):
+		self.run_token(False)
+		config = [pairs for _, app, file, pairs in self.written if (app, file) == ("deployer", "config.env")]
+		self.assertEqual(
+			{name: config[0][name] for name in registry.ARTIFACTS},
+			{
+				"ARTIFACTS_ENDPOINT": registry.ARTIFACTS["ARTIFACTS_ENDPOINT"],
+				"ARTIFACTS_REGION": "us-west-004",
+				"ARTIFACTS_BUCKET": "build-artifact",
+			},
+		)
+		self.assertTrue(registry.ARTIFACTS["ARTIFACTS_ENDPOINT"].startswith("https://"))
+		self.assertTrue(set(registry.ARTIFACTS_KEY).isdisjoint(config[0]))
+
+	def test_a_writer_that_reads_no_artifacts_is_given_no_bucket(self):
+		with mock.patch.object(registry, "ARTIFACT_READERS", ()):
+			self.run_token(False)
+		for _, app, _, pairs in self.written:
+			self.assertTrue({*registry.ARTIFACTS, *registry.ARTIFACTS_KEY}.isdisjoint(pairs), app)
+
+	def test_no_read_key_in_secrets_json_writes_nothing_to_a_writer(self):
+		with mock.patch.dict(os.environ, {}, clear=False):
+			os.environ.pop("ARTIFACTS_READ_SECRET", None)
+			with self.assertRaises(SystemExit) as failed:
+				self.run_token(False, key={"ARTIFACTS_READ_KEY_ID": "key-id-never-printed"})
+		said = str(failed.exception.code)
+		self.assertIn("secrets.json has no ARTIFACTS_READ_SECRET", said)
+		self.assertNotIn("key-id-never-printed", said)
+		self.assertEqual([app for _, app, _, _ in self.written], ["registry", "registry"])
 
 	def test_no_github_token_in_secrets_json_writes_nothing_to_a_writer(self):
 		with mock.patch.dict(os.environ, {}, clear=False):

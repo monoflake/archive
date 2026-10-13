@@ -142,7 +142,8 @@ monoflake organization does not own is fetched with a token of that owner's** --
 `GITHUB_ACTIONS_TOKEN_CANMI21`, read access to Actions on `canmi21/web` and `canmi21/cue` -- picked by the
 source's owner, here and in host. **The bucket's key reads and lists it, nothing more**, and sits in the
 deployer's `secret.env`, as `ARTIFACTS_READ_KEY_ID` and `ARTIFACTS_READ_SECRET` in the platform's
-sops file.
+sops file; `mise run registry token` writes them, and the bucket's endpoint, region and name into its
+`config.env`.
 
 ## Admitting a repository
 

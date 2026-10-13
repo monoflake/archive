@@ -3,13 +3,13 @@
 """The operator's half of the platform's registry. See spec/architecture/registry.md and RFC ja5hm.
 
 `token` writes the registry's write token on every node it runs on, made and kept in secrets.json
-the first time, and gives each writer the token, the cores to write to, every source host deploys
-from and the GitHub token it reads their runs with, and the console Worker the token as a secret,
-once it has found that Worker; `import` reads infra's nodes.toml and puts each node into the
-registry, then puts where each app runs, from every repository host deploys from, held to the
-revision it read, which is safe to run again. Values move over SSH or to wrangler on stdin, never on
-a command line, and `--dry-run` touches no machine and prints no secret. It borrows the database
-task's helpers rather than copying them.
+the first time, and gives each writer the token, the cores, every source host deploys from, the
+GitHub token it reads their runs with and, where it reads artifacts, the bucket and its read key,
+and the console Worker the token as a secret, once it has found that Worker; `import` puts each
+node of infra's nodes.toml into the registry, then where each app runs, from every repository host
+deploys from, held to the revision it read, which is safe to run again. Values move over SSH or to
+wrangler on stdin, never on a command line, and `--dry-run` touches no machine and prints no secret.
+It borrows the database task's helpers rather than copying them.
 """
 
 import ast
@@ -61,6 +61,16 @@ GITHUB = "GITHUB_ACTIONS_TOKEN"
 # The variables a writer is told, in its config.env.
 CORES = "REGISTRY"
 SOURCES = "DEPLOY_SOURCES"
+
+# The writers that read each run's artifacts from the bucket CI uploads them to -- RFC q28g5 --
+# each told where it is in its config.env and given the read key, from secrets.json, in secret.env.
+ARTIFACT_READERS = ("deployer",)
+ARTIFACTS = {
+	"ARTIFACTS_ENDPOINT": "https://s3.us-west-004.backblazeb2.com",
+	"ARTIFACTS_REGION": "us-west-004",
+	"ARTIFACTS_BUCKET": "build-artifact",
+}
+ARTIFACTS_KEY = ("ARTIFACTS_READ_KEY_ID", "ARTIFACTS_READ_SECRET")
 
 
 def fail(message):
@@ -141,27 +151,32 @@ def configured(node, app, key):
 	return database.ssh(node, f"if [ -f {path} ]; then sed -n 's/^{key}=//p' {path}; fi")
 
 
-def wire(node, writer, value, github, cores, sources, dry):
+def wire(node, writer, value, github, cores, sources, dry, key=None):
 	"""Give `writer` on `node` the token and the GitHub token in its secret.env, and in its
-	config.env the cores and its own sources widened by `sources`, keeping every other line."""
+	config.env the cores and its own sources widened by `sources`, keeping every other line; and
+	where it is given the bucket's read `key`, that too, with where the bucket is."""
 	where = f"/data/apps/{writer}"
+	bucket = ARTIFACTS if key else {}
 	if dry:
-		print(f"{APP}: {node}: would set in {where}/secret.env: {TOKEN}=<redacted>")
-		print(f"{APP}: {node}: would set in {where}/secret.env: {GITHUB}=<redacted>")
+		for name in (TOKEN, GITHUB, *(key or {})):
+			print(f"{APP}: {node}: would set in {where}/secret.env: {name}=<redacted>")
 		print(f"{APP}: {node}: would set in {where}/config.env: {CORES}={cores}")
 		print(
 			f"{APP}: {node}: would set in {where}/config.env: {SOURCES}=<what it names>, then each of"
 			f" {' '.join(sources)} it does not"
 		)
+		for name, told in bucket.items():
+			print(f"{APP}: {node}: would set in {where}/config.env: {name}={told}")
 		return
 	current = configured(node, writer, SOURCES)
 	if current is None:
 		fail(f"reading {SOURCES} of {writer} failed on {node}")
-	if not database.upsert(node, writer, "secret.env", {TOKEN: value, GITHUB: github}):
-		fail(f"writing {TOKEN} and {GITHUB} for {writer} failed on {node}")
-	pairs = {CORES: cores, SOURCES: widened(current, sources)}
+	secrets = {TOKEN: value, GITHUB: github, **(key or {})}
+	if not database.upsert(node, writer, "secret.env", secrets):
+		fail(f"writing {', '.join(secrets)} for {writer} failed on {node}")
+	pairs = {CORES: cores, SOURCES: widened(current, sources), **bucket}
 	if not database.upsert(node, writer, "config.env", pairs):
-		fail(f"writing {CORES} and {SOURCES} for {writer} failed on {node}")
+		fail(f"writing {', '.join(pairs)} for {writer} failed on {node}")
 
 
 # The console Worker reads the registry with the same token, kept as a Worker secret: put from web's
@@ -233,9 +248,14 @@ def token(dry):
 	github = os.environ.get(GITHUB)
 	if not github:
 		fail(f"secrets.json has no {GITHUB}, which every writer reads its sources' runs with")
+	key = {name: os.environ.get(name) for name in ARTIFACTS_KEY}
+	for name, held in key.items():
+		if not held:
+			fail(f"secrets.json has no {name}, which {', '.join(ARTIFACT_READERS)} reads the bucket with")
 	for writer in WRITERS:
+		reads = key if writer in ARTIFACT_READERS else None
 		for node in database.manifest_of(writer)["placements"]:
-			wire(node, writer, value, github, addresses, sources, dry)
+			wire(node, writer, value, github, addresses, sources, dry, reads)
 	console_secret(value, dry)
 	for app in (APP, *WRITERS):
 		redeploy = f"mise run //repos/infra:node redeploy <node> {app}"
