@@ -9,7 +9,7 @@ use tower::ServiceExt;
 pub(super) const TOKEN: &str = "s3cret";
 
 pub(super) fn registry(store: Store, token: &str) -> Router {
-	routes(Arc::new(Registry { store, token: token.into(), ledger: None }))
+	routes(Arc::new(Registry { store, token: token.into(), ledger: None, secrets: None }))
 }
 
 /// A router over a database never reached, for what is refused before the store is asked.

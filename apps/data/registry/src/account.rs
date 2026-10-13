@@ -1,6 +1,7 @@
 //! What an account's spec has to be before it is stored: a paid account at a provider, read by
 //! its resource's name. An identity names where its value is kept and never holds it, since every
-//! reader of the tailnet reads the registry. See RFC 32hd9 and spec/architecture/registry.md.
+//! reader of the tailnet reads the registry; one written with its value has the secret service take
+//! the value in its place. See RFC 32hd9 and spec/architecture/registry.md.
 
 use crate::kinds::Refusal;
 use serde_json::{Map, Value};
@@ -11,8 +12,12 @@ const FIELDS: &[&str] = &["provider", "identities"];
 /// What an identity is of: the provider's user id, its tenancy, the email it signs in with.
 pub const IDENTITIES: &[&str] = &["user_id", "tenancy", "email"];
 
-/// Every key an identity holds, each required: never its value.
-const IDENTITY: &[&str] = &["kind", "secret"];
+/// Every key an identity holds: its kind, and where its value is kept or, on a write alone, the
+/// value itself, which is never stored.
+const IDENTITY: &[&str] = &["kind", "secret", "value"];
+
+/// The longest value the secret service keeps.
+const MAX_VALUE_BYTES: usize = 64 * 1024;
 
 /// The spec as stored: `provider`, a whole lowercase word, and `identities`, one to three, each
 /// `{kind, secret}` and each kind at most once, so an account always keeps an identifier.
@@ -53,7 +58,7 @@ fn identity_refusal(identity: &Value) -> Option<Refusal> {
 	};
 	// Its value is the secret service's: a key that could carry it is refused, not kept.
 	if let Some(key) = identity.keys().find(|key| !IDENTITY.contains(&key.as_str())) {
-		let message = format!("an identity holds `kind` and `secret` alone, never `{key}`");
+		let message = format!("an identity holds `kind` and `secret` or `value` alone, never `{key}`");
 		return Some(Refusal::Forbidden(message));
 	}
 	if !identity.get("kind").and_then(Value::as_str).is_some_and(|kind| IDENTITIES.contains(&kind)) {
@@ -62,11 +67,38 @@ fn identity_refusal(identity: &Value) -> Option<Refusal> {
 			IDENTITIES.join(", ")
 		)));
 	}
-	if !identity.get("secret").and_then(Value::as_str).is_some_and(secret_is_valid) {
-		let message = "an identity's `secret` names a secret, as `scope/app/NAME`";
-		return Some(Refusal::Invalid(message.into()));
+	match (identity.get("secret"), identity.get("value")) {
+		(Some(_), Some(_)) => {
+			let message = "an identity holds its `secret` or, written anew, its `value`, never both";
+			Some(Refusal::Invalid(message.into()))
+		}
+		(Some(secret), None) if !secret.as_str().is_some_and(secret_is_valid) => {
+			let message = "an identity's `secret` names a secret, as `scope/app/NAME`";
+			Some(Refusal::Invalid(message.into()))
+		}
+		// Said without the value: a refusal is answered, and the value is answered nowhere.
+		(None, Some(value)) if !value.as_str().is_some_and(value_is_valid) => {
+			let message = "an identity's `value` is one line of text, at most 64 KiB";
+			Some(Refusal::Invalid(message.into()))
+		}
+		(None, None) => {
+			let message = "an identity holds its `secret`, or its `value` to be kept there";
+			Some(Refusal::Invalid(message.into()))
+		}
+		_ => None,
 	}
-	None
+}
+
+/// What the secret service takes: one line, not empty, no longer than it keeps.
+fn value_is_valid(value: &str) -> bool {
+	!value.is_empty() && value.len() <= MAX_VALUE_BYTES && !value.contains(['\n', '\r', '\0'])
+}
+
+/// Whether a spec, as `spec` passed it, carries any value the secret service has to take.
+pub fn holds_values(spec: &Map<String, Value>) -> bool {
+	let identities = spec.get("identities").and_then(Value::as_array);
+	identities
+		.is_some_and(|identities| identities.iter().any(|identity| identity.get("value").is_some()))
 }
 
 /// `oracle`, `azure`, `racknerd`: a provider is named by a whole word, never a short code.
@@ -152,9 +184,12 @@ mod tests {
 		named["name"] = json!("oci-2");
 		let mut reported = oracle();
 		reported["status"] = json!({});
-		for given in [named, reported, valued("value"), valued("email")] {
+		for given in [named, reported, valued("email"), valued("password")] {
 			assert!(matches!(spec(given.clone()), Err(Refusal::Forbidden(_))), "{given}");
 		}
+		// Its `secret` and a `value` at once: never both, said without the value.
+		let Err(Refusal::Invalid(message)) = spec(valued("value")) else { panic!("both taken") };
+		assert!(message.contains("never both") && !message.contains("me@example.com"), "{message}");
 	}
 
 	#[test]

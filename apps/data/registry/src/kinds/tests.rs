@@ -65,6 +65,64 @@ fn wrong_types(type_: Type) -> Vec<Value> {
 	}
 }
 
+/// An identity as the catalog describes it: its kind a choice, which is how an item is told
+/// apart, its value written alone and never read back, and the name it is kept under the
+/// registry's to write.
+#[test]
+fn an_identity_s_fields_are_what_an_account_takes() {
+	let identities = ACCOUNT.fields.iter().find(|field| field.name == "identities").unwrap();
+	let names: Vec<&str> = identities.fields.iter().map(|field| field.name).collect();
+	assert_eq!(names, ["kind", "value", "secret"]);
+	let [kind, value, secret] = identities.fields else { panic!("three fields") };
+	assert_eq!((kind.type_, kind.choices, kind.required), (Type::Choice, account::IDENTITIES, true));
+	assert_eq!((value.type_, value.secret, value.editable), (Type::String, true, true));
+	assert_eq!((secret.type_, secret.secret, secret.editable), (Type::String, false, false));
+	let taken = |identity: Value| {
+		account::spec(json!({ "provider": "oracle", "identities": [identity] })).is_ok()
+	};
+	for choice in kind.choices {
+		assert!(taken(json!({ "kind": choice, "value": "x" })), "{choice}");
+		assert!(taken(json!({ "kind": choice, "secret": "accounts/registry/X" })), "{choice}");
+	}
+	for wrong in [json!(1), json!(null), json!(""), json!("two\nlines")] {
+		assert!(!taken(json!({ "kind": "email", "value": wrong.clone() })), "{wrong}");
+	}
+	let answered = serde_json::to_value(identities).unwrap();
+	assert_eq!(
+		answered["fields"],
+		json!([
+			{ "name": "kind", "type": "choice", "choices": ["user_id", "tenancy", "email"], "editable": true, "required": true },
+			{ "name": "value", "type": "string", "secret": true, "editable": true, "required": false },
+			{ "name": "secret", "type": "string", "editable": false, "required": false },
+		])
+	);
+}
+
+/// What a list of objects says of its items: an item is told apart by its first required choice.
+#[test]
+fn every_list_of_objects_names_an_identifying_choice_first() {
+	for kind in CATALOG {
+		for field in kind.fields.iter().filter(|field| !field.fields.is_empty()) {
+			assert_eq!(field.type_, Type::List, "{}", field.name);
+			let first = field.fields.iter().find(|item| item.required);
+			assert_eq!(first.map(|item| item.type_), Some(Type::Choice), "{}", field.name);
+			assert_eq!(field.fields[0].type_, Type::Choice, "{}: kept first", field.name);
+		}
+	}
+}
+
+/// Each kind answers its route's segment, so no reader derives it.
+#[test]
+fn each_kind_answers_its_plural() {
+	for kind in CATALOG {
+		assert_eq!(kind.plural, kind.kind.plural());
+		let answered = serde_json::to_value(kind).unwrap();
+		assert_eq!(answered["plural"], json!(kind.kind.plural()));
+	}
+	let plurals: Vec<&str> = CATALOG.iter().map(|kind| kind.plural).collect();
+	assert_eq!(plurals, ["nodes", "apps", "accounts", "domains"]);
+}
+
 /// A reference names the kind it points at, and no other field names one.
 #[test]
 fn a_field_names_a_kind_exactly_where_it_is_a_reference() {
@@ -185,6 +243,7 @@ fn a_kind_is_answered_in_the_shape_the_console_reads() {
 		answered,
 		json!({
 			"name": "app",
+			"plural": "apps",
 			"fields": [
 				{ "name": "placements", "type": "list", "editable": true, "required": true },
 				{ "name": "release", "type": "object", "editable": true, "required": false },

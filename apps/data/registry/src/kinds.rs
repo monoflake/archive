@@ -2,7 +2,7 @@
 //! here appears there without a change to it -- RFC cpc2b. The tests hold it to what each kind's
 //! own module accepts.
 
-use crate::node;
+use crate::{account, node};
 use serde::Serialize;
 
 /// Every kind of resource the registry holds, answered by its name.
@@ -67,6 +67,8 @@ pub enum Refusal {
 pub struct Description {
 	#[serde(rename = "name")]
 	pub kind: Kind,
+	/// Its collection's segment of a route, `/v1/<plural>`, so no reader derives one.
+	pub plural: &'static str,
 	pub fields: &'static [Field],
 	pub actions: &'static [Action],
 	/// The fields a list shows first, in order.
@@ -85,6 +87,17 @@ pub struct Field {
 	/// The kind a `reference` names a resource of, by its id; none for every other field.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub kind: Option<Kind>,
+	/// The fields of each item of a `list` of objects, as an account's `identities`, in this same
+	/// shape; an item's identifying field is its first required `choice`. Empty for every other
+	/// field.
+	#[serde(skip_serializing_if = "<[_]>::is_empty")]
+	pub fields: &'static [Field],
+	/// Written and never read back, as an identity's `value`, which the secret service keeps and the
+	/// registry answers by its name alone; beside its ordinary `type`.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub secret: bool,
+	/// False for what only the registry writes, as an identity's `secret`, which is read and never
+	/// sent.
 	pub editable: bool,
 	pub required: bool,
 }
@@ -109,24 +122,61 @@ pub enum Type {
 pub enum Action {}
 
 const fn field(name: &'static str, type_: Type, required: bool) -> Field {
-	Field { name, type_, choices: &[], kind: None, editable: true, required }
+	Field {
+		name,
+		type_,
+		choices: &[],
+		kind: None,
+		fields: &[],
+		secret: false,
+		editable: true,
+		required,
+	}
 }
 
 const fn reference(name: &'static str, kind: Kind, required: bool) -> Field {
-	Field { name, type_: Type::Reference, choices: &[], kind: Some(kind), editable: true, required }
+	Field {
+		name,
+		type_: Type::Reference,
+		choices: &[],
+		kind: Some(kind),
+		fields: &[],
+		secret: false,
+		editable: true,
+		required,
+	}
 }
 
 const fn choice(name: &'static str, choices: &'static [&'static str], required: bool) -> Field {
-	Field { name, type_: Type::Choice, choices, kind: None, editable: true, required }
+	Field {
+		name,
+		type_: Type::Choice,
+		choices,
+		kind: None,
+		fields: &[],
+		secret: false,
+		editable: true,
+		required,
+	}
 }
 
 /// A list of `choices`, each at most once.
 const fn choices(name: &'static str, choices: &'static [&'static str], required: bool) -> Field {
-	Field { name, type_: Type::List, choices, kind: None, editable: true, required }
+	Field {
+		name,
+		type_: Type::List,
+		choices,
+		kind: None,
+		fields: &[],
+		secret: false,
+		editable: true,
+		required,
+	}
 }
 
 pub const NODE: Description = Description {
 	kind: Kind::Node,
+	plural: Kind::Node.plural(),
 	fields: &[
 		field("address", Type::String, true),
 		choice("tier", node::TIERS, true),
@@ -146,20 +196,34 @@ pub const NODE: Description = Description {
 
 pub const APP: Description = Description {
 	kind: Kind::App,
+	plural: Kind::App.plural(),
 	fields: &[field("placements", Type::List, true), field("release", Type::Object, false)],
 	actions: &[],
 	columns: &["placements"],
 };
 
+/// An account's identity: its kind; its value, written alone and handed to the secret service; and
+/// the name it is kept under there, which the registry writes in the value's place.
+const IDENTITY: &[Field] = &[
+	choice("kind", account::IDENTITIES, true),
+	Field { secret: true, ..field("value", Type::String, false) },
+	Field { editable: false, ..field("secret", Type::String, false) },
+];
+
 pub const ACCOUNT: Description = Description {
 	kind: Kind::Account,
-	fields: &[field("provider", Type::String, true), field("identities", Type::List, true)],
+	plural: Kind::Account.plural(),
+	fields: &[
+		field("provider", Type::String, true),
+		Field { fields: IDENTITY, ..field("identities", Type::List, true) },
+	],
 	actions: &[],
 	columns: &["provider"],
 };
 
 pub const DOMAIN: Description = Description {
 	kind: Kind::Domain,
+	plural: Kind::Domain.plural(),
 	fields: &[field("note", Type::String, false)],
 	actions: &[],
 	columns: &["note"],

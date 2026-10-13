@@ -58,8 +58,12 @@ async fn an_account_is_refused_what_it_cannot_hold_before_the_store_is_asked() {
 		"provider": "oracle",
 		"identities": [{ "kind": "email", "secret": "platform/registry/E", "value": "me@example.com" }],
 	});
+	let mut carried = leaked.clone();
+	carried["identities"][0].as_object_mut().unwrap().remove("value");
+	carried["identities"][0]["email"] = json!("me@example.com");
 	for (spec, expected) in [
-		(leaked, "forbidden_field"),
+		(leaked, "invalid_body"),
+		(carried, "forbidden_field"),
 		(json!({ "provider": "oracle", "name": "oci-2" }), "forbidden_field"),
 		(json!({ "provider": "oci-2" }), "invalid_body"),
 		(

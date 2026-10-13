@@ -7,6 +7,7 @@ use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::Value;
+use std::convert::Infallible;
 use tokio_postgres::{IsolationLevel, NoTls};
 
 /// How many connections one registry holds at most: every node's relay and host read, an operator
@@ -142,47 +143,70 @@ impl Store {
 		revision: i64,
 		spec: Value,
 	) -> anyhow::Result<Set> {
+		let made = self.set_with(kind, name, by, revision, |_| async { Ok::<_, Infallible>(spec) });
+		Ok(made.await?.unwrap_or_else(|never| match never {}))
+	}
+
+	/// `set`, with the spec made by `make` once the revision holds and the resource's id is known --
+	/// the one it holds, or the one drawn for it -- under the lock every write holds. A `make` that
+	/// fails is answered as it failed, and nothing is written: how an account's identity values
+	/// reach the secret service under a name its id is in, before anything here changes.
+	pub async fn set_with<F, Made, E>(
+		&self,
+		kind: Kind,
+		name: &str,
+		by: &str,
+		revision: i64,
+		make: F,
+	) -> anyhow::Result<Result<Set, E>>
+	where
+		F: FnOnce(String) -> Made,
+		Made: Future<Output = Result<Value, E>>,
+	{
 		let (table, column) = table(kind);
 		let mut client = self.pool.get().await?;
 		let transaction = client.transaction().await?;
 		transaction.execute("SELECT pg_advisory_xact_lock($1)", &[&WRITES]).await?;
 		let kept = transaction
 			.query_opt(
-				&format!("SELECT {column}, {column} = $3, {REVISION} FROM {table} r WHERE name = $2"),
-				&[&kind.name(), &name, &spec],
+				&format!("SELECT {column}, id, {REVISION} FROM {table} r WHERE name = $2"),
+				&[&kind.name(), &name],
 			)
 			.await?;
 		let kept_at = kept.as_ref().map_or(0, |row| row.get::<_, i64>(2));
 		if revision != kept_at {
-			return Ok(Set::Stale);
+			return Ok(Ok(Set::Stale));
 		}
-		let before: Option<Value> = match kept {
-			Some(row) if row.get::<_, bool>(1) => return Ok(Set::Unchanged),
-			Some(row) => Some(row.get(0)),
-			None => None,
-		};
 		// An id is made by the write that first holds the resource, and an update never names it,
 		// so it never changes.
-		let id: String = if before.is_some() {
+		let (before, id): (Option<Value>, String) = match kept {
+			Some(row) => (Some(row.get(0)), row.get(1)),
+			None => (None, unused(&transaction, table, "id").await?),
+		};
+		let spec = match make(id.clone()).await {
+			Ok(spec) => spec,
+			Err(refusal) => return Ok(Err(refusal)),
+		};
+		if let Some(before) = &before {
+			let same: bool =
+				transaction.query_one("SELECT $1::jsonb = $2::jsonb", &[before, &spec]).await?.get(0);
+			if same {
+				return Ok(Ok(Set::Unchanged));
+			}
 			transaction
-				.query_one(
-					&format!(
-						"UPDATE {table} SET {column} = $2, updated_at = now() WHERE name = $1 RETURNING id"
-					),
+				.execute(
+					&format!("UPDATE {table} SET {column} = $2, updated_at = now() WHERE name = $1"),
 					&[&name, &spec],
 				)
-				.await?
-				.get(0)
+				.await?;
 		} else {
-			let id = unused(&transaction, table, "id").await?;
 			transaction
 				.execute(
 					&format!("INSERT INTO {table} (id, name, {column}) VALUES ($1, $2, $3)"),
 					&[&id, &name, &spec],
 				)
 				.await?;
-			id
-		};
+		}
 		let task = unused(&transaction, "changes", "task").await?;
 		let row = transaction
 			.query_one(
@@ -192,7 +216,7 @@ impl Store {
 			)
 			.await?;
 		transaction.commit().await?;
-		Ok(Set::Changed(Written { revision: row.get(0), id, task, at: row.get(1) }))
+		Ok(Ok(Set::Changed(Written { revision: row.get(0), id, task, at: row.get(1) })))
 	}
 
 	/// Every resource of `kind` in name order, and the newest change to anything, read from one

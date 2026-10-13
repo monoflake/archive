@@ -16,6 +16,8 @@ pub struct Registry {
 	pub token: String,
 	/// Where a write that changed something is told as a task; none, and it is told nowhere.
 	pub ledger: Option<ledger::Ledger>,
+	/// Where an account identity's value is handed; none, and a write carrying one is refused.
+	pub secrets: Option<crate::secrets::Secrets>,
 }
 
 pub type Shared = Arc<Registry>;

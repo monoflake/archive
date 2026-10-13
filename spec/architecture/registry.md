@@ -24,19 +24,21 @@ so the node task can come to read it rather than the file.
 nodes it runs on, which a person sets, and `release`, the run of a repository that built what runs
 and the commit it built (`{"repository": "owner/repo", "run": n, "commit": "<40 hex>"}`), which the
 deployer on `tyo` writes after each run it takes -- RFC jln34. Absent, no release is recorded yet.
-`PUT /v1/apps/<name>` sets the whole spec; `PATCH` sets only the keys it is given, takes out a key given `null`
--- RFC 7386's merge patch -- and keeps the others, held to the revision read as `PUT` is, so a release written and an app moved never erase
-each other. A node takes the same `PATCH`, so an operator's `retired` and an import never erase each
-other either. `mise run registry import` writes placements by `PATCH` and creates an app it does not
-find by `PUT`, so running it again keeps every release.
+`PUT /v1/apps/<name>` sets the whole spec; `PATCH` sets only the keys it is given, takes out a key
+given `null` -- RFC 7386's merge patch -- and keeps the others, held to the revision read as `PUT`
+is, so a release written and an app moved never erase each other. A node takes the same `PATCH`, so
+an operator's `retired` and an import never erase each other either. `mise run registry import`
+writes placements by `PATCH` and creates an app it does not find by `PUT`, so running it again keeps
+every release.
 
 **Reading is open to the tailnet and writing takes a token**, `REGISTRY_TOKEN`, made once in the
 repository's secrets and written to the registry's nodes by `mise run registry token`; without one a
-registry answers reads and refuses writes. `mise run registry token` gives the token to the registry's writers too -- the deployer, wherever
-its `service.toml` places it -- with `REGISTRY`, the cores' tailnet IPv4s, in its `config.env`, and
-every source host deploys from added to its `DEPLOY_SOURCES`, so every app host runs gets a release. It
-writes the platform's own `GITHUB_ACTIONS_TOKEN` beside them, the machine user's, and never an
-organization's own token -- RFC 024i3. `mise run registry import` writes every node of `nodes.toml` with its address, the one way in
+registry answers reads and refuses writes. `mise run registry token` gives the token to the
+registry's writers too -- the deployer, wherever its `service.toml` places it -- with `REGISTRY`,
+the cores' tailnet IPv4s, in its `config.env`, and every source host deploys from added to its
+`DEPLOY_SOURCES`, so every app host runs gets a release. It writes the platform's own
+`GITHUB_ACTIONS_TOKEN` beside them, the machine user's, and never an organization's own token -- RFC
+024i3. `mise run registry import` writes every node of `nodes.toml` with its address, the one way in
 until the console writes it -- RFC dk6wz: by `PATCH /v1/nodes/<name>` at the revision it reads, and
 by `PUT` for a node the registry does not hold, so it keeps every key `nodes.toml` does not carry,
 `retired` among them.
@@ -45,8 +47,11 @@ by `PUT` for a node the registry does not hold, so it keeps every key `nodes.tom
 
 **`/v1` answers the control contract, RFC cpc2b**: a resource is `{kind, id, name, revision, spec}`
 inside the `response` envelope, and a list is `{"items": [...], "revision": n}`, `revision` being
-the newest change the registry holds. `GET /v1/kinds` is the catalog the console draws from: each
-kind's fields, which can be edited, and the columns a list shows first. A kind it does not hold is
+the newest change the registry holds. `GET /v1/kinds` is the catalog the console and the command
+line draw from: each kind's `plural`, the route it is reached at; its fields, each with its type,
+whether it is required and whether it can be edited, a `choice`'s choices, a `reference`'s kind, and
+a list of objects its items' own fields, the first required `choice` naming the item; a field marked
+`secret`, written and never answered; and the columns a list shows first. A kind it does not hold is
 `404 no_such_kind`.
 
 **Every resource has an `id`, and its name is a label** -- RFC 2kuvi. The id is 64 random bits as
@@ -81,8 +86,12 @@ references move to ids in a contract of their own.
   so an account always keeps at least one way to be known: `kind` one of `user_id`, `tenancy` and
   `email`, the three set for now and another discussed when they fall short; `secret` the full name
   the secret service keys its value by, `scope/app/NAME`. The value is kept there and never here,
-  since every reader of the tailnet reads the registry -- [secrets.md](secrets.md) -- and an
-  identity carrying any other key is refused.
+  since every reader of the tailnet reads the registry -- [secrets.md](secrets.md). **An identity is
+  written with its `value` instead of its `secret`**, and the registry hands the value to the secret
+  service as `accounts/registry/ACCOUNT_<ID>_<KIND>`, the id and the kind in capitals, with a token
+  that reaches that scope and app alone, then keeps that name in its place: the value is never
+  stored, logged or answered here, and a write the secret service did not take changes nothing.
+  `accounts` is a scope no node is given. An identity carrying any other key is refused.
 - **`domain`** -- `/v1/domains` and `/v1/domains/{id}`: what fails together, its `spec` an optional
   `note`, grouped by the author through the nodes that name it. A node's `account` and `domain` are
   of the catalog's `reference` type, naming the kind they point to.
@@ -93,17 +102,27 @@ carrying `status` or `drift`, or a key a kind's `spec` does not hold, is refused
 **A write that changes something is a task**, answering `202` with `{"revision": n, "task":
 "<id>"}`, and one that changes nothing answers `200` with `{}` and makes none -- RFC cpc2b. The task
 is the ledger's, service `registry`, kind `write`, its id 16 hexadecimal digits as a resource's is,
-its summary the resource's kind, id and name and the revision written; it is recorded `done` with one
-event, `written`, since the write is whole when it is answered, and the history row keeps its id.
-The ledger is told as every service tells it and never waited on -- [ledger.md](ledger.md), "Pushed
-to, never asking": the history is the record of what changed, and the task what the console draws.
-`by` is still the body's, until the identity that writes is taken from the request, with accounts. A resource's revision is the change that last wrote it, so every kind shares one sequence.
+its summary the resource's kind, id and name and the revision written; it is recorded `done` with
+one event, `written`, since the write is whole when it is answered, and the history row keeps its
+id. The ledger is told as every service tells it and never waited on -- [ledger.md](ledger.md),
+"Pushed to, never asking": the history is the record of what changed, and the task what the console
+draws. `by` is still the body's, until the identity that writes is taken from the request, with
+accounts. A resource's revision is the change that last wrote it, so every kind shares one sequence.
 
 **The routes before `/v1` are gone**: `GET /nodes`, `PUT` and `DELETE /nodes/{name}` and `GET
 /changes` were removed once every relay followed `/v1/nodes`, and each answers `404 no_such_route`.
 The `changes` table is kept whole as the history, the rows of a node the old `DELETE` removed
 included; no route reads it, and a resource that does not exist is at revision 0 whatever of it the
 history holds.
+
+## The command line is the console's other face
+
+**`mise run platform <kind> list|get|create|patch` manages every kind the registry holds**, read off
+`GET /v1/kinds` at each run, so a kind or a field added to the registry is managed without a change
+to the task -- RFC cpc2b. A field the catalog marks `secret` is asked for on the terminal with no
+echo, never taken from an argument, which the shell's history and the process list would keep.
+`--dry-run` shows the request with every such value hidden. It writes as `operator`, with
+`REGISTRY_TOKEN` from the repository's secrets, to the first core that answers.
 
 ## Every relay follows it
 

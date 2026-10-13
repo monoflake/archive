@@ -2499,8 +2499,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
  "deadpool-postgres",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "jiff",
  "ledger",
  "mimalloc",

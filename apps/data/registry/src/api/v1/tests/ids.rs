@@ -102,7 +102,7 @@ async fn a_list_finds_one_by_name() {
 }
 
 /// A ledger that takes `POST /events` and keeps every item it is sent, in order.
-async fn ledger() -> (String, Arc<Mutex<Vec<Value>>>) {
+pub(super) async fn ledger() -> (String, Arc<Mutex<Vec<Value>>>) {
 	let taken: Arc<Mutex<Vec<Value>>> = Arc::default();
 	let kept = taken.clone();
 	let events = axum::routing::post(move |axum::Json(batch): axum::Json<Vec<Value>>| {
@@ -119,7 +119,7 @@ async fn ledger() -> (String, Arc<Mutex<Vec<Value>>>) {
 }
 
 /// The items the ledger took once it has `count`, within five seconds.
-async fn taken(items: &Mutex<Vec<Value>>, count: usize) -> Vec<Value> {
+pub(super) async fn taken(items: &Mutex<Vec<Value>>, count: usize) -> Vec<Value> {
 	for _ in 0..50 {
 		if items.lock().unwrap().len() >= count {
 			break;
@@ -135,7 +135,7 @@ async fn a_write_that_changes_something_is_a_task_told_to_the_ledger() {
 	let Some(store) = store().await else { return };
 	let (base, items) = ledger().await;
 	let ledger = Some(ledger::Ledger::to(base));
-	let router = routes(Arc::new(Registry { store, token: TOKEN.into(), ledger }));
+	let router = routes(Arc::new(Registry { store, token: TOKEN.into(), ledger, secrets: None }));
 
 	let (status, body) = put(router.clone(), "/v1/apps/web", wanted(0, placed(&["tyo"]))).await;
 	assert_eq!(status, StatusCode::ACCEPTED);

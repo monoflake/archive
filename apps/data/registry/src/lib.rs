@@ -8,5 +8,6 @@ pub mod domain;
 pub mod kinds;
 pub mod migrations;
 pub mod node;
+pub mod secrets;
 pub mod store;
 pub mod task;
