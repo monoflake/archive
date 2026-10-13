@@ -18,6 +18,17 @@ same `{run, repository}` to `deployer.<suffix>/notice` through the bindings of t
 deployer's `service.toml` places it on, a list generated into the hook from that declaration as the
 gateway's table is from its services.
 
+**Each app's release is written to the registry by the deployer** -- RFC jln34. Every run it takes,
+by notice or by catching up, records each app it has an artifact of -- an image for host,
+`deploy-<app>-<arch>`, or a Worker, `worker-<app>` -- in its `deployer.db` before any deploy, and
+writes each as `release: {repository, run, commit}` by `PATCH /v1/apps/{name}`, held to the revision
+it read, as `deployer`, with `REGISTRY_TOKEN`. A release only moves forward: one the registry records
+from the same repository at the same or a newer run is left as it is, and a write refused `409` is
+read again and tried once more. An app the registry does not hold, a Worker among them, is logged and
+left. It asks the cores in `REGISTRY`, the one that answered last first, three seconds each. The
+registry unreachable stops no deploy: a release not written stays in `deployer.db` and is written by
+the next deploy or the next catch-up pass, oldest run first.
+
 **A run whose notice never came is taken anyway, as host takes one.** At start and every 15 minutes
 the deployer lists each source's successful `deploy.yml` runs on `main` from the 7 days CI keeps
 artifacts. A run it has no row of, newer than the oldest run of that repository it holds, was missed;

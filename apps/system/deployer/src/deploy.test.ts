@@ -56,7 +56,10 @@ async function setup(
 	const invoked: Invocation[] = [];
 	const homes: boolean[] = [];
 	const github = options.github ?? {
-		artifacts: async () => ({ commit: 'abc', artifacts: options.artifacts ?? [ARTIFACT] }),
+		artifacts: async () => {
+			const artifacts = options.artifacts ?? [ARTIFACT];
+			return { commit: 'abc', artifacts, built: artifacts.map((artifact) => artifact.app) };
+		},
 		download:
 			options.download ??
 			(async (_repository: string, _run: number, _artifact: Artifact, zip: string) => {

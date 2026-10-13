@@ -1,12 +1,13 @@
 /**
  * Runs a notice never brought: at start and every 15 minutes, the deployer lists each source's runs
  * to deploy from the last 7 days and takes the ones it has no record of, newer than the oldest it
- * holds, each Worker only from the newest run that built it. Ported from infra's
- * apps/deploy/host/src/rollout/catch_up.rs, so a lost notice changes nothing (RFC jln34). See
- * spec/architecture/deployer.md.
+ * holds, each Worker only from the newest run that built it, then writes every release not yet
+ * written. Ported from infra's apps/deploy/host/src/rollout/catch_up.rs, so a lost notice changes
+ * nothing (RFC jln34). See spec/architecture/deployer.md.
  */
 import type { Deployer } from './deploy.ts';
 import type { GitHub } from './github.ts';
+import type { Releases } from './releases.ts';
 import type { Store, Taken } from './store.ts';
 
 /** How often the deployer looks for runs it missed, beyond once at start; host's period. */
@@ -65,6 +66,8 @@ export interface Parts {
 	readonly store: Pick<Store, 'taken'>;
 	readonly github: Pick<GitHub, 'recent' | 'artifacts'>;
 	readonly deployer: Pick<Deployer, 'missed' | 'inFlight'>;
+	/** Whose unwritten releases each pass writes, a run's taken long ago among them. */
+	readonly releases?: Pick<Releases, 'flush'>;
 	readonly log?: (line: string) => void;
 }
 
@@ -106,14 +109,16 @@ export class CatchUp {
 				const key = `${repository}#${run}`;
 				if (this.empty.has(key) || deployer.inFlight(repository, run)) continue;
 				let artifacts: { app: string }[];
+				let apps: string[];
 				try {
 					// oxlint-disable-next-line no-await-in-loop -- one run at a time, as host does
-					({ artifacts } = await github.artifacts(repository, run));
+					({ artifacts, built: apps } = await github.artifacts(repository, run));
 				} catch (error) {
 					this.log(`catching up on ${repository} run ${run}: ${messageOf(error)}`);
 					continue;
 				}
-				if (artifacts.length === 0) this.empty.add(key);
+				// A run that built only images is taken too, for the releases it records.
+				if (apps.length === 0) this.empty.add(key);
 				else built.push([run, artifacts.map((artifact) => artifact.app)]);
 			}
 			for (const { run, passedOver } of plan(taken, built)) {
@@ -121,6 +126,7 @@ export class CatchUp {
 				deployer.missed({ run, repository, passedOver });
 			}
 		}
+		await this.parts.releases?.flush();
 	}
 }
 

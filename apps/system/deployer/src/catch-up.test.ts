@@ -7,6 +7,7 @@ import { configOf } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { PACKAGED, zipOf } from './fixtures.ts';
 import { type Artifact, Unread } from './github.ts';
+import { type Registry, Releases } from './releases.ts';
 import { Store } from './store.ts';
 
 const WEB = 'canmi21/web';
@@ -28,12 +29,15 @@ const CONSOLE: Artifact = { app: 'console', id: 1, digest: 'sha256:00' };
 
 /**
  * A deployer and its catch-up over a GitHub listing `recent` runs, each run building what `built`
- * says, the console unless told; either throws where the option is an error.
+ * says, the console unless told, and the `images` given; either throws where the option is an
+ * error. Releases go to `registry`, where one is given.
  */
 async function setup(
 	options: {
 		recent?: Record<string, number[] | Error>;
 		built?: Record<number, Artifact[] | Error>;
+		images?: Record<number, string[]>;
+		registry?: Pick<Registry, 'configured' | 'release'>;
 	} = {},
 ) {
 	const data = await mkdtemp(join(tmpdir(), 'deployer-'));
@@ -58,7 +62,8 @@ async function setup(
 			asked.push(`artifacts ${repository} ${run}`);
 			const built = options.built?.[run] ?? [CONSOLE];
 			if (built instanceof Error) throw built;
-			return { commit: 'abc', artifacts: built };
+			const images = options.images?.[run] ?? [];
+			return { commit: 'abc', artifacts: built, built: [...built.map((a) => a.app), ...images] };
 		},
 		download: async (_repository: string, _run: number, _artifact: Artifact, zip: string) => {
 			await writeFile(zip, consoleZip());
@@ -68,21 +73,31 @@ async function setup(
 	const gate: { held?: Promise<void> } = {};
 	const logs: string[] = [];
 	const log = (line: string) => logs.push(line);
+	const releases = options.registry && new Releases({ store, registry: options.registry, log });
 	const deployer = new Deployer({
 		config,
 		store,
 		github,
+		...(releases ? { releases } : {}),
 		wrangler: async () => {
 			await gate.held;
 			return { code: 0, output: `Current Version ID: ${ID}` };
 		},
 		log,
 	});
-	const catchUp = new CatchUp({ sources: config.sources, store, github, deployer, log });
+	const catchUp = new CatchUp({
+		sources: config.sources,
+		store,
+		github,
+		deployer,
+		log,
+		...(releases ? { releases } : {}),
+	});
 	/** A run of the console, deployed as a notice would have. */
 	const took = async (run: number) => {
 		deployer.notice({ run, repository: WEB });
 		await deployer.idle();
+		await releases?.flush();
 	};
 	/** Hold every wrangler from now until the returned function is called. */
 	const hold = () => {
@@ -95,10 +110,11 @@ async function setup(
 			release?.();
 		};
 	};
-	/** One pass, and every run it queued taken. */
+	/** One pass, and every run it queued taken, its releases flushed. */
 	const pass = async () => {
 		await catchUp.pass();
 		await deployer.idle();
+		await releases?.flush();
 	};
 	return { store, asked, logs, deployer, catchUp, took, hold, pass };
 }
@@ -239,5 +255,79 @@ describe('catching up', () => {
 		built[6] = [CONSOLE];
 		await pass();
 		expect(store.list()[0]).toMatchObject({ run: 6, stage: 'skipped' });
+	});
+});
+
+/** A registry that records each release it is asked to write, and fails while `down` is set. */
+function registry() {
+	const written: [string, number][] = [];
+	const state = { down: false };
+	const fake: Pick<Registry, 'configured' | 'release'> = {
+		configured: true,
+		release: async (app, release) => {
+			if (state.down) throw new Error('no registry answered: 100.64.0.1:12013: fetch failed');
+			written.push([app, release.run]);
+			return 'written';
+		},
+	};
+	return { fake, written, state };
+}
+
+describe('releases', () => {
+	it('records every app a run built, image or Worker, once its run is taken', async () => {
+		const { fake, written } = registry();
+		const { store, took } = await setup({ registry: fake, images: { 5: ['geo', 'relay'] } });
+		await took(5);
+		expect(written).toEqual([
+			['console', 5],
+			['geo', 5],
+			['relay', 5],
+		]);
+		expect(store.unwritten()).toEqual([]);
+	});
+
+	it('deploys while the registry is down, and writes the release on the next pass', async () => {
+		const { fake, written, state } = registry();
+		const { store, logs, took, pass } = await setup({
+			registry: fake,
+			recent: { [WEB]: [5] },
+			images: { 5: ['geo'] },
+		});
+		state.down = true;
+		await took(5);
+		expect(store.list()).toMatchObject([{ run: 5, worker: 'console', stage: 'deployed' }]);
+		expect(written).toEqual([]);
+		expect(logs).toContain(
+			`deployer: console's release from run 5 of ${WEB} is not written yet: no registry answered: 100.64.0.1:12013: fetch failed`,
+		);
+		// The registry not answering, the rest wait rather than each asking it again.
+		expect(logs.some((line) => line.includes("geo's release"))).toBe(false);
+		expect(store.unwritten().map((release) => release.app)).toEqual(['console', 'geo']);
+
+		state.down = false;
+		await pass();
+		expect(written).toEqual([
+			['console', 5],
+			['geo', 5],
+		]);
+		expect(store.unwritten()).toEqual([]);
+	});
+
+	it('takes a run that built images alone, for its releases, and holds it taken', async () => {
+		const { fake, written } = registry();
+		const { asked, took, pass } = await setup({
+			registry: fake,
+			recent: { [WEB]: [5, 7] },
+			built: { 7: [] },
+			images: { 7: ['geo'] },
+		});
+		await took(5);
+		await pass();
+		await pass();
+		expect(written).toEqual([
+			['console', 5],
+			['geo', 7],
+		]);
+		expect(asked.filter((line) => line === `artifacts ${WEB} 7`)).toHaveLength(2);
 	});
 });

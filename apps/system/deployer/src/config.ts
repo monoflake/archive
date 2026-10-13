@@ -7,6 +7,9 @@
 /** Its declared port; see spec/architecture/services.md, "A service keeps one port". */
 export const PORT = 12020;
 
+/** The registry's port on each core's tailnet address; spec/architecture/registry.md. */
+export const REGISTRY_PORT = 12013;
+
 export interface Config {
 	/** The repositories whose runs it deploys, from `DEPLOY_SOURCES`, as host reads its own. */
 	readonly sources: readonly string[];
@@ -30,6 +33,13 @@ export interface Config {
 	readonly readToken: string | undefined;
 	/** The account and its token, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_WORKERS_TOKEN`. */
 	readonly cloudflare: { readonly account: string | undefined; readonly token: string | undefined };
+	/**
+	 * The registries each app's release is written to, as `address:port`: `REGISTRY`, the cores'
+	 * tailnet IPv4s as host is given them, asked in turn. See releases.ts.
+	 */
+	readonly registries: readonly string[];
+	/** What a release is written with: `REGISTRY_TOKEN`; none writes no release. */
+	readonly registryToken: string | undefined;
 	readonly data: string;
 	readonly port: number;
 }
@@ -44,6 +54,14 @@ function value(env: Env, key: string): string | undefined {
 /** `owner/name` pairs separated by whitespace; anything else is not a repository. */
 export function sources(text: string): string[] {
 	return text.split(/\s+/).filter((source) => /^[\w.-]+\/[\w.-]+$/.test(source));
+}
+
+/** Addresses separated by whitespace, each given the registry's port where it names none. */
+export function registries(text: string): string[] {
+	return text
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((at) => (at.includes(':') ? at : `${at}:${REGISTRY_PORT}`));
 }
 
 /** `key=value` pairs separated by commas, each side trimmed; a pair missing either is dropped. */
@@ -78,6 +96,8 @@ export function configOf(env: Env): Config {
 			account: value(env, 'CLOUDFLARE_ACCOUNT_ID'),
 			token: value(env, 'CLOUDFLARE_WORKERS_TOKEN'),
 		},
+		registries: registries(value(env, 'REGISTRY') ?? ''),
+		registryToken: value(env, 'REGISTRY_TOKEN'),
 		data: value(env, 'DEPLOYER_DATA') ?? '/data',
 		port: Number(value(env, 'PORT') ?? PORT),
 	};

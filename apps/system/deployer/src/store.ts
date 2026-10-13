@@ -47,6 +47,14 @@ export interface Taken {
 	readonly worker: string;
 }
 
+/** An app's release a run built, not yet written to the registry. */
+export interface Unwritten {
+	readonly repository: string;
+	readonly run: number;
+	readonly app: string;
+	readonly commit: string | null;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS deploys (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,6 +71,15 @@ CREATE TABLE IF NOT EXISTS deploys (
 	output TEXT,
 	started_at TEXT NOT NULL,
 	finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS releases (
+	repository TEXT NOT NULL,
+	run INTEGER NOT NULL,
+	app TEXT NOT NULL,
+	commit_sha TEXT,
+	written_at TEXT,
+	outcome TEXT,
+	PRIMARY KEY (repository, run, app)
 );
 `;
 
@@ -161,17 +178,51 @@ export class Store {
 	}
 
 	/**
-	 * Each run of `repository` it has a deploy row of, with the Worker the row names -- empty for a
-	 * run GitHub never gave. A run with any row was taken, whatever came of it: catching up recovers
-	 * notices, not deploys.
+	 * Each run of `repository` it has a deploy or a release row of, with the Worker a deploy row
+	 * names -- empty for a release, or a run GitHub never gave. A run with any row was taken,
+	 * whatever came of it: catching up recovers notices, not deploys.
 	 */
 	taken(repository: string): Taken[] {
 		return this.db
 			.prepare(
 				`SELECT DISTINCT run, worker FROM deploys
-					WHERE repository = ? AND action = 'deploy' AND run IS NOT NULL`,
+					WHERE repository = ? AND action = 'deploy' AND run IS NOT NULL
+				UNION SELECT DISTINCT run, '' FROM releases WHERE repository = ?`,
 			)
-			.all(repository) as unknown as Taken[];
+			.all(repository, repository) as unknown as Taken[];
+	}
+
+	/**
+	 * Every app `run` built, each a release to write; a run that built none keeps one row of no app,
+	 * written already, to say it was taken. Taken again, a run adds nothing.
+	 */
+	built(repository: string, run: number, commit: string | null, apps: readonly string[]): void {
+		const insert = this.db.prepare(
+			`INSERT OR IGNORE INTO releases (repository, run, app, commit_sha, written_at, outcome)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+		);
+		if (apps.length === 0) insert.run(repository, run, '', commit, this.stamp(), 'built nothing');
+		for (const app of apps) insert.run(repository, run, app, commit, null, null);
+	}
+
+	/** The releases not yet written, the oldest run first. */
+	unwritten(): Unwritten[] {
+		return this.db
+			.prepare(
+				`SELECT repository, run, app, commit_sha AS "commit" FROM releases
+					WHERE written_at IS NULL ORDER BY run, app`,
+			)
+			.all() as unknown as Unwritten[];
+	}
+
+	/** A release settled, with what came of it: written, or why it needed no write. */
+	written(release: Unwritten, outcome: string): void {
+		this.db
+			.prepare(
+				`UPDATE releases SET written_at = ?, outcome = ?
+					WHERE repository = ? AND run = ? AND app = ?`,
+			)
+			.run(this.stamp(), outcome, release.repository, release.run, release.app);
 	}
 
 	advance(id: number, stage: 'admitting' | 'uploading'): void {

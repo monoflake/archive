@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { tokenFor } from './config.ts';
-import { GitHub, Refused, type Run, Unread, WORKFLOW, appOf, check } from './github.ts';
+import { GitHub, Refused, type Run, Unread, WORKFLOW, appOf, check, imageOf } from './github.ts';
 
 function run(overrides: Partial<Run> = {}): Run {
 	return {
@@ -38,6 +38,20 @@ describe('check', () => {
 		expect(refused(run({ event: 'pull_request' }))).toThrow(Refused);
 		expect(refused(run({ status: 'in_progress', conclusion: null }))).toThrow(Refused);
 		expect(refused(run({ conclusion: 'failure' }))).toThrow(Refused);
+	});
+});
+
+describe('imageOf', () => {
+	it('takes the app of an image for either architecture', () => {
+		expect(imageOf('deploy-geo-arm64')).toBe('geo');
+		expect(imageOf('deploy-my-app-amd64')).toBe('my-app');
+	});
+
+	it('leaves anything else', () => {
+		expect(imageOf('deploy-geo-riscv64')).toBeUndefined();
+		expect(imageOf('worker-geo')).toBeUndefined();
+		expect(imageOf('declarations')).toBeUndefined();
+		expect(imageOf('deploy-../x-arm64')).toBeUndefined();
 	});
 });
 
@@ -85,7 +99,12 @@ describe('GitHub', () => {
 				}),
 		});
 		const built = await client.artifacts('monoflake/platform', 7);
-		expect(built).toEqual({ commit: 'abc', artifacts: [{ app: 'console', id: 1, digest }] });
+		expect(built).toEqual({
+			commit: 'abc',
+			artifacts: [{ app: 'console', id: 1, digest }],
+			// Every app with an artifact, image or Worker, deployable or not: what the run built.
+			built: ['console', 'nodigest', 'old'],
+		});
 	});
 
 	it("lists the week's runs to deploy, the oldest first, those alone", async () => {

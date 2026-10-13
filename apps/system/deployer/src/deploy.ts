@@ -9,6 +9,7 @@ import { admit } from './admission.ts';
 import { unpack as unpackZip } from './artifact.ts';
 import { type Config, isDry } from './config.ts';
 import { type Artifact, type GitHub, Refused } from './github.ts';
+import type { Releases } from './releases.ts';
 import type { Store } from './store.ts';
 import {
 	type Runner,
@@ -51,6 +52,8 @@ export interface Parts {
 	readonly store: Store;
 	readonly github: Pick<GitHub, 'artifacts' | 'download'>;
 	readonly wrangler: Runner;
+	/** Where each app's release is written once its run is taken; none writes nothing. */
+	readonly releases?: Pick<Releases, 'flush'>;
 	/** Opens an artifact once it is admitted; artifact.ts's unless a test says otherwise. */
 	readonly unpack?: Unpack;
 	readonly log?: (line: string) => void;
@@ -155,6 +158,8 @@ export class Deployer {
 			throw error;
 		}
 		const { commit, artifacts } = built;
+		// Recorded before any deploy, so a deployer stopped in one still writes the run's releases.
+		store.built(repository, run, commit, built.built);
 		if (artifacts.length === 0) this.log(`run ${run} of ${repository} built no Worker`);
 		for (const artifact of artifacts) {
 			const newer = passedOver?.get(artifact.app);
@@ -165,6 +170,8 @@ export class Deployer {
 			// oxlint-disable-next-line no-await-in-loop -- one deploy at a time, by design
 			await this.deploy(repository, run, commit, artifact);
 		}
+		// Not waited on: the registry never holds up the next deploy. See releases.ts.
+		void this.parts.releases?.flush();
 	}
 
 	/** Record `worker` of a missed `run` as passed over for the `newer` run that built it too. */

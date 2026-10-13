@@ -10,6 +10,7 @@ import { CatchUp, every } from './catch-up.ts';
 import { configOf, tokenFor } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { GitHub } from './github.ts';
+import { Registry, Releases } from './releases.ts';
 import { handle } from './server.ts';
 import { Store } from './store.ts';
 import { run } from './wrangler.ts';
@@ -18,10 +19,15 @@ const config = configOf(process.env);
 mkdirSync(config.data, { recursive: true });
 const store = new Store(join(config.data, 'deployer.db'));
 const github = new GitHub((repository) => tokenFor(repository, process.env));
-const deployer = new Deployer({ config, store, github, wrangler: run });
+const registry = new Registry(config.registries, config.registryToken);
+const releases = new Releases({ store, registry });
+const deployer = new Deployer({ config, store, github, wrangler: run, releases });
 
 if (config.sources.length === 0) console.log('deployer: DEPLOY_SOURCES names no repository');
 if (config.owners.size === 0) console.log('deployer: WORKER_OWNERS names no Worker');
+if (!registry.configured) {
+	console.log('deployer: REGISTRY or REGISTRY_TOKEN is not set, so no release is recorded yet');
+}
 
 serve({
 	port: config.port,
@@ -39,5 +45,5 @@ serve({
 console.log(`deployer: listening on ${config.port}${config.dry ? ', every deploy dry' : ''}`);
 
 // A run whose notice never came is taken anyway, at start and every 15 minutes; see catch-up.ts.
-const catchUp = new CatchUp({ sources: config.sources, store, github, deployer });
+const catchUp = new CatchUp({ sources: config.sources, store, github, deployer, releases });
 every(() => catchUp.pass());

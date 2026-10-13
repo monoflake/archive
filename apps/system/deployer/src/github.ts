@@ -18,6 +18,8 @@ export const WORKFLOW = '.github/workflows/deploy.yml';
 const EVENTS = new Set(['push', 'schedule', 'workflow_dispatch']);
 /** How an artifact carrying a Worker is named: `worker-console`. host takes `deploy-` alone. */
 const PREFIX = 'worker-';
+/** How an image for host is named: `deploy-<app>-<arch>`, one per architecture the run built. */
+const IMAGE = /^deploy-(.+)-(?:arm64|amd64)$/;
 
 /** A run, an artifact or a Worker the deployer will not deploy, and why. */
 export class Refused extends Error {
@@ -79,6 +81,24 @@ export function appOf(artifact: string): string | undefined {
 	if (!artifact.startsWith(PREFIX)) return undefined;
 	const app = artifact.slice(PREFIX.length);
 	return isLabel(app) ? app : undefined;
+}
+
+/** The app a `deploy-<app>-<arch>` image artifact carries, held to the same rule. */
+export function imageOf(artifact: string): string | undefined {
+	const app = IMAGE.exec(artifact)?.[1];
+	return app !== undefined && isLabel(app) ? app : undefined;
+}
+
+/** What a run built, as `artifacts` answers it. */
+export interface Built {
+	readonly commit: string | null;
+	/** The Workers it built that can be deployed: neither expired nor missing a digest. */
+	readonly artifacts: Artifact[];
+	/**
+	 * Every app it built an artifact of, a Worker or an image for host, each once and by name, so
+	 * its release can be recorded -- RFC jln34.
+	 */
+	readonly built: string[];
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -197,10 +217,7 @@ export class GitHub {
 	}
 
 	/** The `worker-` artifacts of `repository`'s `run`, once its record says it is one to deploy. */
-	async artifacts(
-		repository: string,
-		run: number,
-	): Promise<{ commit: string | null; artifacts: Artifact[] }> {
+	async artifacts(repository: string, run: number): Promise<Built> {
 		const of = `run ${run} of ${repository}`;
 		const record = await this.json<Run>(repository, `/actions/runs/${run}`, of);
 		check(run, record, repository);
@@ -214,7 +231,9 @@ export class GitHub {
 			if (app === undefined || artifact.expired || !artifact.digest) return [];
 			return [{ app, id: artifact.id, digest: artifact.digest }];
 		});
-		return { commit: record.head_sha ?? null, artifacts };
+		const named = listed.artifacts.map(({ name }) => appOf(name) ?? imageOf(name));
+		const built = [...new Set(named.filter((app) => app !== undefined))].toSorted();
+		return { commit: record.head_sha ?? null, artifacts, built };
 	}
 
 	/** Download `artifact` of `run` to `zip`, held to its digest; the file is left either way. */
