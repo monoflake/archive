@@ -306,7 +306,7 @@ def literal(value):
 def grant_sql(scope, login, password):
 	"""The scope's role, the app's login inside it, and its database, which the scope owns and
 	nobody outside it may connect to. Run again it changes nothing but the password, to the one
-	given. See spec/architecture/databases.md, "One cluster, and a scope is a role in it"."""
+	given. See spec/architecture/databases.md, "The platform's alone, and its scope a role in it"."""
 	return "\n".join(
 		[
 			# Its password would be logged by `log_statement = ddl` otherwise.

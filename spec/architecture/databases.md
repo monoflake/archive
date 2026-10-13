@@ -1,18 +1,22 @@
 # Databases: the platform's Postgres, and the sidecar it replaces
 
-**The platform runs one Postgres, on the three core nodes, and every scope's databases are in it.**
-A scope is a bucket and the databases of the apps inside it -- [scheduling.md](scheduling.md), "A
-scope is an organization, and only the boundary isolates" -- and this is where those databases are.
-Until it is, an adopted program's database is the sidecar described after it.
+**The platform runs one Postgres, on the three core nodes, and it holds the platform's own data
+alone.** It is the store of the platform itself -- ship cloud, the workspace's
+`spec/architecture/ship-cloud.md` -- and an organization's apps keep their databases in a Postgres
+of their own. Until an adopted program moves in, its database is the sidecar described after it.
 
-## One cluster, and a scope is a role in it
+## The platform's alone, and its scope a role in it
 
-**Every scope's databases are in one cluster, and the boundary between scopes is Postgres's own.**
-Each scope is a role, each app a database that role owns, and no role is granted anything in another
-scope's. One cluster is one Postgres on each core node rather than one per scope, which an organization
-each, on a node of three gigabytes, could not afford. A scope that outgrows sharing moves to a cluster of
-its own by logical replication, its apps none the wiser, since the boundary was already drawn.
-Decided on 2026-10-07.
+**What is in the cluster is the `platform` scope's**: the ledger's history, the scheduler's leases,
+the accounts and organizations -- [scheduling.md](scheduling.md), "A scope is an organization, and
+only the boundary isolates". The scope is a role, each of its apps a database that role owns.
+**Another organization's databases are not in it**, the author's own `canmi` included: the cluster
+is the control plane's, so what a tenant writes, and how much, would reach the platform, and what
+the platform needs of it -- a small store, written seldom, read near where it is asked -- is not
+what an organization's apps need. Decided on 2026-10-12, in place of every scope's databases in
+this one cluster, a role each, decided on 2026-10-07 because a cluster per organization could not be
+afforded on a node of three gigabytes; what that costs now falls to the organization. Nothing but
+`platform_ledger` was in it.
 
 **An app is given its database by the operator**: one task makes the app's database and its login
 under its scope's role, and writes `DATABASE_URL` into the app's `secret.env`. The URL names the

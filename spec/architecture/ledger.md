@@ -102,7 +102,7 @@ year of captures at thousands a day, each a handful of events, is some hundreds 
 
 **The ledger's history is `platform_ledger` in the platform's cluster**, owned by the `platform`
 role and reached by the `DATABASE_URL` that `mise run database grant platform ledger` writes --
-[databases.md](databases.md), "One cluster, and a scope is a role in it". So it is backed up,
+[databases.md](databases.md), "The platform's alone, and its scope a role in it". So it is backed up,
 mirrored and failed over as the cluster is, and the ledger keeps nothing on its node.
 
 - **Two tables on their natural keys**: tasks keyed by `service` and `id`, events by `service`,
