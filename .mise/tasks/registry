@@ -182,11 +182,11 @@ def importing(dry):
 			body = request_body(table, addresses[name])
 			print(f"  PUT /nodes/{name} {json.dumps(body)}")
 		print(f"{APP}: then each app placed on nodes, at the revision GET /v1/apps/<name> answers:")
-		for name, placements in apps:
-			if placements is None:
+		for name, where in apps:
+			if where is None:
 				print(f"  skip {name}")
 			else:
-				body = app_body("<read>", placements)
+				body = app_body("<read>", where)
 				print(f"  PUT /v1/apps/{name} {json.dumps(body)}")
 		return
 	for name, table in nodes.items():
@@ -196,12 +196,12 @@ def importing(dry):
 			fail(f"{name}: {answer}")
 		change = answer["data"].get("change")
 		print(f"{APP}: {name}: " + ("unchanged" if change is None else f"changed, change {change}"))
-	for name, placements in apps:
-		if placements is None:
+	for name, where in apps:
+		if where is None:
 			print(f"{APP}: app {name}: skipped, not placed on nodes")
 			continue
 		revision = revision_of(answered(registries, "GET", f"/v1/apps/{name}"), name)
-		body = app_body(revision, placements)
+		body = app_body(revision, where)
 		answer = answered(registries, "PUT", f"/v1/apps/{name}", body, secret)
 		if answer.get("status") != "success":
 			fail(f"app {name}: {answer}")
