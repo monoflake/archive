@@ -496,9 +496,17 @@ class Token(unittest.TestCase):
 	GITHUB = "github-never-printed"
 	SOURCES = ["monoflake/infra", "monoflake/platform", "canmi21/cue"]
 
-	def run_token(self, dry, current="monoflake/platform canmi21/web", github=GITHUB):
+	def run_token(self, dry, current="monoflake/platform canmi21/web", github=GITHUB, worker=True):
 		self.written = []
 		self.asked = []
+		self.wrangled = []
+
+		def wrangler(arguments, stdin=None):
+			self.wrangled.append((arguments, stdin))
+			listing = arguments[:2] == ["deployments", "list"]
+			failed = listing and not worker
+			said = "A request to the Cloudflare API failed. workers.api.error.script_not_found"
+			return mock.Mock(returncode=1 if failed else 0, stdout="[]", stderr=said if failed else "")
 
 		def upsert(node, app, file, pairs):
 			self.written.append((node, app, file, pairs))
@@ -519,6 +527,8 @@ class Token(unittest.TestCase):
 			stack.enter_context(mock.patch.object(database, "upsert", upsert))
 			stack.enter_context(mock.patch.object(database, "ssh", ssh))
 			stack.enter_context(mock.patch.object(registry, "host_sources", lambda: self.SOURCES))
+			stack.enter_context(mock.patch.object(registry, "wrangler", wrangler))
+			stack.enter_context(mock.patch.object(registry, "CONSOLE_DIRECTORY", HERE))
 			if github is not None:
 				stack.enter_context(mock.patch.dict(os.environ, {registry.GITHUB: github}))
 			stack.enter_context(contextlib.redirect_stdout(printed))
@@ -529,6 +539,13 @@ class Token(unittest.TestCase):
 		printed = self.run_token(True)
 		self.assertEqual(self.written, [])
 		self.assertEqual(self.asked, [])
+		self.assertEqual(self.wrangled, [], "a dry run asks wrangler nothing")
+		console = (
+			"registry: console: would check the Worker `console` exists, `wrangler deployments list"
+			f" --name console`, then run in {HERE}: wrangler secret put REGISTRY_TOKEN --name console,"
+			" on stdin: REGISTRY_TOKEN=<redacted>"
+		)
+		self.assertIn(console, printed.splitlines())
 		self.assertNotIn(self.SECRET, printed)
 		self.assertNotIn(self.GITHUB, printed)
 		for line in [
@@ -604,6 +621,27 @@ class Token(unittest.TestCase):
 		node = 'DEPLOY_SOURCES = "monoflake/infra=infra canmi21/cue=canmi"\n'
 		with mock.patch.object(registry, "committed", lambda root, path: node):
 			self.assertEqual(registry.host_sources(workspace), ["monoflake/infra", "canmi21/cue"])
+
+
+	def test_the_console_worker_is_found_first_then_given_the_token_on_stdin(self):
+		printed = self.run_token(False)
+		self.assertEqual(
+			self.wrangled,
+			[
+				(["deployments", "list", "--name", "console", "--json"], None),
+				(["secret", "put", "REGISTRY_TOKEN", "--name", "console"], self.SECRET),
+			],
+		)
+		self.assertNotIn(self.SECRET, printed)
+		put = "registry: console: REGISTRY_TOKEN put as a Worker secret, read by its next request"
+		self.assertIn(put, printed)
+
+	def test_no_console_worker_writes_nothing_anywhere(self):
+		with self.assertRaises(SystemExit) as failed:
+			self.run_token(False, worker=False)
+		self.assertIn("the Worker `console` is not there", str(failed.exception.code))
+		self.assertEqual(self.written, [], "no node is written")
+		self.assertEqual(len(self.wrangled), 1, "never `secret put`, which would make the Worker")
 
 
 if __name__ == "__main__":

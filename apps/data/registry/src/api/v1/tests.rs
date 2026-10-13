@@ -404,3 +404,38 @@ fn the_catalog_kept_for_readers_is_valid_against_its_schema() {
 	let errors = invalid(&catalog_validator(), &json!({ "items": kinds }));
 	assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// Every shared example as its directory says: each under `valid` taken by the committed schema,
+/// each under `invalid` refused -- what readers in other languages test their own checks against.
+#[test]
+fn every_catalog_example_is_judged_as_its_directory_says() {
+	let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/catalog");
+	let validator = catalog_validator();
+	let mut judged = Vec::new();
+	for (directory, valid) in [("valid", true), ("invalid", false)] {
+		let mut files: Vec<_> = std::fs::read_dir(examples.join(directory))
+			.unwrap()
+			.map(|entry| entry.unwrap().path())
+			.filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+			.collect();
+		files.sort();
+		for file in files {
+			let example: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+			let errors = invalid(&validator, &example);
+			let named = format!("{directory}/{}", file.file_name().unwrap().to_string_lossy());
+			assert_eq!(errors.is_empty(), valid, "{named}: {errors:?}");
+			judged.push(named);
+		}
+	}
+	for named in [
+		"valid/answer.json",
+		"valid/minimal.json",
+		"invalid/field-without-type.json",
+		"invalid/kind-without-plural.json",
+		"invalid/choices-not-strings.json",
+		"invalid/secret-not-boolean.json",
+		"invalid/kind-null.json",
+	] {
+		assert!(judged.iter().any(|judged| judged == named), "{named} is missing");
+	}
+}

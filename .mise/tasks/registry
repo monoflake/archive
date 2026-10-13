@@ -4,10 +4,11 @@
 
 `token` writes the registry's write token on every node it runs on, made and kept in secrets.json
 the first time, and gives each writer the token, the cores to write to, every source host deploys
-from and the GitHub token it reads their runs with; `import` reads infra's nodes.toml and puts each
-node into the registry, then puts where each app runs, from every repository host deploys from,
-held to the revision it read, which is safe to run again. Values move over SSH on stdin, never on a
-command line, and `--dry-run` touches no machine and prints no secret. It borrows the database
+from and the GitHub token it reads their runs with, and the console Worker the token as a secret,
+once it has found that Worker; `import` reads infra's nodes.toml and puts each node into the
+registry, then puts where each app runs, from every repository host deploys from, held to the
+revision it read, which is safe to run again. Values move over SSH or to wrangler on stdin, never on
+a command line, and `--dry-run` touches no machine and prints no secret. It borrows the database
 task's helpers rather than copying them.
 """
 
@@ -163,8 +164,61 @@ def wire(node, writer, value, github, cores, sources, dry):
 		fail(f"writing {CORES} and {SOURCES} for {writer} failed on {node}")
 
 
+# The console Worker reads the registry with the same token, kept as a Worker secret: put from web's
+# app, beside this repository, by the name its wrangler.jsonc gives it.
+CONSOLE = "console"
+CONSOLE_DIRECTORY = database.REPOS / "web/apps/console"
+
+
+def wrangler(arguments, stdin=None):
+	"""wrangler run in the console's app, as its own pnpm has it; what it said, and how it ended."""
+	return subprocess.run(
+		["pnpm", "exec", "wrangler", *arguments],
+		cwd=CONSOLE_DIRECTORY,
+		input=stdin,
+		text=True,
+		capture_output=True,
+	)
+
+
+def first_line(ran):
+	said = (ran.stderr or ran.stdout).strip().splitlines()
+	return said[0] if said else f"exit {ran.returncode}"
+
+
+def console_exists():
+	"""Fails unless the Worker `console` is there: `wrangler secret put` run without a Worker of that
+	name makes one, which nothing here may do."""
+	if not CONSOLE_DIRECTORY.is_dir():
+		fail(f"{CONSOLE_DIRECTORY} is not there; clone web beside this repository")
+	listed = wrangler(["deployments", "list", "--name", CONSOLE, "--json"])
+	if listed.returncode != 0:
+		said = first_line(listed)
+		missing = f"the Worker `{CONSOLE}` is not there, or wrangler cannot read it ({said})"
+		fail(f"{missing}; nothing is written")
+
+
+def console_secret(value, dry):
+	"""The token put as the console Worker's secret, on stdin and never in an argument."""
+	command = f"wrangler secret put {TOKEN} --name {CONSOLE}"
+	if dry:
+		print(
+			f"{APP}: {CONSOLE}: would check the Worker `{CONSOLE}` exists, `wrangler deployments list"
+			f" --name {CONSOLE}`, then run in {CONSOLE_DIRECTORY}: {command},"
+			f" on stdin: {TOKEN}=<redacted>"
+		)
+		return
+	put = wrangler(["secret", "put", TOKEN, "--name", CONSOLE], stdin=value)
+	if put.returncode != 0:
+		fail(f"{command} failed: {first_line(put)}")
+	print(f"{APP}: {CONSOLE}: {TOKEN} put as a Worker secret, read by its next request")
+
+
 def token(dry):
 	cores = placements()
+	# Before anything is written, so a missing Worker leaves every node as it was.
+	if not dry:
+		console_exists()
 	value = database.stored_secret(TOKEN, dry)
 	for node in cores:
 		if dry:
@@ -182,6 +236,7 @@ def token(dry):
 	for writer in WRITERS:
 		for node in database.manifest_of(writer)["placements"]:
 			wire(node, writer, value, github, addresses, sources, dry)
+	console_secret(value, dry)
 	for app in (APP, *WRITERS):
 		redeploy = f"mise run //repos/infra:node redeploy <node> {app}"
 		print(f"{APP}: {app} reads it on its next deploy; `{redeploy}`")

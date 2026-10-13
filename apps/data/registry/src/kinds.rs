@@ -257,6 +257,12 @@ pub fn catalog() -> String {
 	written(&CATALOG)
 }
 
+/// What `GET /v1/kinds` answers inside the envelope, as written to the catalog's first valid
+/// example, `examples/catalog/valid/answer.json`, which readers in other languages test against.
+pub fn answer() -> String {
+	written(&ANSWER)
+}
+
 /// `value` indented with tabs and ending in a newline, as `mise run fmt` leaves JSON; a check still
 /// compares what a file holds, never its text, so the formatter owns its layout.
 fn written(value: &impl Serialize) -> String {

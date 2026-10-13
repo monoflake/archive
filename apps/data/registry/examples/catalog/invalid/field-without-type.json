@@ -1,0 +1,36 @@
+{
+	"items": [
+		{
+			"name": "node",
+			"plural": "nodes",
+			"fields": [
+				{
+					"name": "address",
+					"editable": true,
+					"required": true
+				},
+				{
+					"name": "tier",
+					"type": "choice",
+					"choices": [
+						"datacenter",
+						"home"
+					],
+					"editable": true,
+					"required": true
+				},
+				{
+					"name": "account",
+					"type": "reference",
+					"kind": "account",
+					"editable": true,
+					"required": false
+				}
+			],
+			"actions": [],
+			"columns": [
+				"address"
+			]
+		}
+	]
+}

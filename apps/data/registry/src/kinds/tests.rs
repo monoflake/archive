@@ -282,3 +282,8 @@ fn committed_catalog_schema() {
 fn committed_catalog_json() {
 	committed("catalog.json", &catalog());
 }
+
+#[test]
+fn committed_catalog_answer_example() {
+	committed("examples/catalog/valid/answer.json", &answer());
+}

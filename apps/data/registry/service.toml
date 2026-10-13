@@ -22,3 +22,20 @@ memory_mb = 64
 # spec/architecture/host.md, "A role is asked for by the app and granted by the node".
 [shape]
 kind = "peer"
+
+# The `registry` scope of the API host, private as the ledger's is: reached with `INTERNAL_TOKEN`
+# through the gateway, and on the cores' own Caddy on both sides, `api.<suffix>/registry`. See
+# infra's spec/architecture/host.md, "Every node answers the private API, and sends on what is not
+# its own".
+[api]
+public = false
+
+# Never kept: a reader acts on the revision it read, and a write answered from a kept read would be
+# refused `invalid_revision`. See spec/architecture/registry.md.
+[api.defaults.cache.success]
+fulfilled = "none"
+redirected = "none"
+
+[api.defaults.cache.failure]
+rejected = "none"
+faulted = "none"
