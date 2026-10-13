@@ -12,6 +12,8 @@ use std::sync::LazyLock;
 use tokio_postgres::NoTls;
 use tokio_postgres::types::ToSql;
 
+pub mod runs;
+
 /// A page's boundary: the `updated_at` and `id` of the last row already seen, so the next page
 /// starts strictly after it in the newest-first order. Encoded as `<nanoseconds>:<id>` -- the
 /// nanosecond count is always ASCII digits (and a leading `-` before 1970, which does not occur
@@ -602,6 +604,15 @@ impl EventColumns {
 
 #[cfg(test)]
 pub(crate) mod testing;
+
+/// Test-only: a statement run as it is, to move the clock's work forward: a lease made to run
+/// out, a sleep made due.
+#[cfg(test)]
+impl Store {
+	pub async fn exec(&self, statement: &str) {
+		self.pool.get().await.unwrap().batch_execute(statement).await.unwrap();
+	}
+}
 
 /// Test-only: overwrites a stored task's `updated_at` directly, keeping the column and the JSON
 /// in step, so a paging test can force two rows to tie at the same nanosecond.

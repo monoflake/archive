@@ -22,11 +22,12 @@ pub struct Migration {
 
 /// In order, never edited once released: a change is a new one. Every table has a primary key;
 /// these are the task's and the event's own, so none is minted.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-	version: 1,
-	name: "tasks and their events",
-	kind: Kind::Expand,
-	sql: r#"
+pub const MIGRATIONS: &[Migration] = &[
+	Migration {
+		version: 1,
+		name: "tasks and their events",
+		kind: Kind::Expand,
+		sql: r#"
 		CREATE TABLE tasks (
 			service text COLLATE "C" NOT NULL,
 			id text COLLATE "C" NOT NULL,
@@ -56,7 +57,100 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
 			PRIMARY KEY (service, task, seq)
 		);
 	"#,
-}];
+	},
+	Migration {
+		version: 2,
+		name: "runs",
+		kind: Kind::Expand,
+		sql: r#"
+		CREATE TABLE runs (
+			service text COLLATE "C" NOT NULL,
+			id text COLLATE "C" NOT NULL,
+			workflow text NOT NULL,
+			class text NOT NULL CHECK (class IN ('quorum', 'local')),
+			status text NOT NULL CHECK (status IN
+				('ready', 'running', 'sleeping', 'waiting', 'done', 'failed')),
+			params jsonb NOT NULL,
+			output jsonb,
+			error text,
+			run_at bigint NOT NULL,
+			fence bigint NOT NULL DEFAULT 0,
+			created_at bigint NOT NULL,
+			updated_at bigint NOT NULL,
+			finished_at bigint,
+			PRIMARY KEY (service, id),
+			FOREIGN KEY (service, id) REFERENCES tasks (service, id)
+		);
+		CREATE INDEX runs_due ON runs (run_at, service, id)
+			WHERE status IN ('ready', 'sleeping', 'waiting');
+	"#,
+	},
+	Migration {
+		version: 3,
+		name: "steps and the events sent to a run",
+		kind: Kind::Expand,
+		sql: r#"
+		CREATE TABLE steps (
+			service text COLLATE "C" NOT NULL,
+			run text COLLATE "C" NOT NULL,
+			name text COLLATE "C" NOT NULL,
+			kind text NOT NULL CHECK (kind IN ('do', 'sleep', 'wait')),
+			status text NOT NULL CHECK (status IN
+				('started', 'retrying', 'done', 'failed', 'sleeping', 'waiting')),
+			attempt integer NOT NULL DEFAULT 0,
+			starts integer NOT NULL DEFAULT 0,
+			config jsonb NOT NULL,
+			result jsonb CHECK (octet_length(result::text) <= 2097152),
+			error text,
+			deadline bigint,
+			wake_at bigint,
+			holder text COLLATE "C",
+			fence bigint,
+			placement jsonb,
+			started_at bigint NOT NULL,
+			finished_at bigint,
+			PRIMARY KEY (service, run, name),
+			FOREIGN KEY (service, run) REFERENCES runs (service, id)
+		);
+		CREATE TABLE run_events (
+			service text COLLATE "C" NOT NULL,
+			run text COLLATE "C" NOT NULL,
+			key text COLLATE "C" NOT NULL,
+			event_type text NOT NULL,
+			payload jsonb NOT NULL,
+			at bigint NOT NULL,
+			taken_by text COLLATE "C",
+			PRIMARY KEY (service, run, key),
+			FOREIGN KEY (service, run) REFERENCES runs (service, id)
+		);
+	"#,
+	},
+	Migration {
+		version: 4,
+		name: "leases and executors",
+		kind: Kind::Expand,
+		sql: r#"
+		CREATE TABLE leases (
+			service text COLLATE "C" NOT NULL,
+			run text COLLATE "C" NOT NULL,
+			holder text COLLATE "C" NOT NULL,
+			fence bigint NOT NULL,
+			expires_at bigint NOT NULL,
+			granted_at bigint NOT NULL,
+			PRIMARY KEY (service, run),
+			FOREIGN KEY (service, run) REFERENCES runs (service, id)
+		);
+		CREATE INDEX leases_holder ON leases (holder);
+		CREATE TABLE executors (
+			node text COLLATE "C" NOT NULL,
+			seen_at bigint NOT NULL,
+			capacity integer NOT NULL,
+			push_url text,
+			PRIMARY KEY (node)
+		);
+	"#,
+	},
+];
 
 /// The advisory lock every ledger takes before migrating: "ledger" in ASCII.
 const LOCK: i64 = 0x6c65_6467_6572;

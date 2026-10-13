@@ -84,6 +84,140 @@ can send a write on to it from another node with `INTERNAL_TOKEN`, and the publi
 Nothing asks for a token, as nothing on the private side does; host is the exception, and the ledger
 is not host.
 
+## A run, and the node that replays it
+
+**A run is a task that has a workflow**, the coordinator of RFC 23wgz. It is opened by `PUT
+/v1/runs/{service}/{id}`, which makes the task, `queued`, and the run in one transaction, and its
+task keeps the state the run is in: `running` at its first lease, `done` or `failed` at its end, an
+event for each. Opening the same run again -- the same workflow, class and params -- answers `200`
+and changes nothing; another run under its id is refused `409`. Only `class` `quorum`, the default,
+is built; `local` is refused `400`. The registry's tasks stay one-event tasks until a controller
+opens a run.
+
+**What a node is leased is a turn**: the run, from the top. The node replays the workflow's code; a
+`step.do` already done is answered with what it returned then, and one not done is run and
+reported, until a sleep, a wait, a retry or the end of the code releases the lease. Only code knows
+the next step's name, so the ledger leases the turn and cannot lease "the next step". A step's own
+lease, for a `step.do` that declares where it runs, is not built; `steps` carries a nullable
+`holder`, `fence` and `placement` so it adds no migration.
+
+### The tables
+
+Migrations 2 to 4, all expands, in the ledger's own style:
+
+- **`runs`**, keyed `(service, id)` with a foreign key to `tasks`: `workflow`, `class`, `status`
+  (`ready`, `running`, `sleeping`, `waiting`, `done`, `failed`), `params`, `output`, `error`,
+  `run_at` (when it next needs a turn), `fence` (the last number granted, which only grows, and
+  survives a lease let go) and its times.
+- **`steps`**, keyed `(service, run, name)`: `kind` (`do`, `sleep`, `wait`), `status`, `attempt`
+  (failures so far, counted toward the retries), `starts` (times begun, a lost holder included),
+  `config` (the retries and timeout as declared, kept whole), `result` (JSON), `error`, `deadline`
+  (this attempt's timeout), `wake_at`, and the unused `holder`, `fence`, `placement`.
+- **`run_events`**, keyed `(service, run, key)`: what was sent to a run, kept once by the sender's
+  key, with `taken_by`, the wait step that consumed it.
+- **`leases`**, keyed `(service, run)`: `holder` (a node), `fence`, `expires_at`. A row exists only
+  while a lease is held.
+- **`executors`**, keyed `node`: `seen_at`, `capacity` and a nullable `push_url`.
+
+A step's attempts are the task's events (`step.<name>`), so the console's timeline of a task already
+draws them. Times are nanoseconds on the primary's own clock -- `clock_timestamp()` -- never a
+client's, so one clock decides every expiry.
+
+### The scheduler, the lease and the fence
+
+**The scheduler runs in the ledger and acts only where `PATRONI_PRIMARY_URL`, its own node's
+Patroni `/primary`, answers 200**: the node that leads the database schedules, and a failover moves
+it with no election of ours. Without the variable a ledger schedules nothing, as on a copy that is
+not one of the cores. A round, every second, is one transaction:
+
+1. leases past `expires_at` are deleted and their runs made `ready`;
+2. sleeping and waiting runs whose `run_at` has come are made `ready`;
+3. `ready` runs are granted, oldest first, to the executors heard from in the last 60 seconds that
+   have room (`capacity` less the leases they hold), the one with the most room first: the run's
+   `fence` rises by one and a lease is written, all in one statement per step. Two rounds at once
+   grant a run once, as `FOR UPDATE SKIP LOCKED` and the status test decide, so a second scheduler
+   acting for a moment is harmless.
+
+**Every write a node makes carries its `node` and `fence`, and is refused `409 stale_lease` unless
+they are the run's lease now.** A holder that was lost and comes back writes under a number below
+the run's and is refused; it may still have run a step a second time, which is the model.
+
+**Leases last 30 seconds and are renewed every 10**, by `PUT /v1/runs/{service}/{id}/lease`. A
+renewal and an executor's heartbeat commit `locally`, and so does the start of an attempt: losing
+any of them only shortens a lease, hides a node for a moment, or counts a start less. A grant, a
+step's result, a sleep, a wait, an event and a run's end are **confirmed by two of the three
+cores** -- the default `synchronous_commit` under the cluster's `ANY 1`, RFC bhybp -- and answered
+only then, so the next step begins once the last result is kept. Nothing here is a consensus of its
+own.
+
+### How a node gets a turn
+
+**A grant is pushed and found by poll.** The round that grants a turn posts it to the executor's
+`push_url`, if it gave one, with a two second timeout; a failure is logged and nothing more. Every
+executor also polls, every 15 to 30 seconds -- `POST /v1/executors/{node}/polls` with its
+`capacity` and `push_url` -- which is its heartbeat and answers the turns it holds, so a push lost,
+or a node behind NAT, still finds its work. A turn is `{service, run, workflow, params, fence,
+expires_at, done, partial}`: `done` maps each done step's name to what it returned (a sleep's is
+`null`, a wait's the event), up to 8 MiB, past which `partial` is true and the node reads the rest
+with `GET /v1/runs/{service}/{id}`.
+
+### The routes
+
+All under `/v1`, in the envelope, on the private side as the rest of the ledger.
+
+| Method and path                                   | Body                                                        | Answers                                                                                             |
+| ------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `PUT /runs/{service}/{id}`                        | `{workflow, class?, params?, caller?}`                      | the run view; `201` new, `200` same                                                                 |
+| `GET /runs/{service}/{id}`                        | -                                                           | `{run, steps, lease}`                                                                               |
+| `POST /executors/{node}/polls`                    | `{capacity, push_url?}`                                     | `{turns}`                                                                                           |
+| `PUT /runs/{service}/{id}/lease`                  | `{node, fence}`                                             | `{expires_at}`                                                                                      |
+| `POST /runs/{service}/{id}/steps/{name}/attempts` | `{node, fence, config?}`                                    | `{status: "done", result}`, `{status: "failed", error}` or `{status: "started", attempt, deadline}` |
+| `PUT /runs/{service}/{id}/steps/{name}`           | `{node, fence, attempt, outcome, result?, error?}`          | `{next: "continue"}`, `{next: "retry", run_at}` or `{next: "fail", error}`                          |
+| `POST /runs/{service}/{id}/sleeps`                | `{node, fence, name, wake_at}`                              | `{status: "done"}` or `{status: "sleeping", wake_at}`                                               |
+| `POST /runs/{service}/{id}/waits`                 | `{node, fence, name, type, timeout_ms}`                     | `{status: "done", event}`, `{status: "failed", error}` or `{status: "waiting", wake_at}`            |
+| `POST /runs/{service}/{id}/events`                | `{key, type, payload?}`                                     | `{new}`                                                                                             |
+| `PUT /runs/{service}/{id}/outcome`                | `{node, fence, outcome: "done"\|"failed", output?, error?}` | `{}`; the same end said twice is the same                                                           |
+
+`outcome` of a step is `success`, `error` or `fatal`. The response catalogue has no code of its own
+for a lease that is not the run's, a replay that disagrees, a run that exists differently or a
+result past its size, so each is answered under the nearest code -- `invalid_revision` `409`,
+`invalid_size` `413`, `no_such_task` `404` -- with its own word, `stale_lease`, `replay_diverged`,
+`run_exists_differently`, `result_too_large`, `no_such_run`, first in the message.
+
+### Workflows' API on these routes
+
+- **`step.do`** asks for an attempt; a done step answers its result without running the callback, and
+  an attempt not done is begun with a deadline of the step's timeout. **The ledger, not the node,
+  decides what follows a failure**: an `error` with retries left makes the step `retrying`, sets the
+  run `sleeping` until the delay has passed and lets its lease go, which ends the turn; one with
+  none left, or a `fatal` one (`NonRetryableError`), makes the step `failed`, which the code may
+  catch or let fail the run. The defaults are Workflows': `limit` 5 retries after the first attempt
+  (at most 10,000), `delay` 10 seconds, `backoff` exponential -- `delay` times 2 to the failed
+  attempt less one; `linear` and `constant` also -- and `timeout` 10 minutes, as its page
+  https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/ gives them.
+- **A node lost mid-step is not a failed attempt.** A step found `started` by a new holder is the same
+  attempt begun again, counted in `starts` but not against the retries; a step begun 20 times by
+  holders that were lost fails. A step found `started` past its `deadline` is a failed attempt.
+- **A result is at most 1 MiB of JSON**; a larger one fails the step and is answered `413`.
+- **`step.sleep` and `sleepUntil`** are one route with an absolute `wake_at`, fixed by the first turn
+  that reached it and kept in the step, so a replay sees the same instant. The run sleeps holding no
+  lease and no node.
+- **`step.waitForEvent`** takes the oldest event of its `type` not yet taken, or the run waits holding
+  nothing. An event sent to a waiting run for a type it waits for makes it `ready` at once; at its
+  timeout with none taken the step fails, as Workflows throws.
+- **A replay that disagrees with the record** -- a step name reused as another kind -- is refused
+  `409 replay_diverged` rather than answered wrongly.
+
+### Tested with an executor of its own
+
+`src/harness.rs` is the executors' half in the shape of Workflows' `step`: a workflow is a closure
+over `run`, `sleep`, `sleep_until` and `wait_for_event`, replayed through the routes, with a node
+that can be lost at a step and one that takes pushed turns. The tests run against a real Postgres
+and move time by SQL, never by waiting: a replay runs a done step once, a lost node's late report is
+refused under the next fence, retries back off and stop at their limit, a crash is not an attempt
+and twenty starts fail, a sleep and a wait hold no lease, two rounds grant a run once, a push lost
+costs nothing.
+
 ## Read by the console
 
 `GET /tasks` lists tasks newest first, a page at a time -- each item carries its `cursor`, and

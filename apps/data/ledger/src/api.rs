@@ -28,6 +28,7 @@ pub fn routes(store: Shared) -> Router {
 		.route("/tasks/{service}/{id}", put(upsert).get(get_one))
 		.route("/events", post(events))
 		.route("/counts", get(counts))
+		.merge(crate::runs_api::routes())
 		.fallback(|| async { response::failure(StatusCode::NOT_FOUND, "no_such_route") })
 		.with_state(store)
 }

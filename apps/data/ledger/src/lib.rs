@@ -3,4 +3,9 @@
 pub mod api;
 pub mod import;
 pub mod migrations;
+pub mod runs_api;
+pub mod scheduler;
 pub mod store;
+
+#[cfg(test)]
+pub(crate) mod harness;

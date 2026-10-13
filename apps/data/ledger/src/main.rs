@@ -41,6 +41,14 @@ async fn main() -> anyhow::Result<()> {
 
 	let listen = std::env::var("LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{PORT}"));
 	let shared: Shared = Arc::new(store);
+	// The scheduler leases runs only where this node's Patroni says it leads; without the address it
+	// does not run, as on a copy that is not one of the cores. See spec/architecture/ledger.md.
+	match std::env::var("PATRONI_PRIMARY_URL") {
+		Ok(gate) => {
+			tokio::spawn(ledger_service::scheduler::run(shared.clone(), gate));
+		}
+		Err(_) => eprintln!("ledger: PATRONI_PRIMARY_URL is not set; no run is scheduled from here"),
+	}
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("ledger: listening on {listen}");
 	axum::serve(listener, api::routes(shared)).with_graceful_shutdown(stopped()).await?;

@@ -1973,6 +1973,7 @@ dependencies = [
  "jiff",
  "ledger",
  "mimalloc",
+ "reqwest",
  "response",
  "rusqlite",
  "serde",
