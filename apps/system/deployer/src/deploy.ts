@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { admit } from './admission.ts';
 import { unpack as unpackZip } from './artifact.ts';
 import { type Config, isDry } from './config.ts';
-import { type Artifact, type GitHub, Refused } from './github.ts';
+import { manualIn } from './declarations.ts';
+import { type Artifact, type Built, type GitHub, Refused } from './github.ts';
 import type { Releases } from './releases.ts';
 import type { Store } from './store.ts';
 import {
@@ -159,7 +160,7 @@ export class Deployer {
 		}
 		const { commit, artifacts } = built;
 		// Recorded before any deploy, so a deployer stopped in one still writes the run's releases.
-		store.built(repository, run, commit, built.built);
+		store.built(repository, run, commit, built.built, await this.settled(repository, run, built));
 		if (artifacts.length === 0) this.log(`run ${run} of ${repository} built no Worker`);
 		for (const artifact of artifacts) {
 			const newer = passedOver?.get(artifact.app);
@@ -172,6 +173,36 @@ export class Deployer {
 		}
 		// Not waited on: the registry never holds up the next deploy. See releases.ts.
 		void this.parts.releases?.flush();
+	}
+
+	/**
+	 * The releases of `built` settled before any is written: each image declared rolled out by hand,
+	 * as `manual`, which its operator's deploy records instead -- RFC jln34. Where the declarations
+	 * cannot be read, every image is settled as unknown, so a hand-rolled app is never moved.
+	 */
+	private async settled(
+		repository: string,
+		run: number,
+		built: Built,
+	): Promise<Map<string, string>> {
+		const { config, github } = this.parts;
+		const images = built.images ?? [];
+		if (images.length === 0) return new Map();
+		let manual: string[];
+		const work = join(config.data, 'work', `declarations-${run}`);
+		try {
+			if (!built.declarations) throw new Refused('it carries no declarations');
+			await mkdir(work, { recursive: true });
+			const zip = join(work, 'declarations.zip');
+			await github.download(repository, run, built.declarations, zip);
+			manual = manualIn(await readFile(zip));
+		} catch (error) {
+			this.log(`run ${run}: its images' releases are not recorded: ${messageOf(error)}`);
+			return new Map(images.map((app) => [app, 'rollout unknown']));
+		} finally {
+			await forget(work);
+		}
+		return new Map(manual.filter((app) => images.includes(app)).map((app) => [app, 'manual']));
 	}
 
 	/** Record `worker` of a missed `run` as passed over for the `newer` run that built it too. */

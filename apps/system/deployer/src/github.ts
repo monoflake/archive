@@ -99,7 +99,17 @@ export interface Built {
 	 * its release can be recorded -- RFC jln34.
 	 */
 	readonly built: string[];
+	/** Of `built`, the apps it built an image of, for host; none where absent. */
+	readonly images?: string[];
+	/**
+	 * The run's `declarations` artifact, each image's service.toml as `<app>.toml`, where it carries
+	 * one: what says an app is rolled out by hand.
+	 */
+	readonly declarations?: Artifact;
 }
+
+/** The name of the artifact holding the declarations of every image a run built. */
+export const DECLARATIONS = 'declarations';
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -233,13 +243,33 @@ export class GitHub {
 		});
 		const named = listed.artifacts.map(({ name }) => appOf(name) ?? imageOf(name));
 		const built = [...new Set(named.filter((app) => app !== undefined))].toSorted();
-		return { commit: record.head_sha ?? null, artifacts, built };
+		const imaged = listed.artifacts.map(({ name }) => imageOf(name));
+		const images = [...new Set(imaged.filter((app) => app !== undefined))].toSorted();
+		const declared = listed.artifacts.find(
+			(artifact) => artifact.name === DECLARATIONS && !artifact.expired && artifact.digest,
+		);
+		const declarations = declared && {
+			app: DECLARATIONS,
+			id: declared.id,
+			digest: declared.digest as string,
+		};
+		return {
+			commit: record.head_sha ?? null,
+			artifacts,
+			built,
+			images,
+			...(declarations ? { declarations } : {}),
+		};
 	}
 
-	/** Download `artifact` of `run` to `zip`, held to its digest; the file is left either way. */
+	/**
+	 * Download `artifact` of `run` to `zip`, held to its digest; the file is left either way. A
+	 * Worker's is `worker-<app>`; the declarations are named as they are.
+	 */
 	async download(repository: string, run: number, artifact: Artifact, zip: string): Promise<void> {
 		const url = `${URLS.external.github.api}/repos/${repository}/actions/artifacts/${artifact.id}/zip`;
-		const what = `artifact worker-${artifact.app} of run ${run} of ${repository}`;
+		const name = artifact.app === DECLARATIONS ? DECLARATIONS : `worker-${artifact.app}`;
+		const what = `artifact ${name} of run ${run} of ${repository}`;
 		// GitHub answers with a redirect to storage, which is signed and must not be sent the token.
 		const redirect = await this.get(url, what, this.token(repository));
 		const location = redirect.headers.get('location');
@@ -255,7 +285,7 @@ export class GitHub {
 		// GitHub's digest is the SHA-256 of the zip as downloaded, as infra's github.rs measured.
 		const digest = `sha256:${hash.digest('hex')}`;
 		if (digest.toLowerCase() !== artifact.digest.toLowerCase()) {
-			throw new Refused(`artifact worker-${artifact.app} does not match its recorded digest`);
+			throw new Refused(`artifact ${name} does not match its recorded digest`);
 		}
 	}
 }

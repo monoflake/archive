@@ -95,6 +95,8 @@ describe('GitHub', () => {
 						{ id: 2, name: 'deploy-console-arm64', expired: false, digest },
 						{ id: 3, name: 'worker-old', expired: true, digest },
 						{ id: 4, name: 'worker-nodigest', expired: false, digest: null },
+						{ id: 5, name: 'deploy-geo-amd64', expired: false, digest },
+						{ id: 6, name: 'declarations', expired: false, digest },
 					],
 				}),
 		});
@@ -103,7 +105,9 @@ describe('GitHub', () => {
 			commit: 'abc',
 			artifacts: [{ app: 'console', id: 1, digest }],
 			// Every app with an artifact, image or Worker, deployable or not: what the run built.
-			built: ['console', 'nodigest', 'old'],
+			built: ['console', 'geo', 'nodigest', 'old'],
+			images: ['console', 'geo'],
+			declarations: { app: 'declarations', id: 6, digest },
 		});
 	});
 

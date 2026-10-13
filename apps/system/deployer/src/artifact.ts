@@ -53,8 +53,11 @@ function refuse(why: string): never {
 	throw new Refused(`the artifact ${why}`);
 }
 
-/** Every entry of the zip in `bytes`, refused when it is not one this deployer reads. */
-export function entriesOf(bytes: Buffer): Entry[] {
+/**
+ * Every entry of the zip in `bytes`, refused when it is not one this deployer reads: a Worker's
+ * shape, unless `admitted` says what else is.
+ */
+export function entriesOf(bytes: Buffer, admitted = refusalOf): Entry[] {
 	// The end record, within the 64 KiB its comment may take.
 	let end = -1;
 	for (let at = bytes.length - 22; at >= Math.max(0, bytes.length - 22 - 0xffff); at -= 1) {
@@ -98,7 +101,7 @@ export function entriesOf(bytes: Buffer): Entry[] {
 		}
 		if (entry.method !== 0 && entry.method !== 8)
 			refuse(`holds ${name} packed a way it cannot read`);
-		const why = refusalOf(name, entry.directory);
+		const why = admitted(name, entry.directory);
 		if (why) refuse(`holds what it may not: ${why}`);
 		total += entry.size;
 		if (total > MOST_BYTES) refuse('unpacks to more than any Worker needs');

@@ -193,16 +193,26 @@ export class Store {
 	}
 
 	/**
-	 * Every app `run` built, each a release to write; a run that built none keeps one row of no app,
-	 * written already, to say it was taken. Taken again, a run adds nothing.
+	 * Every app `run` built, each a release to write, but those `settled` names, each settled at once
+	 * with why: an app rolled out by hand, `manual`. A run that built none keeps one row of no app,
+	 * settled too, to say it was taken. Taken again, a run adds nothing.
 	 */
-	built(repository: string, run: number, commit: string | null, apps: readonly string[]): void {
+	built(
+		repository: string,
+		run: number,
+		commit: string | null,
+		apps: readonly string[],
+		settled: ReadonlyMap<string, string> = new Map(),
+	): void {
 		const insert = this.db.prepare(
 			`INSERT OR IGNORE INTO releases (repository, run, app, commit_sha, written_at, outcome)
 				VALUES (?, ?, ?, ?, ?, ?)`,
 		);
 		if (apps.length === 0) insert.run(repository, run, '', commit, this.stamp(), 'built nothing');
-		for (const app of apps) insert.run(repository, run, app, commit, null, null);
+		for (const app of apps) {
+			const outcome = settled.get(app);
+			insert.run(repository, run, app, commit, outcome ? this.stamp() : null, outcome ?? null);
+		}
 	}
 
 	/** The releases not yet written, the oldest run first. */

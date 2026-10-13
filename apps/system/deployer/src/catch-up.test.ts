@@ -6,7 +6,7 @@ import { CatchUp, WITHIN_MS, missed, plan } from './catch-up.ts';
 import { configOf } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { PACKAGED, zipOf } from './fixtures.ts';
-import { type Artifact, Unread } from './github.ts';
+import { type Artifact, DECLARATIONS, Unread } from './github.ts';
 import { type Registry, Releases } from './releases.ts';
 import { Store } from './store.ts';
 
@@ -26,17 +26,20 @@ function consoleZip(): Buffer {
 }
 
 const CONSOLE: Artifact = { app: 'console', id: 1, digest: 'sha256:00' };
+const DECLARED: Artifact = { app: DECLARATIONS, id: 9, digest: 'sha256:00' };
 
 /**
  * A deployer and its catch-up over a GitHub listing `recent` runs, each run building what `built`
- * says, the console unless told, and the `images` given; either throws where the option is an
- * error. Releases go to `registry`, where one is given.
+ * says, the console unless told, and the `images` given, each declared as `declared` says, plainly
+ * where it says nothing, and with no declarations at all where it says null; either of the first
+ * two throws where the option is an error. Releases go to `registry`, where one is given.
  */
 async function setup(
 	options: {
 		recent?: Record<string, number[] | Error>;
 		built?: Record<number, Artifact[] | Error>;
 		images?: Record<number, string[]>;
+		declared?: Record<number, Record<string, string> | null>;
 		registry?: Pick<Registry, 'configured' | 'release'>;
 	} = {},
 ) {
@@ -63,10 +66,19 @@ async function setup(
 			const built = options.built?.[run] ?? [CONSOLE];
 			if (built instanceof Error) throw built;
 			const images = options.images?.[run] ?? [];
-			return { commit: 'abc', artifacts: built, built: [...built.map((a) => a.app), ...images] };
+			const all = [...built.map((artifact) => artifact.app), ...images];
+			const declarations = options.declared?.[run] === null ? {} : { declarations: DECLARED };
+			return { commit: 'abc', artifacts: built, built: all, images, ...declarations };
 		},
-		download: async (_repository: string, _run: number, _artifact: Artifact, zip: string) => {
-			await writeFile(zip, consoleZip());
+		download: async (_repository: string, run: number, artifact: Artifact, zip: string) => {
+			if (artifact.app !== DECLARATIONS) return writeFile(zip, consoleZip());
+			const images = options.images?.[run] ?? [];
+			const declared = options.declared?.[run] ?? {};
+			const entries = images.map((app) => ({
+				name: `${app}.toml`,
+				data: declared[app] ?? `name = "${app}"\nplacements = ["tyo"]\n`,
+			}));
+			return writeFile(zip, zipOf(entries));
 		},
 	};
 	/** While set, wrangler waits on it, so a run stays in flight. */
@@ -329,5 +341,35 @@ describe('releases', () => {
 			['geo', 7],
 		]);
 		expect(asked.filter((line) => line === `artifacts ${WEB} 7`)).toHaveLength(2);
+	});
+
+	it('writes no release for an app rolled out by hand, and the rest of its run as ever', async () => {
+		const { fake, written } = registry();
+		const { store, took } = await setup({
+			registry: fake,
+			images: { 5: ['database', 'geo'] },
+			declared: { 5: { database: 'name = "database"\nrollout = "manual"\n' } },
+		});
+		await took(5);
+		expect(written).toEqual([
+			['console', 5],
+			['geo', 5],
+		]);
+		expect(store.unwritten()).toEqual([]);
+	});
+
+	it("moves no image's release where the run's declarations cannot be read", async () => {
+		const { fake, written } = registry();
+		const { store, logs, took } = await setup({
+			registry: fake,
+			images: { 5: ['geo'] },
+			declared: { 5: null },
+		});
+		await took(5);
+		expect(store.list()).toMatchObject([{ run: 5, worker: 'console', stage: 'deployed' }]);
+		expect(written).toEqual([['console', 5]]);
+		expect(logs).toContain(
+			"deployer: run 5: its images' releases are not recorded: it carries no declarations",
+		);
 	});
 });

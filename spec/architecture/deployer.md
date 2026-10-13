@@ -27,7 +27,11 @@ from the same repository at the same or a newer run is left as it is, and a writ
 read again and tried once more. An app the registry does not hold, a Worker among them, is logged and
 left. It asks the cores in `REGISTRY`, the one that answered last first, three seconds each. The
 registry unreachable stops no deploy: a release not written stays in `deployer.db` and is written by
-the next deploy or the next catch-up pass, oldest run first.
+the next deploy or the next catch-up pass, oldest run first. An app declared `rollout = "manual"` -- the database, the
+quorum -- is given no release by a run: the deployer reads the run's `declarations` artifact, each
+image's `service.toml`, and settles such an app's release as `manual`, so `release` keeps meaning
+what is wanted and moves for a hand-rolled app only by its operator's hand deploy. Where a run's
+declarations cannot be read, none of its images' releases is written.
 
 **A run whose notice never came is taken anyway, as host takes one.** At start and every 15 minutes
 the deployer lists each source's successful `deploy.yml` runs on `main` from the 7 days CI keeps
