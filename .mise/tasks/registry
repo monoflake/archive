@@ -4,11 +4,12 @@
 
 `token` writes the registry's write token on every node it runs on, made and kept in secrets.json
 the first time; `import` reads infra's nodes.toml and puts each node into the registry, then puts
-where each app of this repository and infra runs, held to the revision it read, which is safe to run
-again. Values move over SSH on stdin, never on a command line, and `--dry-run` touches
+where each app runs, from every repository host deploys from, held to the revision it read, which is
+safe to run again. Values move over SSH on stdin, never on a command line, and `--dry-run` touches
 no machine and prints no secret. It borrows the database task's helpers rather than copying them.
 """
 
+import ast
 import importlib.machinery
 import importlib.util
 import json
@@ -31,6 +32,8 @@ def borrow(name):
 
 
 database = borrow("database")
+# The workspace this repository is cloned into, where repos.toml says which directory is which.
+WORKSPACE = database.REPOS.parent
 
 APP = "registry"
 PORT = 12013
@@ -101,11 +104,56 @@ def apps_placed(declarations):
 	return apps
 
 
-def declarations():
-	"""Every service.toml under this repository's apps/*/* and infra's, beside it."""
-	for root in (database.ROOT, database.REPOS / "infra"):
-		for path in sorted(root.glob("apps/*/*/service.toml")):
-			yield path, tomllib.loads(path.read_text())
+def deploy_sources(text):
+	"""Each `owner/repo` that DEPLOY_SOURCES in infra's node task names, read from its source rather
+	than run, since running it would load that task's own imports."""
+	for statement in ast.parse(text).body:
+		if not isinstance(statement, ast.Assign):
+			continue
+		names = [target.id for target in statement.targets if isinstance(target, ast.Name)]
+		value = statement.value
+		is_text = isinstance(value, ast.Constant) and isinstance(value.value, str)
+		if "DEPLOY_SOURCES" in names and is_text:
+			return [entry.split("=")[0] for entry in value.value.split()]
+	fail("infra's .mise/tasks/node holds no DEPLOY_SOURCES string")
+
+
+def checkouts(sources, repos, root):
+	"""Each source's checkout under `root`, in the directory repos.toml keys `owner:repo` by. One with
+	no entry or no checkout fails: its apps would be left out, and every one of them read as drift."""
+	directories = {spec: directory for directory, spec in repos.items()}
+	found = []
+	for source in sources:
+		directory = directories.get(source.replace("/", ":", 1))
+		if directory is None:
+			fail(f"host deploys from {source}, and repos.toml names no directory for it")
+		path = root / directory
+		if not path.is_dir():
+			fail(f"host deploys from {source}, and it is not cloned at {path}")
+		found.append(path)
+	return found
+
+
+def source_roots(workspace=None):
+	"""The checkout of every repository host deploys from, in DEPLOY_SOURCES' order."""
+	workspace = workspace or WORKSPACE
+	node_task = workspace / "repos/infra/.mise/tasks/node"
+	if not node_task.is_file():
+		fail(f"{node_task} is not there; clone infra beside this repository")
+	sources = deploy_sources(node_task.read_text())
+	listed = workspace / "repos.toml"
+	if not listed.is_file():
+		fail(f"{listed} is not there; it says which directory each repository is cloned in")
+	repos = tomllib.loads(listed.read_text())["repos"]
+	return checkouts(sources, repos, workspace / "repos")
+
+
+def declarations(roots):
+	"""Every service.toml under each root's apps/, at any depth: cue keeps its one level up."""
+	for root in roots:
+		for path in sorted(root.glob("apps/**/service.toml")):
+			if {"node_modules", "target"}.isdisjoint(path.relative_to(root).parts):
+				yield path, tomllib.loads(path.read_text())
 
 
 def app_body(revision, placements, by=BY):
@@ -170,7 +218,7 @@ def importing(dry):
 	secret = os.environ.get(TOKEN)
 	if not secret and not dry:
 		fail(f"secrets.json has no {TOKEN}; `registry token` makes it")
-	apps = apps_placed(declarations())
+	apps = apps_placed(declarations(source_roots()))
 	addresses = {node: database.tailnet_ipv4(node) for node in {*nodes, *cores}}
 	registries = [addresses[core] for core in cores]
 	if dry:

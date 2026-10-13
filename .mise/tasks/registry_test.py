@@ -6,6 +6,7 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -88,25 +89,68 @@ class Placements(unittest.TestCase):
 			registry.revision_of({"status": "error", "code": "store_unavailable"}, "web")
 
 
+class Sources(unittest.TestCase):
+	def test_deploy_sources_are_read_without_running_the_task(self):
+		text = (
+			"import host_api\n"
+			"HOME_OWNER = 'monoflake'\n"
+			'DEPLOY_SOURCES = "monoflake/infra=infra monoflake/platform=platform canmi21/cue=canmi"\n'
+		)
+		self.assertEqual(
+			registry.deploy_sources(text), ["monoflake/infra", "monoflake/platform", "canmi21/cue"]
+		)
+
+	def test_a_task_without_them_fails(self):
+		for text in ["HOME_OWNER = 'monoflake'\n", "DEPLOY_SOURCES = ' '.join(['a/b=c'])\n"]:
+			with self.assertRaises(SystemExit):
+				registry.deploy_sources(text)
+
+
+def write(path, text):
+	path.parent.mkdir(parents=True, exist_ok=True)
+	path.write_text(text)
+
+
 class Importing(unittest.TestCase):
-	"""`import` run whole over fixtures, every machine and file it would reach stood in for, so a
-	name it shadows or a branch it breaks fails here rather than on the operator's terminal."""
+	"""`import` run whole over a workspace made for it: infra's node task, repos.toml and three
+	checkouts, cue's declarations one level shallower than the others', as they are. Every machine it
+	would reach is stood in for, so a name it shadows, a source it misses or a branch it breaks fails
+	here rather than on the operator's terminal."""
 
 	NODES = {"tyo": {**NODE}, "sin": {"tier": "datacenter", "domain": "oci", "system": "debian"}}
-	DECLARATIONS = [
-		("platform/apps/a/web/service.toml", {"name": "web", "placements": ["tyo", "sin"]}),
-		("platform/apps/b/aka/service.toml", {"name": "aka", "placements": ["workers"]}),
-	]
+
+	def setUp(self):
+		made = tempfile.TemporaryDirectory()
+		self.addCleanup(made.cleanup)
+		self.workspace = Path(made.name)
+		repos = self.workspace / "repos"
+		write(
+			self.workspace / "repos.toml",
+			'[repos]\ninfra = "monoflake:infra"\nplatform = "monoflake:platform"\ncue = "canmi21:cue"\n'
+			'web = "canmi21:web"\n',
+		)
+		write(
+			repos / "infra/.mise/tasks/node",
+			'DEPLOY_SOURCES = "monoflake/infra=infra monoflake/platform=platform canmi21/cue=canmi"\n',
+		)
+		self.declare("infra/apps/network/caddy", "caddy", ["tyo", "sin"])
+		self.declare("platform/apps/site/web", "web", ["tyo", "sin"])
+		self.declare("platform/apps/edge/aka", "aka", ["workers"])
+		self.declare("platform/apps/site/web/node_modules/x", "x", ["tyo"])
+		self.declare("cue/apps/hub", "hub", ["tyo"])
+
+	def declare(self, directory, name, placements):
+		listed = ", ".join(f'"{node}"' for node in placements)
+		path = self.workspace / "repos" / directory / "service.toml"
+		write(path, f'name = "{name}"\nplacements = [{listed}]\n')
 
 	def run_import(self, dry, answered=None):
 		addresses = {"tyo": "100.64.0.1", "sin": "100.64.0.2"}
 		printed = io.StringIO()
 		with contextlib.ExitStack() as stack:
+			stack.enter_context(mock.patch.object(registry, "WORKSPACE", self.workspace))
 			stack.enter_context(mock.patch.object(registry, "load_nodes", lambda: self.NODES))
 			stack.enter_context(mock.patch.object(registry, "placements", lambda: ["tyo", "sin"]))
-			stack.enter_context(
-				mock.patch.object(registry, "declarations", lambda: iter(self.DECLARATIONS))
-			)
 			stack.enter_context(
 				mock.patch.object(registry.database, "tailnet_ipv4", addresses.__getitem__)
 			)
@@ -117,11 +161,19 @@ class Importing(unittest.TestCase):
 			registry.importing(dry)
 		return printed.getvalue().splitlines()
 
+	def failure(self):
+		"""What the import fails with, before it would write anything."""
+		with self.assertRaises(SystemExit) as failed:
+			self.run_import(True)
+		return str(failed.exception.code)
+
 	def test_a_dry_run_says_every_write_and_makes_none(self):
 		def unreachable(*_):
 			raise AssertionError("a dry run asked a registry")
 
 		lines = self.run_import(True, unreachable)
+		puts = [line.split()[1] for line in lines if line.startswith("  PUT /v1/apps/")]
+		self.assertEqual(puts, ["/v1/apps/caddy", "/v1/apps/web", "/v1/apps/hub"])
 		web = registry.app_body("<read>", ["tyo", "sin"])
 		self.assertIn(f"  PUT /v1/apps/web {registry.json.dumps(web)}", lines)
 		self.assertIn("  skip aka", lines)
@@ -140,12 +192,24 @@ class Importing(unittest.TestCase):
 			return {"status": "success", "data": {}}
 
 		lines = self.run_import(False, answered)
-		self.assertIn("registry: app web: changed, revision 9", lines)
+		self.assertIn("registry: app hub: changed, revision 9", lines)
 		self.assertIn("registry: app aka: skipped, not placed on nodes", lines)
 		self.assertIn("registry: tyo: unchanged", lines)
 		put = [entry for entry in asked if entry[1:3] == ("PUT", "/v1/apps/web")]
 		web = registry.app_body(0, ["tyo", "sin"])
 		self.assertEqual(put, [("100.64.0.1", "PUT", "/v1/apps/web", web, "s3cret")])
+
+	def test_a_source_not_cloned_fails_rather_than_leaving_its_apps_out(self):
+		(self.workspace / "repos/cue").rename(self.workspace / "elsewhere")
+		self.assertIn("canmi21/cue", self.failure())
+
+	def test_a_source_repos_toml_does_not_name_fails(self):
+		write(self.workspace / "repos.toml", '[repos]\ninfra = "monoflake:infra"\n')
+		self.assertIn("monoflake/platform", self.failure())
+
+	def test_one_name_in_two_repositories_fails(self):
+		self.declare("cue/apps/web", "web", ["sin"])
+		self.assertIn("web is declared twice", self.failure())
 
 
 if __name__ == "__main__":
