@@ -240,4 +240,5 @@ all.** A job says which it is.
 - **The platform's runs a job once, whichever node does it**: reclaiming garbage, scrubbing copies,
   bringing copies back in line with what buckets declare, and a job of any service with more than
   one instance. One instance holds a lease the others can see, kept in the platform's Postgres, and
-  runs the job while it holds it. It is not built yet.
+  runs the job while it holds it: the copy on the node leading the database, by a confirmed write
+  carrying a fencing number -- RFC bhybp. It is not built yet.

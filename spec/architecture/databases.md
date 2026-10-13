@@ -31,9 +31,13 @@ placed by the platform's scheduler, whose leases are kept in it, so its members 
 `service.toml`, apart from the core -- infra's `spec/architecture/nodes.md`, "Three nodes are the
 core, named by the author".
 
-- **Replication is streaming and asynchronous.** A commit waits for no standby: `tyo` to the eastern
-  US is about 150 ms, which a synchronous standby would add to every write. A failover can lose the
-  last seconds of writes, and that is accepted.
+- **Replication is streaming, and asynchronous until RFC bhybp lands.** Today a commit waits for no
+  standby, and a failover can lose the last seconds of writes. Decided on 2026-10-12: **a write is
+  classed by what losing it costs**. What must not be disputed -- a resource's `spec`, a lease, a
+  unique name, a membership -- is confirmed by `ANY 1` of the other two cores under Patroni's quorum
+  mode, one round trip to `sin`. What can be replayed -- a ledger event, a reported status, a
+  measurement -- commits locally and is written near. Reads are from the nearest standby, with
+  correctness held by the revision a write carries, and a lease taken on the primary alone.
 - **Three may lead, in order: `tyo`, then `sin`, then `rdu`**, the core, as Patroni's failover
   priorities, which `database env` writes. One member writes at a time, and the three are what may
   take over. `sin` is `tyo`'s twin 73 ms away, so a failover inside Asia keeps the primary near
