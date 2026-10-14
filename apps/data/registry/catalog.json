@@ -13,21 +13,14 @@
 			{
 				"name": "tier",
 				"type": "choice",
-				"choices": [
-					"datacenter",
-					"home",
-					"transient"
-				],
+				"choices": ["datacenter", "home", "transient"],
 				"editable": true,
 				"required": true
 			},
 			{
 				"name": "system",
 				"type": "choice",
-				"choices": [
-					"debian",
-					"alpine"
-				],
+				"choices": ["debian", "alpine"],
 				"editable": true,
 				"required": true
 			},
@@ -52,10 +45,7 @@
 			{
 				"name": "hosting",
 				"type": "choice",
-				"choices": [
-					"datacenter",
-					"selfhost"
-				],
+				"choices": ["datacenter", "selfhost"],
 				"editable": true,
 				"required": false
 			},
@@ -69,22 +59,13 @@
 			{
 				"name": "roles",
 				"type": "list",
-				"choices": [
-					"compute",
-					"storage",
-					"core"
-				],
+				"choices": ["compute", "storage", "core"],
 				"editable": true,
 				"required": false
 			}
 		],
 		"actions": [],
-		"columns": [
-			"address",
-			"tier",
-			"account",
-			"system"
-		]
+		"columns": ["address", "tier", "account", "system"]
 	},
 	{
 		"name": "app",
@@ -117,10 +98,7 @@
 			}
 		],
 		"actions": [],
-		"columns": [
-			"display_name",
-			"placements"
-		]
+		"columns": ["display_name", "placements"]
 	},
 	{
 		"name": "account",
@@ -130,13 +108,7 @@
 			{
 				"name": "provider",
 				"type": "choice",
-				"choices": [
-					"oracle",
-					"azure",
-					"racknerd",
-					"backblaze",
-					"cloudflare"
-				],
+				"choices": ["oracle", "azure", "racknerd", "backblaze", "cloudflare"],
 				"editable": true,
 				"required": true
 			},
@@ -147,11 +119,7 @@
 					{
 						"name": "kind",
 						"type": "choice",
-						"choices": [
-							"account_id",
-							"username",
-							"email"
-						],
+						"choices": ["account_id", "username", "email"],
 						"editable": true,
 						"required": true
 					},
@@ -168,8 +136,6 @@
 			}
 		],
 		"actions": [],
-		"columns": [
-			"provider"
-		]
+		"columns": ["provider"]
 	}
 ]

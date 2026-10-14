@@ -18,9 +18,7 @@
 						{
 							"name": "kind",
 							"type": "choice",
-							"choices": [
-								"email"
-							],
+							"choices": ["email"],
 							"editable": true,
 							"required": true
 						},
@@ -37,9 +35,7 @@
 				}
 			],
 			"actions": [],
-			"columns": [
-				"provider"
-			]
+			"columns": ["provider"]
 		}
 	]
 }

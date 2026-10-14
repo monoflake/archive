@@ -14,10 +14,7 @@
 				{
 					"name": "tier",
 					"type": "choice",
-					"choices": [
-						"datacenter",
-						2
-					],
+					"choices": ["datacenter", 2],
 					"editable": true,
 					"required": true
 				},
@@ -30,9 +27,7 @@
 				}
 			],
 			"actions": [],
-			"columns": [
-				"address"
-			]
+			"columns": ["address"]
 		}
 	]
 }
