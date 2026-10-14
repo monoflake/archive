@@ -34,21 +34,21 @@ jobs:
       declared: ${{ steps.plan.outputs.declared }}
       workers: ${{ steps.plan.outputs.workers }}
     steps:
+      # The workspace above the project, as it is checked out at home: its .mise/tasks hold
+      # deploy-base and the engine `deployable` runs, its mise.toml the Node they run on.
       - uses: actions/checkout@v7
         with:
+          repository: canmi21/canmi
+      - uses: actions/checkout@v7
+        with:
+          path: repos/platform
           fetch-depth: 0
       # cargo, for `deployable` to ask what each image's crate compiles once Cargo.lock moved: the
       # workspace's compiler at its minimal profile, no target added, since `cargo tree --target`
       # needs none installed, and the registry it reads, kept between runs. Without them it keeps
-      # the lockfile's answer, which is wider. See .mise/tasks/resolved.py.
-      - uses: actions/checkout@v7
-        with:
-          repository: canmi21/canmi
-          path: .workspace
-          sparse-checkout: rust-toolchain.toml
-          sparse-checkout-cone-mode: false
+      # the lockfile's answer, which is wider. See the workspace's .mise/tasks/change/resolved.ts.
       - run: |
-          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' .workspace/rust-toolchain.toml)"
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
           rustup toolchain install "$channel" --profile minimal
           echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
       - uses: actions/cache@v6
@@ -56,9 +56,17 @@ jobs:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
-          key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+          key: cargo-registry-${{ hashFiles('repos/platform/Cargo.lock') }}
           restore-keys: cargo-registry-
+      # Node, and the workspace's own dependencies without its tools: the TOML reader the engine
+      # parses declarations and lockfiles with.
+      - uses: jdx/mise-action@v5
+        with:
+          install_args: node pnpm
+          cache: false
+      - run: pnpm install --frozen-lockfile --prod
       - id: plan
+        working-directory: repos/platform
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
@@ -72,22 +80,22 @@ jobs:
           elif [ "$EVENT" = workflow_dispatch ] && [ -n "$ASKED" ]; then
             # The asked apps that have an image, and the asked ones that are Workers: a name that is
             # one alone asks for nothing of the other.
-            apps="$(.mise/tasks/deployable --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([a for a in json.load(sys.stdin) if a in asked]))')"
-            workers="$(.mise/tasks/deployable --workers --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([w for w in json.load(sys.stdin) if w in asked]))')"
+            apps="$(.mise/tasks/deployable.ts --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([a for a in json.load(sys.stdin) if a in asked]))')"
+            workers="$(.mise/tasks/deployable.ts --workers --all | python3 -c 'import json,os,sys; asked=os.environ["ASKED"].split(); print(json.dumps([w for w in json.load(sys.stdin) if w in asked]))')"
           elif [ "$EVENT" = workflow_dispatch ]; then
-            apps="$(.mise/tasks/deployable --all)"
-            workers="$(.mise/tasks/deployable --workers --all)"
+            apps="$(.mise/tasks/deployable.ts --all)"
+            workers="$(.mise/tasks/deployable.ts --workers --all)"
           else
             # Against what the last push's run built, not `before`: a pending run cancelled by a
             # newer push leaves `before` past what it never built. It says which base, and why.
-            base="$(.mise/tasks/deploy-base)"
+            base="$(node ../../.mise/tasks/deploy/base.ts)"
             if [ -z "$base" ]; then
-              apps="$(.mise/tasks/deployable --all)"
-              workers="$(.mise/tasks/deployable --workers --all)"
+              apps="$(.mise/tasks/deployable.ts --all)"
+              workers="$(.mise/tasks/deployable.ts --workers --all)"
             else
-              apps="$(.mise/tasks/deployable --git "$base")"
-              declared="$(.mise/tasks/deployable --declared --git "$base")"
-              workers="$(.mise/tasks/deployable --workers --git "$base")"
+              apps="$(.mise/tasks/deployable.ts --git "$base")"
+              declared="$(.mise/tasks/deployable.ts --declared --git "$base")"
+              workers="$(.mise/tasks/deployable.ts --workers --git "$base")"
             fi
           fi
           echo "apps=$apps" >> "$GITHUB_OUTPUT"
@@ -115,12 +123,15 @@ jobs:
           for app in $(printf '%s\n%s' "$APPS" "$DECLARED" | python3 -c 'import json,sys; print(" ".join(a for line in sys.stdin for a in json.loads(line)))'); do
             cp apps/*/"$app"/service.toml "$RUNNER_TEMP/declarations/$app.toml"
           done
-      # The workspace's mise.toml alone, for the Node it pins, which runs the artifact script.
+      # The workspace's mise.toml, for the Node it pins, and the artifact script, which imports
+      # nothing but node's own.
       - uses: actions/checkout@v7
         with:
           repository: canmi21/canmi
           path: .workspace
-          sparse-checkout: mise.toml
+          sparse-checkout: |
+            mise.toml
+            .mise/tasks/deploy/artifact.ts
           sparse-checkout-cone-mode: false
       - id: node
         run: echo "version=$(sed -n 's/^node = "\(.*\)"/\1/p' .workspace/mise.toml)" >> "$GITHUB_OUTPUT"
@@ -135,7 +146,7 @@ jobs:
           ARTIFACTS_VIRTUAL_HOST: ${{ vars.ARTIFACTS_VIRTUAL_HOST }}
           ARTIFACTS_WRITE_KEY_ID: ${{ secrets.ARTIFACTS_WRITE_KEY_ID }}
           ARTIFACTS_WRITE_SECRET: ${{ secrets.ARTIFACTS_WRITE_SECRET }}
-        run: node .mise/tasks/artifact.ts declarations "$RUNNER_TEMP/declarations"
+        run: node .workspace/.mise/tasks/deploy/artifact.ts declarations "$RUNNER_TEMP/declarations"
 
   build:
     needs: plan
@@ -191,7 +202,7 @@ jobs:
           ARTIFACTS_WRITE_KEY_ID: ${{ secrets.ARTIFACTS_WRITE_KEY_ID }}
           ARTIFACTS_WRITE_SECRET: ${{ secrets.ARTIFACTS_WRITE_SECRET }}
           NAME: deploy-${{ matrix.app }}-${{ matrix.arch }}
-        run: node repos/platform/.mise/tasks/artifact.ts "$NAME" "$RUNNER_TEMP/deploy" --store
+        run: node .mise/tasks/deploy/artifact.ts "$NAME" "$RUNNER_TEMP/deploy" --store
 
   # A Worker is one artifact for every architecture: wrangler's bundle, its assets, its declaration
   # and its resolved config, packaged without a credential. Nothing deploys it here; until a Worker
@@ -236,4 +247,4 @@ jobs:
           ARTIFACTS_WRITE_KEY_ID: ${{ secrets.ARTIFACTS_WRITE_KEY_ID }}
           ARTIFACTS_WRITE_SECRET: ${{ secrets.ARTIFACTS_WRITE_SECRET }}
           NAME: worker-${{ matrix.app }}
-        run: node repos/platform/.mise/tasks/artifact.ts "$NAME" "$RUNNER_TEMP/worker" --hidden
+        run: node .mise/tasks/deploy/artifact.ts "$NAME" "$RUNNER_TEMP/worker" --hidden
