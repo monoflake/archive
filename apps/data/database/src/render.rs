@@ -289,9 +289,9 @@ fn local(machine: Machine, run: &Path) -> Value {
 		"password_encryption": "scram-sha-256",
 		"archive_mode": "on",
 		"archive_command": "wal-g wal-push %p",
-		// Every segment archived within a minute; see spec/architecture/databases.md, "Backups are
-		// the data, kept off the cluster".
-		"archive_timeout": 60,
+		// Every segment archived within fifteen minutes; see spec/architecture/databases.md,
+		// "Backups are the data, kept off the cluster".
+		"archive_timeout": 900,
 		"wal_keep_size": "512MB",
 		"shared_buffers": format!("{buffers}MB"),
 		"maintenance_work_mem": format!("{}MB", buffers.div_ceil(4)),

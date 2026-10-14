@@ -160,8 +160,13 @@ else in it.
 ## Backups are the data, kept off the cluster
 
 **Every write is archived and every day is backed up, to an S3-compatible store, encrypted before
-it leaves.** WAL-G pushes each segment of the write-ahead log within a minute of it filling or of a
-minute passing, and the daily base backup beside it. That is what survives a `mistake` -- a table
+it leaves.** WAL-G pushes each segment of the write-ahead log within fifteen minutes of it filling or
+of fifteen minutes passing, and the daily base backup beside it. **Fifteen, not one**: a segment
+closed early is sent whole to every replica, its unused tail included, so a forced switch every
+minute was 16.8 MB a minute to each of five -- about 5 GB an hour out of the primary on a cluster
+writing almost nothing, more than `sha` could take, measured on `tyo` on 2026-10-14. A synchronous
+replica already holds every committed write, so the archive's fifteen minutes is lost only when
+every core is lost at once; decided with the author that day. That is what survives a `mistake` -- a table
 dropped is restored to the moment before -- and losing every core at once.
 
 **A rollback reaches three years back, and the further back the coarser:**
