@@ -13,7 +13,7 @@ use axum::extract::{Query, State};
 use axum::http::header::ORIGIN;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::Deserialize;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
@@ -30,6 +30,7 @@ pub fn routes(relay: Arc<Relay>) -> Router {
 	Router::new()
 		.merge(answers)
 		.route("/live", get(watched))
+		.route("/watch", post(watch))
 		.route(mesh::PATH, get(neighbor))
 		.fallback(|| async { response::failure(StatusCode::NOT_FOUND, "no_such_route") })
 		.with_state(relay)
@@ -75,11 +76,15 @@ async fn runs(
 	}
 }
 
-/// `/history`'s query, in seconds.
+/// `/history`'s query, in seconds: the span, the slot, and where a chart of one node asks for
+/// them, the machine's readings and that node alone.
 #[derive(Deserialize)]
 struct Spanned {
 	span: u64,
 	slot: u64,
+	#[serde(default)]
+	readings: bool,
+	node: Option<String>,
 }
 
 /// Read-only and with no token, as `/runs` is, and answered from the file the same way. See
@@ -88,17 +93,49 @@ async fn history(
 	State(relay): State<Arc<Relay>>,
 	query: Result<Query<Spanned>, QueryRejection>,
 ) -> Response {
-	let asked = query.ok().and_then(|Query(Spanned { span, slot })| Asked::new(span, slot));
-	let Some(asked) = asked else {
+	let Some((asked, node)) = query.ok().and_then(|Query(spanned)| {
+		let asked = Asked::new(spanned.span, spanned.slot)?;
+		Some((if spanned.readings { asked.with_readings() } else { asked }, spanned.node))
+	}) else {
 		return response::failure(StatusCode::BAD_REQUEST, "invalid_series");
 	};
 	match relay.history(asked).await {
-		Ok(history) => response::success(StatusCode::OK, history),
+		Ok(mut history) => {
+			if let Some(node) = node {
+				history.nodes.retain(|held, _| *held == node);
+			}
+			response::success(StatusCode::OK, history)
+		}
 		Err(error) => {
 			eprintln!("relay: reading the history: {error}");
 			response::failure(StatusCode::SERVICE_UNAVAILABLE, "store_unavailable")
 		}
 	}
+}
+
+/// `/watch`'s query: the node a page asks the fine readings of.
+#[derive(Deserialize)]
+struct Watched {
+	node: String,
+}
+
+/// A page's lease on a node's fine readings, `relay::LEASE` long, renewed while the page stays:
+/// asked of the node's own relay over the mesh, and passed on on `/live`. A lease on a node no
+/// neighbor lends for is held and lends nothing. As read-only as `/live`, with the same `Origin`.
+async fn watch(
+	State(relay): State<Arc<Relay>>,
+	headers: HeaderMap,
+	query: Result<Query<Watched>, QueryRejection>,
+) -> Response {
+	let origin = headers.get(ORIGIN).map(|value| value.to_str().unwrap_or_default());
+	if !live::admitted(origin) {
+		return response::failure(StatusCode::FORBIDDEN, "invalid_address");
+	}
+	let Ok(Query(Watched { node })) = query else {
+		return response::failure(StatusCode::BAD_REQUEST, "invalid_route");
+	};
+	relay.watch(&node);
+	response::success(StatusCode::OK, ())
 }
 
 /// Read-only, with no token: Access stands in front of the public name, and the private one admits

@@ -88,7 +88,11 @@ impl Reader for Fake {
 				rollout: "beside".into(),
 				label: None,
 			};
-			Reading { events: Ok(events), apps: Ok(vec![app]), machine: Ok(serde_json::json!({})) }
+			// The meter's second moves every round; nothing a snapshot says does.
+			let second = jiff::Timestamp::now().as_second();
+			let machine = serde_json::json!({ "info": { "memory": 1000 },
+				"sample": { "at": second, "values": { "cpu.usage": 5.0 } } });
+			Reading { events: Ok(events), apps: Ok(vec![app]), machine: Ok(machine) }
 		})
 	}
 
@@ -193,21 +197,64 @@ async fn a_node_reaches_a_third_through_a_neighbor() {
 }
 
 #[tokio::test]
-async fn each_relay_times_the_other_and_its_snapshot_carries_it_to_the_other() {
+async fn each_relay_times_the_other_and_shows_its_own_round_trips() {
 	let rdu = start("rdu", "geo:1").await;
 	let tyo = start("tyo", "geo:2").await;
 	hold(&rdu, &tyo);
-	// Held by tyo, as rdu's snapshot travels: rdu's own figure, never tyo's of rdu.
-	let carried = |relay: &Relay, node: &str, peer: &str| {
-		let state = relay.state();
-		state.nodes.get(node)?.held.as_ref()?.snapshot["round_trip"][peer].as_f64()
-	};
-	until("tyo holds rdu's round trip to it", || carried(&tyo.relay, "rdu", "tyo").is_some()).await;
-	until("rdu holds tyo's round trip to it", || carried(&rdu.relay, "tyo", "rdu").is_some()).await;
-	let round_trip = carried(&tyo.relay, "rdu", "tyo").unwrap();
+	until("each times the other", || {
+		rdu.relay.round_trips().contains_key("tyo") && tyo.relay.round_trips().contains_key("rdu")
+	})
+	.await;
+	let round_trip = rdu.relay.round_trips()["tyo"];
 	assert!((0.0..1.0).contains(&round_trip), "{round_trip}");
-	let own = &rdu.relay.state().nodes["rdu"];
-	assert_eq!(own.held.as_ref().unwrap().snapshot["round_trip"].as_object().unwrap().len(), 1);
+	// Its own as timed now; another node's from its newest minute, which none has ended yet.
+	let state = rdu.relay.state();
+	assert!(state.nodes["rdu"].round_trip.as_ref().is_some_and(|trips| trips.contains_key("tyo")));
+	assert!(state.nodes.get("tyo").is_none_or(|tyo| tyo.round_trip.is_none()));
+	// A snapshot carries neither the round trips nor the meter's second.
+	let snapshot = &state.nodes["rdu"].held.as_ref().unwrap().snapshot;
+	assert!(snapshot.get("round_trip").is_none());
+	assert_eq!(snapshot["machine"], serde_json::json!({ "info": { "memory": 1000 } }));
+}
+
+#[tokio::test]
+async fn a_node_is_heard_by_its_beats_while_its_version_stands_still() {
+	let rdu = start("rdu", "geo:1").await;
+	let tyo = start("tyo", "geo:2").await;
+	hold(&rdu, &tyo);
+	hold(&tyo, &rdu);
+	until("rdu holds tyo", || image(&rdu.relay, "tyo").is_some()).await;
+	let held = |relay: &Relay| relay.state().nodes["tyo"].held.clone().unwrap();
+	let before = held(&rdu.relay);
+	until("tyo heard again", || held(&rdu.relay).heard_at > before.heard_at).await;
+	tokio::time::sleep(ROUND * 10).await;
+	let after = held(&rdu.relay);
+	assert_eq!(after.version, before.version, "no new version while nothing changed");
+	assert!(after.heard_at > before.heard_at);
+	assert_eq!(rdu.relay.state().nodes["tyo"].state, Presence::Live);
+}
+
+#[tokio::test]
+async fn a_page_watching_another_node_is_sent_its_fine_readings() {
+	let rdu = start("rdu", "geo:1").await;
+	let tyo = start("tyo", "geo:2").await;
+	hold(&rdu, &tyo);
+	hold(&tyo, &rdu);
+	until("each speaks to the other", || {
+		rdu.relay.speaking().contains("tyo") && tyo.relay.speaking().contains("rdu")
+	})
+	.await;
+	let (mut browser, _) =
+		tokio_tungstenite::connect_async(format!("ws://{}/live", rdu.address)).await.unwrap();
+	rdu.relay.watch("tyo");
+	loop {
+		let next = text(&mut browser).await;
+		if next["type"] == "readings" && next["node"] == "tyo" {
+			assert_eq!(next["sample"]["values"]["cpu.usage"], 5.0);
+			break;
+		}
+	}
+	assert!(tyo.relay.leased_to("rdu"));
 }
 
 /// The outcome the relay at `address` holds of `node`'s run `id`, as `/runs` answers it.

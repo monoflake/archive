@@ -282,6 +282,7 @@ mod tests {
 			held: 0,
 			round_trip: BTreeMap::new(),
 			leaving,
+			readings: BTreeMap::new(),
 		};
 		("tyo".into(), Row { version: 1, minute })
 	}

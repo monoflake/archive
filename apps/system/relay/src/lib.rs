@@ -1,6 +1,7 @@
 //! relay: every node's live state, on every node, and to any browser connected to one. See
 //! spec/architecture/relay.md and spec/architecture/console.md.
 
+pub mod alarm;
 pub mod api;
 pub mod cluster;
 pub mod config;

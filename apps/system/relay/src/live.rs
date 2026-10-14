@@ -1,12 +1,13 @@
-//! A browser's socket: every node at once, then each newer snapshot as this relay takes it, and
-//! each state time alone changed.
+//! A browser's socket: every node at once, then each newer snapshot as this relay takes it, each
+//! state time alone changed, each node's beat, and the fine readings of a node a page here watches.
 //! Nothing a browser sends is acted on. See spec/architecture/console.md, "Live, through the
 //! nearest node".
 
 use crate::mesh::HEARTBEAT;
 use crate::presence::Entry;
-use crate::relay::{Change, Relay, State};
+use crate::relay::{Change, Pulse, Relay, State};
 use crate::socket::{Heard, Received, Socket, SocketError};
+use jiff::Timestamp;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
@@ -41,6 +42,16 @@ pub enum Live {
 		node: String,
 		state: Entry,
 	},
+	/// That a node was heard, between its entries: its new `heard_at`.
+	Beat {
+		node: String,
+		heard_at: Timestamp,
+	},
+	/// A watched node's fine readings of a round, the meter's `sample`.
+	Readings {
+		node: String,
+		sample: serde_json::Value,
+	},
 }
 
 /// Until the browser closes or falls silent; a browser gone quiet is no failure.
@@ -53,6 +64,7 @@ pub async fn watch<S: Socket>(relay: Arc<Relay>, socket: Heard<S>) -> Result<(),
 
 async fn watching<S: Socket>(relay: Arc<Relay>, mut socket: Heard<S>) -> Result<(), SocketError> {
 	let mut changes = relay.subscribe_changes();
+	let mut pulses = relay.subscribe_pulses();
 	send(&mut socket, &Live::Cluster(relay.state())).await?;
 	let mut heartbeat = tokio::time::interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
 	loop {
@@ -67,6 +79,17 @@ async fn watching<S: Socket>(relay: Arc<Relay>, mut socket: Heard<S>) -> Result<
 					send(&mut socket, &Live::Node { node, state: entry }).await?;
 				}
 				Err(RecvError::Lagged(_)) => send(&mut socket, &Live::Cluster(relay.state())).await?,
+				Err(RecvError::Closed) => return Ok(()),
+			},
+			pulse = pulses.recv() => match pulse {
+				Ok(Pulse::Beat { node, heard_at }) => {
+					send(&mut socket, &Live::Beat { node, heard_at }).await?;
+				}
+				Ok(Pulse::Readings { node, sample }) => {
+					send(&mut socket, &Live::Readings { node, sample }).await?;
+				}
+				// The next beat and the next readings say the same, newer.
+				Err(RecvError::Lagged(_)) => {}
 				Err(RecvError::Closed) => return Ok(()),
 			},
 			_ = heartbeat.tick() => {

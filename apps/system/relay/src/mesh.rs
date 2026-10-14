@@ -1,9 +1,10 @@
 //! The relays' mesh: a socket to every other node's relay. Both ends open with the versions they
 //! hold and send each other what the other lacks; after that a relay sends its own node's snapshot
-//! the moment it changes, and every other node's when a neighbor's comparison shows it behind. The
-//! kernel's round trip on the socket it dialed, or else its pings timed, is what its own snapshot
-//! carries to each neighbor. The runs and the minutes travel the same way, each by their own
-//! versions. See spec/architecture/relay.md.
+//! the moment it changes, a beat every round, and every other node's snapshot when a neighbor's
+//! comparison shows it behind. The kernel's round trip on the socket it dialed, or else its pings
+//! timed, is what its minutes carry to each neighbor. The runs and the minutes travel the same way,
+//! each by their own versions, and a node's fine readings only to a neighbor holding a lease. See
+//! spec/architecture/relay.md.
 
 use crate::cluster::{Carried, Versions};
 use crate::config::Peer;
@@ -29,9 +30,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 /// Where a relay accepts its neighbors.
 pub const PATH: &str = "/mesh";
 
-/// How often a relay tells a neighbor what it holds, and so the most a snapshot waits at each hop
-/// past its own node. Passing every snapshot on at once would send each one over every socket of a
-/// full mesh, every round, since the machine's sample changes every round.
+/// How often a relay tells a neighbor what it holds, and so the most a snapshot or a beat waits at
+/// each hop past its own node.
 pub const COMPARISON: Duration = Duration::from_secs(2);
 
 /// Cloudflare and NATs close a socket idle for long; a ping keeps it from looking idle. A browser's
@@ -40,9 +40,9 @@ pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// How often a relay pings each neighbor and times the pong, and reads the kernel's round trip
 /// where it can, the first as the socket opens.
-/// Its own snapshot is taken every `own::EVERY`, so a faster ping times a figure no round carries;
-/// a slower one leaves the figure a round behind. Two ten-byte frames a socket, beside snapshots of
-/// kilobytes every round. See spec/architecture/relay.md, "The round trip to each neighbor".
+/// Its own round is every `own::EVERY`, so a faster ping times a figure no round carries; a slower
+/// one leaves the figure a round behind. See spec/architecture/relay.md, "The round trip to each
+/// neighbor".
 pub const PING: Duration = crate::own::EVERY;
 
 /// How long the other end has to say who it is.
@@ -53,7 +53,7 @@ const LAST_RETRY: Duration = Duration::from_secs(60);
 
 /// What one relay sends another. `runs` is absent from a relay older than the runs, which is
 /// never sent `Runs`, a kind it cannot read; so the contract's version stands. `minutes` is the
-/// same of the minutes.
+/// same of the minutes, `beats` of `Beat` and `watch` of `Watch` and `Readings`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -66,14 +66,23 @@ pub enum Message {
 		runs: Option<Versions>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		minutes: Option<Versions>,
+		/// Whether it hears a node by its beats, and so needs no new version every round.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		beats: Option<bool>,
+		/// Whether it lends and reads fine readings.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		watch: Option<bool>,
 	},
-	/// What it holds, every comparison; answered with what it lacks.
+	/// What it holds, every comparison; answered with what it lacks. `beats` is each node's newest
+	/// beat held, so a node heard only through a neighbor stays live.
 	Versions {
 		versions: Versions,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		runs: Option<Versions>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		minutes: Option<Versions>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		beats: Option<Versions>,
 	},
 	/// A node's snapshot, newer than what the other was last known to hold.
 	Node { node: String, state: Carried },
@@ -81,6 +90,12 @@ pub enum Message {
 	Runs(Batch),
 	/// Some of a node's minutes, which the other was last known to lack.
 	Minutes(crate::history::Batch),
+	/// That its node is alive, at its clock in milliseconds: every round, and nothing else.
+	Beat { node: String, at: u64 },
+	/// A page on the sender asks this node's fine readings, for `lease` seconds.
+	Watch { lease: u64 },
+	/// The node's fine readings of a round, to a neighbor holding a lease.
+	Readings { node: String, sample: serde_json::Value },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -135,6 +150,7 @@ impl Speaking<'_> {
 impl Drop for Speaking<'_> {
 	fn drop(&mut self) {
 		self.relay.hush(self.peer, self.conversation);
+		self.relay.parted(self.conversation);
 	}
 }
 
@@ -233,6 +249,9 @@ pub async fn converse<S: Halves>(
 	let mut updates = relay.subscribe();
 	let mut batches = relay.subscribe_runs();
 	let mut minutes = relay.subscribe_minutes();
+	let mut beats = relay.subscribe_beats();
+	let mut asking = relay.subscribe_asking();
+	let mut lent = relay.subscribe_lent();
 	let (mut reader, mut writer) = socket.halves();
 	let hello = Message::Hello {
 		version: VERSION,
@@ -240,18 +259,28 @@ pub async fn converse<S: Halves>(
 		versions: relay.versions(),
 		runs: Some(relay.run_versions()),
 		minutes: Some(relay.minute_versions()),
+		beats: Some(true),
+		watch: Some(true),
 	};
 	writer.send(Frame::Text(serde_json::to_string(&hello)?)).await?;
 
 	let theirs = tokio::time::timeout(INTRODUCTION, introduced(&mut reader))
 		.await
 		.map_err(|_| MeshError::Slow(INTRODUCTION))??;
-	let (peer, versions, runs, theirs_minutes) = match theirs {
+	let (peer, versions, runs, theirs_minutes, hears_beats, lends) = match theirs {
 		Message::Hello { version, .. } if version != VERSION => {
 			return Err(MeshError::Version(version));
 		}
-		Message::Hello { node, versions, runs, minutes, .. } => (node, versions, runs, minutes),
-		Message::Versions { .. } | Message::Node { .. } | Message::Runs(_) | Message::Minutes(_) => {
+		Message::Hello { node, versions, runs, minutes, beats, watch, .. } => {
+			(node, versions, runs, minutes, beats == Some(true), watch == Some(true))
+		}
+		Message::Versions { .. }
+		| Message::Node { .. }
+		| Message::Runs(_)
+		| Message::Minutes(_)
+		| Message::Beat { .. }
+		| Message::Watch { .. }
+		| Message::Readings { .. } => {
 			return Err(MeshError::Unintroduced);
 		}
 	};
@@ -263,6 +292,8 @@ pub async fn converse<S: Halves>(
 		return Err(MeshError::Retired(peer));
 	}
 
+	let speaking = Speaking { relay: &relay, peer: &peer, conversation: relay.conversation() };
+	relay.met(speaking.conversation, hears_beats);
 	let (queue, queued) = mpsc::channel(QUEUE);
 	let mut outbox = Outbox { queue, dropped: 0 };
 	let mut writing = Writing(tokio::spawn(write(relay.clone(), peer.clone(), writer, queued)));
@@ -276,7 +307,6 @@ pub async fn converse<S: Halves>(
 		minutes_behind(&relay, &mut outbox, &theirs, &peer).await?;
 	}
 
-	let speaking = Speaking { relay: &relay, peer: &peer, conversation: relay.conversation() };
 	let mut comparison = tokio::time::interval_at(Instant::now() + COMPARISON, COMPARISON);
 	let mut ping = tokio::time::interval(PING);
 	let origin = Instant::now();
@@ -288,7 +318,10 @@ pub async fn converse<S: Halves>(
 						Message::Node { node, state } => {
 							relay.take(&node, state, Some(&peer));
 						}
-						Message::Versions { versions, runs, minutes } => {
+						Message::Versions { versions, runs, minutes, beats } => {
+							for (node, at) in beats.unwrap_or_default() {
+								relay.beaten(&node, at, Some(&peer));
+							}
 							behind(&relay, &mut outbox, &versions, &peer)?;
 							if let Some(runs) = runs {
 								runs_behind(&relay, &mut outbox, &runs, &peer).await?;
@@ -302,6 +335,13 @@ pub async fn converse<S: Halves>(
 						}
 						Message::Minutes(batch) => {
 							relay.take_minutes(batch);
+						}
+						Message::Beat { node, at } => relay.beaten(&node, at, Some(&peer)),
+						Message::Watch { lease } => relay.leased(&peer, Duration::from_secs(lease)),
+						Message::Readings { node, sample } => {
+							if node != relay.node() {
+								relay.heard_readings(&node, sample);
+							}
 						}
 						Message::Hello { .. } => {}
 					},
@@ -343,6 +383,36 @@ pub async fn converse<S: Halves>(
 				Err(RecvError::Lagged(_)) => {}
 				Err(RecvError::Closed) => return Ok(()),
 			},
+			beat = beats.recv() => match beat {
+				Ok(at) => {
+					if hears_beats && speaking.speaks() {
+						outbox.send(&Message::Beat { node: relay.node().to_owned(), at }, None)?;
+					}
+				}
+				// The next beat says the same, newer.
+				Err(RecvError::Lagged(_)) => {}
+				Err(RecvError::Closed) => return Ok(()),
+			},
+			asked = asking.recv() => match asked {
+				Ok(node) => {
+					if node == peer && lends && speaking.speaks() {
+						outbox.send(&Message::Watch { lease: crate::relay::LEASE.as_secs() }, None)?;
+					}
+				}
+				// A page asks again before its lease lapses.
+				Err(RecvError::Lagged(_)) => {}
+				Err(RecvError::Closed) => return Ok(()),
+			},
+			sample = lent.recv() => match sample {
+				Ok(sample) => {
+					if lends && relay.leased_to(&peer) && speaking.speaks() {
+						let readings = Message::Readings { node: relay.node().to_owned(), sample };
+						outbox.send(&readings, None)?;
+					}
+				}
+				Err(RecvError::Lagged(_)) => {}
+				Err(RecvError::Closed) => return Ok(()),
+			},
 			_ = comparison.tick() => {
 				// One retired while its socket was open is dropped within a comparison.
 				if relay.is_retired(&peer) {
@@ -354,7 +424,8 @@ pub async fn converse<S: Halves>(
 				}
 				if speaking.speaks() {
 					let (runs, minutes) = (Some(relay.run_versions()), Some(relay.minute_versions()));
-					let versions = Message::Versions { versions: relay.versions(), runs, minutes };
+					let beats = Some(relay.beats());
+					let versions = Message::Versions { versions: relay.versions(), runs, minutes, beats };
 					outbox.send(&versions, None)?;
 				}
 			}
@@ -579,6 +650,8 @@ mod tests {
 			versions: theirs,
 			runs: None,
 			minutes: None,
+			beats: None,
+			watch: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -609,6 +682,8 @@ mod tests {
 			versions: Versions::new(),
 			runs,
 			minutes: None,
+			beats: None,
+			watch: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -665,6 +740,8 @@ mod tests {
 			versions: Versions::new(),
 			runs: None,
 			minutes,
+			beats: None,
+			watch: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -721,6 +798,8 @@ mod tests {
 				versions: Versions::new(),
 				runs: None,
 				minutes: None,
+				beats: None,
+				watch: None,
 			};
 			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 			let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: None });
@@ -741,6 +820,8 @@ mod tests {
 				versions: Versions::new(),
 				runs: None,
 				minutes: None,
+				beats: None,
+				watch: None,
 			};
 			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 			feed.send(Received::Closed).unwrap();
@@ -761,6 +842,8 @@ mod tests {
 			versions: Versions::new(),
 			runs: None,
 			minutes: None,
+			beats: None,
+			watch: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: Some(feed) });
@@ -817,6 +900,8 @@ mod tests {
 			versions: Versions::new(),
 			runs: None,
 			minutes: None,
+			beats: None,
+			watch: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		let silence = Duration::from_millis(300);
@@ -928,8 +1013,15 @@ mod tests {
 	#[test]
 	fn the_messages_are_tagged_by_type() {
 		let versions = Versions::from([("tyo".into(), 7)]);
-		let hello =
-			Message::Hello { version: 1, node: "rdu".into(), versions, runs: None, minutes: None };
+		let hello = Message::Hello {
+			version: 1,
+			node: "rdu".into(),
+			versions,
+			runs: None,
+			minutes: None,
+			beats: None,
+			watch: None,
+		};
 		assert_eq!(
 			serde_json::to_value(&hello).unwrap(),
 			serde_json::json!({ "type": "hello", "version": 1, "node": "rdu", "versions": { "tyo": 7 } })

@@ -2,6 +2,7 @@
 //! answer is host's envelope, opened in `opened` alone. The shapes are infra's
 //! `apps/deploy/host/src/store.rs` and `api.rs`.
 
+use crate::history::{Gauge, Readings};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty};
 use hyper::Request;
@@ -11,6 +12,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -19,6 +21,10 @@ use std::time::Duration;
 pub const PAGE: usize = 50;
 const APPS: &str = "/api/apps";
 const MACHINE: &str = "/api/node/now";
+
+/// The meter's metrics a minute carries on the mesh and the thresholds judge, by name or dotted
+/// prefix: `network` both ways, `temperature` every zone. See infra's spec/architecture/meter.md.
+const READ: &str = "cpu.usage,load.1,memory.used,swap.used,storage.used,network,temperature";
 
 /// Longer than any of the three takes on a node that is well, shorter than a round.
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -147,6 +153,39 @@ pub trait Reader: Send + Sync + 'static {
 		&self,
 		before: Option<i64>,
 	) -> Pin<Box<dyn Future<Output = Result<Vec<Event>, ReadError>> + Send + '_>>;
+
+	/// The meter's minute starting `at`, in milliseconds, each metric's mean and highest; none where
+	/// no meter answers or it holds no such minute.
+	fn minute(&self, at: i64) -> Pin<Box<dyn Future<Output = Option<Readings>> + Send + '_>> {
+		let _ = at;
+		Box::pin(async { None })
+	}
+}
+
+/// One metric over one bucket, as the meter summarizes it.
+#[derive(Deserialize)]
+struct Summary {
+	average: f64,
+	maximum: f64,
+}
+
+/// A bucket of the meter's, named by its start in seconds.
+#[derive(Deserialize)]
+struct Point {
+	at: i64,
+	values: BTreeMap<String, Summary>,
+}
+
+/// To two decimals: a percent to a hundredth, a byte count to the byte.
+fn cut(value: f64) -> f64 {
+	(value * 100.0).round() / 100.0
+}
+
+/// The minute starting `at`, in milliseconds, among `points`.
+fn minute_in(points: Vec<Point>, at: i64) -> Option<Readings> {
+	let point = points.into_iter().find(|point| point.at * 1000 == at)?;
+	let gauge = |summary: Summary| Gauge { mean: cut(summary.average), max: cut(summary.maximum) };
+	Some(point.values.into_iter().map(|(metric, summary)| (metric, gauge(summary))).collect())
 }
 
 pub struct Host {
@@ -190,6 +229,22 @@ impl Reader for Host {
 		before: Option<i64>,
 	) -> Pin<Box<dyn Future<Output = Result<Vec<Event>, ReadError>> + Send + '_>> {
 		Box::pin(async move { self.get(&events(before)).await })
+	}
+
+	fn minute(&self, at: i64) -> Pin<Box<dyn Future<Output = Option<Readings>> + Send + '_>> {
+		Box::pin(async move {
+			// The meter's `until` is the end of what is asked, not counted in it.
+			let (since, until) = (at / 1000, at / 1000 + 60);
+			let path =
+				format!("/api/node/series?grain=minute&metrics={READ}&since={since}&until={until}");
+			match self.get::<Vec<Point>>(&path).await {
+				Ok(points) => minute_in(points, at),
+				Err(error) => {
+					eprintln!("relay: reading the meter's minute: {error}");
+					None
+				}
+			}
+		})
 	}
 }
 
@@ -242,6 +297,23 @@ mod tests {
 			"image": "apt:1b2c3d4", "previous": null, "deployed_at": "2026-10-01T08:00:00Z",
 			"held": true, "running": false, "restorable": false, "platform": false, "driver": false }
 	] }"#;
+
+	#[test]
+	fn reads_the_meters_minute_as_each_metrics_mean_and_highest() {
+		let answer = r#"{ "status": "success", "data": [
+			{ "at": 1791499980, "values": {
+				"cpu.usage": { "average": 12.3456, "minimum": 1.0, "maximum": 80.0, "count": 60 },
+				"memory.used": { "average": 629788672.4, "minimum": 1.0, "maximum": 629800000.0,
+					"count": 60 } } },
+			{ "at": 1791500040, "values": {} }
+		] }"#;
+		let points: Vec<Point> = opened(answer.as_bytes()).unwrap();
+		let minute = minute_in(points, 1_791_499_980_000).unwrap();
+		assert_eq!(minute["cpu.usage"], Gauge { mean: 12.35, max: 80.0 });
+		assert_eq!(minute["memory.used"], Gauge { mean: 629_788_672.4, max: 629_800_000.0 });
+		let points: Vec<Point> = opened(answer.as_bytes()).unwrap();
+		assert!(minute_in(points, 1_791_499_920_000).is_none());
+	}
 
 	#[test]
 	fn reads_events_as_host_answers_them() {

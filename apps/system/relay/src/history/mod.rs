@@ -46,6 +46,17 @@ pub fn minute_of(now: Timestamp) -> i64 {
 	floor(now.as_millisecond(), MINUTE)
 }
 
+/// A reading over a minute or longer: its mean, and the highest it was.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Gauge {
+	pub mean: f64,
+	pub max: f64,
+}
+
+/// The machine's readings over a minute, by the meter's metric names: what every relay holds of
+/// every node, coarse, since fine readings stay on the node -- RFC grmtb.
+pub type Readings = BTreeMap<String, Gauge>;
+
 /// One minute of one node, written by its relay as the minute ends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Minute {
@@ -65,6 +76,9 @@ pub struct Minute {
 	/// Why, where the relay said in it that it was leaving.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub leaving: Option<Reason>,
+	/// The machine's readings over it, from the meter's minute; absent where the meter was not read.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub readings: Readings,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -90,6 +104,7 @@ impl Minute {
 			held: self.held.max(before.held),
 			round_trip,
 			leaving: self.leaving.or(before.leaving),
+			readings: if self.readings.is_empty() { before.readings.clone() } else { self.readings },
 		}
 	}
 }
@@ -143,17 +158,32 @@ impl Book {
 		})
 	}
 
-	/// One round of host read: the minute before, as a batch for the neighbors, once it ends.
+	/// One round of host read: the minute before, as a batch for the neighbors, once it ends,
+	/// carrying `readings` where they are the meter's of that minute, by its start.
 	pub fn round(
 		&self,
 		reading: &Reading,
 		round_trips: &RoundTrips,
+		readings: Option<(i64, Readings)>,
 		now: Timestamp,
 	) -> Option<Batch> {
 		let read = reading.events.is_ok() && reading.apps.is_ok();
 		let apps = reading.apps.as_deref().ok();
-		let ended = lock(&self.tally).round(read, apps, round_trips, now)?;
+		let mut ended = lock(&self.tally).round(read, apps, round_trips, now)?;
+		if let Some((at, readings)) = readings
+			&& at == ended.at
+		{
+			ended.readings = readings;
+		}
 		Some(self.own(vec![ended], now))
+	}
+
+	/// `node`'s newest minute held, from the window: what `/live` shows of its readings and round
+	/// trips between a node's versions.
+	pub fn latest(&self, node: &str) -> Option<Minute> {
+		let window = lock(&self.window);
+		let rows = window.rows().filter(|(held, _)| *held == node);
+		rows.max_by_key(|(_, row)| row.minute.at).map(|(_, row)| row.minute.clone())
 	}
 
 	/// The minute the relay says it is leaving in, ended now, as a batch for the neighbors.
@@ -282,7 +312,7 @@ mod tests {
 	async fn a_relay_back_within_the_minute_it_left_in_keeps_its_word_of_leaving() {
 		let store = shared(Store::memory().unwrap());
 		let book = Book::open("rdu".into(), store.clone()).unwrap();
-		book.round(&reading(true), &RoundTrips::new(), at(3));
+		book.round(&reading(true), &RoundTrips::new(), None, at(3));
 		let left = book.leave(Reason::Upgrade, at(10));
 		assert_eq!(left.rows.len(), 1);
 		assert_eq!(
@@ -292,8 +322,8 @@ mod tests {
 		book.write(at(10)).await.unwrap();
 
 		let book = Book::open("rdu".into(), store).unwrap();
-		assert!(book.round(&reading(false), &RoundTrips::new(), at(20)).is_none());
-		let ended = book.round(&reading(true), &RoundTrips::new(), at(61)).unwrap();
+		assert!(book.round(&reading(false), &RoundTrips::new(), None, at(20)).is_none());
+		let ended = book.round(&reading(true), &RoundTrips::new(), None, at(61)).unwrap();
 		assert!(ended.above >= left.version && ended.version > left.version);
 		let minute = &ended.rows[0].minute;
 		assert_eq!((minute.at, minute.beats), (at(0).as_millisecond(), 2));
@@ -306,11 +336,11 @@ mod tests {
 		let store = shared(Store::memory().unwrap());
 		let book = Book::open("rdu".into(), store).unwrap();
 		for second in (0..180).step_by(3) {
-			book.round(&reading(true), &RoundTrips::new(), at(second));
+			book.round(&reading(true), &RoundTrips::new(), None, at(second));
 		}
 		// Two minutes written, then one more held in memory alone.
 		book.write(at(120)).await.unwrap();
-		book.round(&reading(true), &RoundTrips::new(), at(181));
+		book.round(&reading(true), &RoundTrips::new(), None, at(181));
 		let tyo = Batch {
 			node: "tyo".into(),
 			above: 0,
@@ -335,6 +365,24 @@ mod tests {
 			held: 0,
 			round_trip: RoundTrips::new(),
 			leaving: None,
+			readings: Readings::new(),
 		}
+	}
+
+	#[test]
+	fn a_minute_carries_the_meters_readings_of_it_and_no_other_minutes() {
+		let book = Book::open("rdu".into(), shared(Store::memory().unwrap())).unwrap();
+		book.round(&reading(true), &RoundTrips::new(), None, at(3));
+		let cpu = Readings::from([("cpu.usage".into(), Gauge { mean: 12.5, max: 40.0 })]);
+		// Readings of another minute are not this one's.
+		let ended = book.round(&reading(true), &RoundTrips::new(), Some((7, cpu.clone())), at(61));
+		assert!(ended.unwrap().rows[0].minute.readings.is_empty());
+		let minute = at(60).as_millisecond();
+		let ended =
+			book.round(&reading(true), &RoundTrips::new(), Some((minute, cpu.clone())), at(121));
+		let ended = &ended.unwrap().rows[0].minute;
+		assert_eq!(ended.readings, cpu);
+		assert_eq!(book.latest("rdu").map(|minute| minute.readings), Some(cpu));
+		assert!(book.latest("tyo").is_none());
 	}
 }

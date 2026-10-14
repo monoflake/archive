@@ -43,9 +43,12 @@ never taken.
 clock has not moved, so a relay that restarts starts above whatever its neighbors still hold and
 keeps nothing on disk. Comparing versions is the whole of "is this behind".
 
-**A relay pushes its own snapshot every round, a new version each time, and passes the others on by
-comparison.** Every two seconds each tells its neighbors which versions it holds, and each answers
-with what the other lacks. Flooding every snapshot on arrival would carry each about seventy times
+**A relay pushes its own snapshot when what it says changes, a new version each time, and a beat
+every round; it passes the others on by comparison.** Every two seconds each tells its neighbors
+which versions it holds and each node's newest beat, and each answers with what the other lacks.
+A neighbor whose first message did not say it hears by beats is older than them: while one is met,
+a relay gives its own snapshot a new version every round, as before, so that neighbor still hears
+it -- RFC grmtb. Flooding every snapshot on arrival would carry each about seventy times
 across a full mesh of seven every three seconds; comparing costs a hop up to two seconds instead. A
 node that cannot reach a third directly still hears it through a neighbor.
 
@@ -71,14 +74,17 @@ every change; `/state` answers the same once, for the console's polling. **`/liv
 `.app` alone**, by its `Origin`: Access lets a reader in by a cookie the browser sends on any page's
 WebSocket, so without the check any site the reader visits could open it as them. A request with no
 `Origin` comes from no browser and carries no reader's cookie, and passes; the private mirror's
-pages are refused, since the console is served on `.app`. Each node's entry carries `heard_at`, when
-its origin took the version held, never later than this relay's clock, `state`, and `runs`, the
+pages are refused, since the console is served on `.app`. Each node's entry carries `heard_at`, its
+origin's newest beat or version held, never later than this relay's clock, `state`, and `runs`, the
 version of the node's runs this relay holds, absent where it holds none; a peer never heard is an
 entry carrying `state` alone, and `runs` where it is held. A state that time alone changes is sent
 again on `/live` at the same version, so a reader keeps dropping an older version but takes the
 same one with another `state`. **A node's runs moving sends its entry again at the same version**,
 with another `runs`, so a page reads `/runs?since=` again rather than being sent the rows -- RFC
-grmtb.
+grmtb. An entry also carries `readings`, its newest minute's mean and highest of each of the
+meter's metrics, and `round_trip`, this relay's own as timed now and any other node's over its
+newest minute; between entries a browser is sent `beat`, a node's new `heard_at`, and, for a node a
+page on this relay watches, `readings`, its second as its origin reads it.
 
 ## The console asks, and the relay answers from memory
 
@@ -113,10 +119,11 @@ before.
   while an announced `leaving` is within its `within` of `heard_at`, `waiting` for a peer not yet
   heard in the relay's first 60 seconds, and `gone` otherwise. A newer version without `leaving` is
   the node back. A state that time alone changes is sent again on `/live`, by a sweep every second.
-- **A node's own snapshot is a new version every round**, whether or not what it says changed, so a
-  node is heard because it spoke and not because its readings happened to move.
-- **`heard_at` is when its origin took the version, never later than this relay's clock**: a version
-  is the origin's clock in milliseconds, so a relay that starts and is handed a neighbor's snapshot
+- **A node's own snapshot is a new version only when what it says changes** -- its apps, the
+  meter's `info`, `stale`, `leaving` and `alarms` -- **and a node is heard by its beat**: a few dozen
+  bytes to every neighbor every round, saying only that it is alive -- RFC grmtb.
+- **`heard_at` is its origin's newest beat held, or its version where that is newer, never later
+  than this relay's clock**: both are the origin's clock in milliseconds, so a relay that starts and is handed a neighbor's snapshot
   five minutes old holds it as five minutes old, not as heard now. Clocks on the tailnet agree
   within a second, against thresholds of ten and sixty.
 - **The relay reaches the canary first**, as host, keeper and Caddy do -- infra's
@@ -124,6 +131,20 @@ before.
   that rebuilt it restarts nrt's alone, and the rest announce their leaving to a relay already back.
 
 Decided with the author on 2026-10-09.
+
+## A node's readings stay on the node
+
+Its meter keeps them -- infra's `spec/architecture/meter.md`, "Retention" -- and the mesh carries
+its minutes alone. A page open on a node holds a lease on its second, `POST /watch?node=`, sixty
+seconds long and renewed every thirty while the page is shown, asked of the relay its stream is on.
+That relay asks the node's own over the mesh, which sends its second every round to it alone while
+the lease holds. A node's charts read its own host through its binding, and where it does not
+answer, the nearest relay's minutes of it. **A threshold is judged on the node, from each minute**:
+the table in `alarm.rs` -- processor at 90% or more for five minutes, memory at 90% for five,
+storage at 90% at once, any temperature zone at 85 C for five -- each said in the snapshot as
+`alarms`, a new version, since the first minute it held, and cleared by the first minute below its
+clear line, 85% for processor and memory, 88% for storage, 80 C for a temperature, so a reading at
+the line does not set and clear it every minute. Decided with the author on 2026-10-14, RFC grmtb.
 
 ## The runs, mirrored on every relay's disk
 
@@ -187,7 +208,11 @@ relay's disk" -- into the same file, and answered from it. Decided with the auth
   should run and did not, with how many of the minute's twenty rounds it was down -- an hour or a
   day sums those rounds, and the console decides how short a dip counts; `held`, how many were
   stopped on purpose; `round_trip`, each neighbor's mean round trip over it, in seconds, a neighbor
-  not timed absent; and `leaving`, the reason where the relay said it was leaving in it. The origin
+  not timed absent; `readings`, the meter's mean and highest of each metric over the minute --
+  `cpu.usage`, `load.1`, `memory.used`, `swap.used`, `storage.used`, `network`, `temperature` -- read
+  from host's `/api/node/series?grain=minute` as the minute ends, and folded into hours and days as
+  their mean over the minutes and the highest; and `leaving`, the reason where the relay said it
+  was leaving in it. The origin
   writes the row at the first round of the next minute. **A relay that says it is leaving ends the
   minute there and writes it at once**; one back inside the same minute joins it, keeping the word,
   so an upgrade's leaving minute is not written over.
@@ -217,7 +242,8 @@ relay's disk" -- into the same file, and answered from it. Decided with the auth
   now, each slot read from the finest tier that still holds it: `runs` by outcome, `succeeded`,
   `failed`, `running` and `partly_failed`, a slot of whole days reading a folded day's count and a
   finer one the mirror; `beats` and `due`; `down`, each app's rounds; `leaving`, `missing` and
-  `announced`; and `round_trip` to each neighbor, mean and worst. A slot must be whole minutes,
+  `announced`; `round_trip` to each neighbor, mean and worst; and `readings` where asked with
+  `readings=true`, with `node` to answer one node alone. A slot must be whole minutes,
   whole hours past two days and whole days past 30, at most 1,000 slots and 400 days; anything
   else is a 400 `invalid_series`. Absent, not null, where a slot holds nothing -- the workspace's
   `spec/json.md`. The console asks it for a span longer than a day, the mirror's runs drawing the
@@ -228,10 +254,11 @@ relay's disk" -- into the same file, and answered from it. Decided with the auth
 
 ## The round trip to each neighbor
 
-**A relay reads each neighbor's round trip from the kernel, and its snapshot carries the latest
-per neighbor as `round_trip`**: `{ "tyo": 0.1512, "buf": 0.0184 }`, by node, in seconds to a tenth of a millisecond. It travels
-as the rest of the snapshot does, to every relay and to `/live` and `/state`, so a page reads each
-node's round trip to every other from that node's own entry. Asked for on 2026-10-09, for the
+**A relay reads each neighbor's round trip from the kernel, and its minutes carry each neighbor's
+mean per minute as `round_trip`**: `{ "tyo": 0.1512, "buf": 0.0184 }`, by node, in seconds to a
+tenth of a millisecond. `/live` and `/state` show a node's from its newest minute and the relay's
+own as timed now, so a page reads each node's round trip to every other from that node's own
+entry. Asked for on 2026-10-09, for the
 console's row of each node's round trip to the database's primary.
 
 - **The figure is Linux's least round trip of the socket the relay dialed**, `TCP_INFO`'s
@@ -261,8 +288,8 @@ console's row of each node's round trip to the database's primary.
 - **Seconds, as the workspace's `spec/json.md` has every duration**, and the page says them in
   milliseconds: what is written for a machine follows the one rule, and what is shown to a reader
   is the page's own wrapping of it, as a node's code is wrapped in its city. It was `round_trip_ms`
-  for its first hours on 2026-10-09 and was renamed before anything but the console read it. A changed round trip is
-  a changed snapshot, a new version, as a changed machine sample already is every round.
+  for its first hours on 2026-10-09 and was renamed before anything but the console read it. A
+  round trip is never part of a version.
 - **No contract bump**: an added optional key is not a schema change -- `spec/json.md`, "An optional
   key is not a schema change" -- and a relay carries a snapshot as the JSON its node wrote.
 

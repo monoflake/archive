@@ -5,7 +5,7 @@
 
 use super::fold::{Fold, minutes_between};
 use super::outcomes::{Day, Outcomes, Run};
-use super::{DAY, DAYS_KEPT, HOUR, HOURS_KEPT, MINUTE, MINUTES_KEPT, Minute, ROUNDS, floor};
+use super::{DAY, DAYS_KEPT, Gauge, HOUR, HOURS_KEPT, MINUTE, MINUTES_KEPT, Minute, ROUNDS, floor};
 use crate::window::milliseconds;
 use jiff::Timestamp;
 use serde::Serialize;
@@ -19,6 +19,8 @@ pub const MOST: u64 = 1000;
 pub struct Asked {
 	span: i64,
 	slot: i64,
+	/// Whether each slot carries the machine's readings, which only a chart of one node needs.
+	readings: bool,
 }
 
 impl Asked {
@@ -38,7 +40,13 @@ impl Asked {
 		} else {
 			MINUTE
 		};
-		(span <= milliseconds(DAYS_KEPT) && slot % unit == 0).then_some(Self { span, slot })
+		let readings = false;
+		(span <= milliseconds(DAYS_KEPT) && slot % unit == 0).then_some(Self { span, slot, readings })
+	}
+
+	/// The same, each slot carrying the machine's readings.
+	pub fn with_readings(self) -> Self {
+		Self { readings: true, ..self }
 	}
 
 	/// The first slot's start and the last's end at `now`: slots fall on whole multiples of their
@@ -87,6 +95,9 @@ pub struct Slot {
 	pub down: BTreeMap<String, u32>,
 	#[serde(skip_serializing_if = "BTreeMap::is_empty")]
 	pub round_trip: BTreeMap<String, Spread>,
+	/// Each of the machine's readings over it, where asked: the mean of its minutes, and the highest.
+	#[serde(skip_serializing_if = "BTreeMap::is_empty")]
+	pub readings: BTreeMap<String, Gauge>,
 	#[serde(skip_serializing_if = "Outcomes::is_empty")]
 	pub runs: Outcomes,
 }
@@ -115,6 +126,7 @@ struct Gathered {
 /// An answer being gathered, from whatever holds each slot.
 pub struct Answering {
 	slot: i64,
+	readings: bool,
 	from: i64,
 	until: i64,
 	/// The start of the last minute due.
@@ -134,7 +146,8 @@ impl Answering {
 		let due = floor(now, MINUTE) - 2 * MINUTE;
 		let (nodes, held, first, tails) =
 			(BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
-		Self { slot: asked.slot, from, until, due, nodes, held, first, tails, days: Vec::new() }
+		let (slot, readings) = (asked.slot, asked.readings);
+		Self { slot, readings, from, until, due, nodes, held, first, tails, days: Vec::new() }
 	}
 
 	pub fn span(&self) -> (i64, i64) {
@@ -284,6 +297,11 @@ impl Answering {
 			.round_trip
 			.iter()
 			.map(|(peer, trip)| (peer.clone(), Spread { mean: trip.mean, worst: trip.worst }));
+		let readings = fold
+			.readings
+			.iter()
+			.filter(|_| self.readings)
+			.map(|(metric, trip)| (metric.clone(), Gauge { mean: trip.mean, max: trip.worst }));
 		Some(Slot {
 			at: Timestamp::from_millisecond(at).ok()?,
 			beats: (minutes > 0).then_some(fold.beats),
@@ -293,6 +311,7 @@ impl Answering {
 			leaving: fold.leaving,
 			down: fold.down.clone(),
 			round_trip: round_trip.collect(),
+			readings: readings.collect(),
 			runs: *runs,
 		})
 	}
@@ -311,7 +330,7 @@ mod tests {
 		let leaving = leaving.then_some(Reason::Restart);
 		let round_trip = BTreeMap::from([("rdu".into(), 0.15)]);
 		let down = BTreeMap::from([("geo".into(), 2)]);
-		Minute { at, beats: 20, down, held: 0, round_trip, leaving }
+		Minute { at, beats: 20, down, held: 0, round_trip, leaving, readings: Default::default() }
 	}
 
 	fn run(run: Option<u64>, started: i64, outcome: Outcome) -> Run {
@@ -377,6 +396,27 @@ mod tests {
 		assert_eq!(written["slot"], 86_400);
 		assert_eq!(written["from"], "2026-10-17T00:00:00Z");
 		assert!(written["nodes"]["tyo"][0].get("runs").is_none());
+	}
+
+	#[test]
+	fn a_slot_carries_the_readings_only_where_asked() {
+		let now = DAWN + 2 * HOUR + 10_000;
+		let cpu = |mean, max| BTreeMap::from([("cpu.usage".to_owned(), Gauge { mean, max })]);
+		let answered = |asked: Asked| {
+			let mut answering = Answering::new(asked, now);
+			for (at, mean, max) in [(0, 10.0, 30.0), (1, 30.0, 90.0)] {
+				let readings = cpu(mean, max);
+				answering.minute("tyo", &Minute { readings, ..minute(DAWN + HOUR + at * MINUTE, false) });
+			}
+			answering.first(BTreeMap::from([("tyo".into(), DAWN + HOUR)]));
+			answering.runs(vec![]).answered("rdu".into())
+		};
+		let asked = Asked::new(3 * 3600, 3600).unwrap();
+		assert!(answered(asked).nodes["tyo"].iter().all(|slot| slot.readings.is_empty()));
+		let history = answered(asked.with_readings());
+		let hour = Timestamp::from_millisecond(DAWN + HOUR).unwrap();
+		let slot = history.nodes["tyo"].iter().find(|slot| slot.at == hour).unwrap();
+		assert_eq!(slot.readings, cpu(20.0, 90.0));
 	}
 
 	#[test]

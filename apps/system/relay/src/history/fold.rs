@@ -29,6 +29,9 @@ pub struct Fold {
 	pub tail: bool,
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
 	pub round_trip: BTreeMap<String, Trip>,
+	/// Each of the machine's readings over the minutes it was read in, its highest as the worst.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub readings: BTreeMap<String, Trip>,
 }
 
 /// One neighbor's round trip over the minutes it was timed in: the mean of those minutes, and the
@@ -57,6 +60,9 @@ impl Fold {
 			.round_trip
 			.iter()
 			.map(|(peer, &seconds)| (peer.clone(), Trip { mean: seconds, worst: seconds, minutes: 1 }));
+		let readings = minute.readings.iter().map(|(metric, gauge)| {
+			(metric.clone(), Trip { mean: gauge.mean, worst: gauge.max, minutes: 1 })
+		});
 		Self {
 			minutes: 1,
 			beats: u64::from(minute.beats),
@@ -65,6 +71,7 @@ impl Fold {
 			announced: 0,
 			tail: minute.leaving.is_some(),
 			round_trip: round_trip.collect(),
+			readings: readings.collect(),
 		}
 	}
 
@@ -111,6 +118,13 @@ impl Fold {
 				.and_modify(|held| *held = held.with(trip))
 				.or_insert(trip);
 		}
+		for (metric, &reading) in &fold.readings {
+			self
+				.readings
+				.entry(metric.clone())
+				.and_modify(|held| *held = held.with(reading))
+				.or_insert(reading);
+		}
 	}
 }
 
@@ -136,6 +150,15 @@ mod tests {
 			held: 0,
 			round_trip: trip.map(|seconds| ("tyo".to_owned(), seconds)).into_iter().collect(),
 			leaving: leaving.then_some(Reason::Restart),
+			readings: trip
+				.map(|seconds| {
+					(
+						"cpu.usage".to_owned(),
+						crate::history::Gauge { mean: seconds * 100.0, max: seconds * 200.0 },
+					)
+				})
+				.into_iter()
+				.collect(),
 		})
 	}
 
@@ -158,6 +181,7 @@ mod tests {
 		assert_eq!(hour.beats, 41);
 		assert_eq!(hour.down, BTreeMap::from([("apt".into(), 2), ("geo".into(), 4)]));
 		assert_eq!(hour.round_trip["tyo"], Trip { mean: 0.2, worst: 0.3, minutes: 2 });
+		assert_eq!(hour.readings["cpu.usage"], Trip { mean: 20.0, worst: 60.0, minutes: 2 });
 		// Its gap of 57 minutes followed no word of leaving.
 		assert_eq!((hour.leaving, hour.announced, hour.tail), (0, 0, false));
 

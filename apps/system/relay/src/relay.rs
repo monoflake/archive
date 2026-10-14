@@ -3,13 +3,14 @@
 
 use crate::cluster::{Carried, Cluster, Held, Versions};
 use crate::history::answer::{Asked, History};
-use crate::history::{Book, DAY};
+use crate::history::{Book, DAY, Minute, Readings, minute_of};
 use crate::host::{PAGE, Reader, Reading};
 use crate::own::{Own, Part, RoundTrips};
-use crate::presence::{Entry, Leaving, Presence, presence};
+use crate::presence::{Entry, Leaving, Minutely, Presence, presence};
 use crate::runs::{Batch, Mirror, Shown, Store, StoreError, shared};
 use jiff::Timestamp;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -30,6 +31,10 @@ const BACKLOG: usize = 256;
 /// A round trip not timed again within three pings is no longer current, and is left out.
 const CURRENT: Duration = Duration::from_secs(3 * crate::mesh::PING.as_secs());
 
+/// How long a page's ask for a node's fine readings holds before it is asked again. See
+/// spec/architecture/relay.md, RFC grmtb.
+pub const LEASE: Duration = Duration::from_secs(60);
+
 /// A node's newer snapshot, taken here.
 #[derive(Debug, Clone)]
 pub struct Update {
@@ -42,6 +47,14 @@ pub struct Update {
 pub struct Change {
 	pub node: String,
 	pub entry: Entry,
+}
+
+/// What a browser is sent between a node's entries: that it was heard, or its fine readings while a
+/// page on this relay watches it.
+#[derive(Debug, Clone)]
+pub enum Pulse {
+	Beat { node: String, heard_at: Timestamp },
+	Readings { node: String, sample: Value },
 }
 
 /// Every node at once: what `/state` answers and a browser's socket opens with.
@@ -73,19 +86,48 @@ struct Holding {
 	peers: BTreeSet<String>,
 	/// The version of each node's runs as last shown, so a page reads the runs again when one moves.
 	runs: Versions,
+	/// Each node's newest minute shown: its readings and round trips between its versions.
+	latest: BTreeMap<String, Minute>,
 }
 
 impl Holding {
-	/// Every node held, and every peer not yet heard, with its state at `now`.
-	fn entries(&self, now: Timestamp, uptime: Duration) -> BTreeMap<String, Entry> {
+	/// `node`'s entry, `held` as given, in `state`; `timed` is this relay's round trips as they
+	/// stand, which its own node's entry shows over its newest minute's.
+	fn entry(
+		&self,
+		node: &str,
+		held: Option<Held>,
+		state: Presence,
+		timed: Option<&RoundTrips>,
+	) -> Entry {
+		let latest = self.latest.get(node);
+		let readings = latest.filter(|minute| !minute.readings.is_empty()).and_then(|minute| {
+			let at = Timestamp::from_millisecond(minute.at).ok()?;
+			Some(Minutely { at, values: minute.readings.clone() })
+		});
+		let round_trip = timed
+			.cloned()
+			.or_else(|| latest.map(|minute| minute.round_trip.clone()))
+			.filter(|trips| !trips.is_empty());
+		Entry { held, state, runs: self.runs.get(node).copied(), readings, round_trip }
+	}
+
+	/// Every node held, and every peer not yet heard, with its state at `now`; `own` is this
+	/// relay's node and its round trips as they stand.
+	fn entries(
+		&self,
+		now: Timestamp,
+		uptime: Duration,
+		own: (&str, &RoundTrips),
+	) -> BTreeMap<String, Entry> {
 		let held = self.cluster.nodes().iter().map(|(node, held)| (node, Some(held)));
 		let unheard = self.peers.iter().filter(|peer| !self.cluster.nodes().contains_key(*peer));
 		held
 			.chain(unheard.map(|peer| (peer, None)))
 			.map(|(node, held)| {
 				let state = presence(held, now, uptime);
-				let runs = self.runs.get(node).copied();
-				(node.clone(), Entry { held: held.cloned(), state, runs })
+				let timed = (node == own.0).then_some(own.1);
+				(node.clone(), self.entry(node, held.cloned(), state, timed))
 			})
 			.collect()
 	}
@@ -98,6 +140,18 @@ pub struct Relay {
 	own: Mutex<Own>,
 	updates: broadcast::Sender<Update>,
 	changes: broadcast::Sender<Change>,
+	pulses: broadcast::Sender<Pulse>,
+	/// This node's own beats, its clock in milliseconds, for the mesh to send each neighbor.
+	beats: broadcast::Sender<u64>,
+	/// The nodes a page here asked the fine readings of, for the mesh to ask each origin.
+	asking: broadcast::Sender<String>,
+	/// This node's fine readings each round while a neighbor holds a lease on them.
+	lent: broadcast::Sender<Value>,
+	/// Who holds a lease on this node's fine readings, and until when: a neighbor by its name, a
+	/// page on this relay by this node's.
+	leases: Mutex<BTreeMap<String, Instant>>,
+	/// Each open conversation with a neighbor, and whether that neighbor hears by beats.
+	met: Mutex<BTreeMap<u64, bool>>,
 	runs: Mirror,
 	/// This node's own rows as each round finds them new or changed, for the mesh to push.
 	batches: broadcast::Sender<Batch>,
@@ -134,7 +188,13 @@ impl Relay {
 		let shown = peers.iter().map(|peer| (peer.clone(), Presence::Waiting)).collect();
 		let store = shared(store);
 		let runs = Mirror::open(node.clone(), store.clone())?;
-		let holding = Holding { cluster: Cluster::default(), shown, peers, runs: runs.versions() };
+		let holding = Holding {
+			cluster: Cluster::default(),
+			shown,
+			peers,
+			runs: runs.versions(),
+			latest: BTreeMap::new(),
+		};
 		Ok(Arc::new(Self {
 			runs,
 			history: Book::open(node.clone(), store)?,
@@ -145,6 +205,12 @@ impl Relay {
 			own: Mutex::default(),
 			updates: broadcast::channel(BACKLOG).0,
 			changes: broadcast::channel(BACKLOG).0,
+			pulses: broadcast::channel(BACKLOG).0,
+			beats: broadcast::channel(BACKLOG).0,
+			asking: broadcast::channel(BACKLOG).0,
+			lent: broadcast::channel(BACKLOG).0,
+			leases: Mutex::default(),
+			met: Mutex::default(),
 			batches: broadcast::channel(BACKLOG).0,
 			started: Instant::now(),
 			speakers: Mutex::default(),
@@ -172,6 +238,22 @@ impl Relay {
 		self.changes.subscribe()
 	}
 
+	pub fn subscribe_pulses(&self) -> broadcast::Receiver<Pulse> {
+		self.pulses.subscribe()
+	}
+
+	pub fn subscribe_beats(&self) -> broadcast::Receiver<u64> {
+		self.beats.subscribe()
+	}
+
+	pub fn subscribe_asking(&self) -> broadcast::Receiver<String> {
+		self.asking.subscribe()
+	}
+
+	pub fn subscribe_lent(&self) -> broadcast::Receiver<Value> {
+		self.lent.subscribe()
+	}
+
 	/// Takes a snapshot of `node` when it is newer than what is held, and passes it on; whether it
 	/// did. `via` is the neighbor it came from, whose word on this node is never taken: this relay is
 	/// its one source.
@@ -188,28 +270,35 @@ impl Relay {
 		let held = holding.cluster.nodes()[node].clone();
 		let state = presence(Some(&held), now, self.started.elapsed());
 		holding.shown.insert(node.to_owned(), state);
-		let runs = holding.runs.get(node).copied();
-		let entry = Entry { held: Some(held.clone()), state, runs };
+		let entry = holding.entry(node, Some(held.clone()), state, None);
 		let _ = self.updates.send(Update { node: node.to_owned(), held });
 		let _ = self.changes.send(Change { node: node.to_owned(), entry });
 		true
 	}
 
-	/// One round of reading host, taken in as this node's snapshot with its round trips, its
-	/// events into the runs, and all of it into the minute.
+	/// One round of reading host, now.
 	pub fn observe(&self, reading: Reading) {
-		let now = Timestamp::now();
+		self.observe_at(reading, None, Timestamp::now());
+	}
+
+	/// One round of reading host at `now`, with the meter's minute where one just ended: its
+	/// events into the runs, the round and the round trips into the minute, a new version of this
+	/// node's snapshot where what it says changed, a beat, and the fine readings to whoever holds a
+	/// lease on them.
+	pub fn observe_at(&self, reading: Reading, minute: Option<(i64, Readings)>, now: Timestamp) {
 		if let Ok(events) = &reading.events {
 			self.events_read(events, now);
 		}
 		let round_trips = self.round_trips();
-		if let Some(batch) = self.history.round(&reading, &round_trips, now) {
+		if let Some(batch) = self.history.round(&reading, &round_trips, minute.clone(), now) {
 			let _ = self.minutes.send(batch);
+			self.minute_moved(&self.node);
 		}
-		let changed = {
+		let every_round = self.every_round();
+		let (changed, sample) = {
 			let mut own = lock(&self.own);
 			let before: BTreeSet<Part> = own.stale().clone();
-			let (changed, failed) = own.observe(reading, round_trips, now);
+			let (changed, failed) = own.observe(reading, minute.as_ref(), every_round, now);
 			for (part, error) in &failed {
 				if !before.contains(part) {
 					eprintln!("relay: reading host's {part}: {error}");
@@ -218,9 +307,125 @@ impl Relay {
 			for part in before.difference(own.stale()) {
 				eprintln!("relay: reading host's {part} again");
 			}
-			changed
+			(changed, own.sample().cloned())
 		};
-		self.take_own(changed);
+		if let Some(changed) = changed {
+			self.take_own(changed);
+		}
+		let at = u64::try_from(now.as_millisecond()).unwrap_or(0);
+		self.beaten(&self.node, at, None);
+		let _ = self.beats.send(at);
+		if let Some(sample) = sample {
+			self.lend(sample);
+		}
+	}
+
+	/// `node` heard at `at`, its origin's clock, from `via` or from this relay itself: its
+	/// `heard_at` moved where the beat is newer, a browser told, and its state sent again where the
+	/// beat moved it. A neighbor's word on this node is never taken.
+	pub fn beaten(&self, node: &str, at: u64, via: Option<&str>) {
+		if via.is_some() && node == self.node {
+			return;
+		}
+		let now = Timestamp::now();
+		let timed = (node == self.node).then(|| self.round_trips());
+		let mut holding = lock(&self.holding);
+		let Some(heard_at) = holding.cluster.beat(node, at, now) else {
+			return;
+		};
+		let _ = self.pulses.send(Pulse::Beat { node: node.to_owned(), heard_at });
+		let held = holding.cluster.nodes().get(node).cloned();
+		let state = presence(held.as_ref(), now, self.started.elapsed());
+		if holding.shown.get(node) != Some(&state) {
+			holding.shown.insert(node.to_owned(), state);
+			let entry = holding.entry(node, held, state, timed.as_ref());
+			let _ = self.changes.send(Change { node: node.to_owned(), entry });
+		}
+	}
+
+	/// Each node's newest beat held, for the comparison to carry.
+	pub fn beats(&self) -> Versions {
+		lock(&self.holding).cluster.beats()
+	}
+
+	/// Whether a neighbor older than the beat is met, which hears a node by its versions alone: so
+	/// long as one is, this node's own is given a new version every round.
+	fn every_round(&self) -> bool {
+		lock(&self.met).values().any(|beats| !beats)
+	}
+
+	/// A conversation with a neighbor introduced, and whether that neighbor hears by beats.
+	pub fn met(&self, conversation: u64, beats: bool) {
+		lock(&self.met).insert(conversation, beats);
+	}
+
+	/// A conversation ended.
+	pub fn parted(&self, conversation: u64) {
+		lock(&self.met).remove(&conversation);
+	}
+
+	/// A page here asks for `node`'s fine readings: this node's own lent at once, any other's asked
+	/// of its origin over the mesh, for `LEASE`.
+	pub fn watch(&self, node: &str) {
+		if node == self.node {
+			lock(&self.leases).insert(self.node.clone(), Instant::now() + LEASE);
+		} else {
+			let _ = self.asking.send(node.to_owned());
+		}
+	}
+
+	/// `peer` holds a lease on this node's fine readings for `lease`, at most `LEASE`.
+	pub fn leased(&self, peer: &str, lease: Duration) {
+		lock(&self.leases).insert(peer.to_owned(), Instant::now() + lease.min(LEASE));
+	}
+
+	/// Whether `peer`, or a page here by this node's name, holds a lease still.
+	pub fn leased_to(&self, peer: &str) -> bool {
+		lock(&self.leases).get(peer).is_some_and(|until| *until > Instant::now())
+	}
+
+	/// This node's fine readings of the round, to a page here and to every neighbor with a lease.
+	fn lend(&self, sample: Value) {
+		let neighbors = {
+			let now = Instant::now();
+			let mut leases = lock(&self.leases);
+			leases.retain(|_, until| *until > now);
+			leases.keys().any(|holder| *holder != self.node)
+		};
+		if self.leased_to(&self.node) {
+			let node = self.node.clone();
+			let _ = self.pulses.send(Pulse::Readings { node, sample: sample.clone() });
+		}
+		if neighbors {
+			let _ = self.lent.send(sample);
+		}
+	}
+
+	/// A node's fine readings, from its origin, for a page here.
+	pub fn heard_readings(&self, node: &str, sample: Value) {
+		let _ = self.pulses.send(Pulse::Readings { node: node.to_owned(), sample });
+	}
+
+	/// `node`'s newest minute moved here: its entry sent again with its readings and round trips.
+	fn minute_moved(&self, node: &str) {
+		let Some(latest) = self.history.latest(node) else {
+			return;
+		};
+		let now = Timestamp::now();
+		let timed = (node == self.node).then(|| self.round_trips());
+		let mut holding = lock(&self.holding);
+		if holding.latest.get(node).is_some_and(|shown| shown.at >= latest.at) {
+			return;
+		}
+		holding.latest.insert(node.to_owned(), latest);
+		let held = holding.cluster.nodes().get(node).cloned();
+		if held.is_none() && !holding.peers.contains(node) {
+			return;
+		}
+		let state = presence(held.as_ref(), now, self.started.elapsed());
+		holding.shown.insert(node.to_owned(), state);
+		let entry = holding.entry(node, held, state, timed.as_ref());
+		let _ = self.changes.send(Change { node: node.to_owned(), entry });
 	}
 
 	/// The last snapshot of this node, saying it is leaving, taken and so pushed to the neighbors;
@@ -266,7 +471,7 @@ impl Relay {
 		}
 		let state = presence(held.as_ref(), now, self.started.elapsed());
 		holding.shown.insert(node.to_owned(), state);
-		let entry = Entry { held, state, runs: Some(version) };
+		let entry = holding.entry(node, held, state, None);
 		let _ = self.changes.send(Change { node: node.to_owned(), entry });
 	}
 
@@ -307,7 +512,12 @@ impl Relay {
 
 	/// Takes a neighbor's batch of minutes; whether it did. Never this node's own, as `take`.
 	pub fn take_minutes(&self, batch: crate::history::Batch) -> bool {
-		self.history.merge(batch)
+		let node = batch.node.clone();
+		let taken = self.history.merge(batch);
+		if taken {
+			self.minute_moved(&node);
+		}
+		taken
 	}
 
 	pub fn minute_versions(&self) -> Versions {
@@ -365,7 +575,9 @@ impl Relay {
 	}
 
 	pub fn state(&self) -> State {
-		let nodes = lock(&self.holding).entries(Timestamp::now(), self.started.elapsed());
+		let timed = self.round_trips();
+		let own = (self.node.as_str(), &timed);
+		let nodes = lock(&self.holding).entries(Timestamp::now(), self.started.elapsed(), own);
 		State { version: VERSION, node: self.node.clone(), nodes }
 	}
 
@@ -401,8 +613,9 @@ impl Relay {
 	}
 
 	fn swept(&self, now: Timestamp, uptime: Duration) {
+		let timed = self.round_trips();
 		let mut holding = lock(&self.holding);
-		for (node, entry) in holding.entries(now, uptime) {
+		for (node, entry) in holding.entries(now, uptime, (self.node.as_str(), &timed)) {
 			if holding.shown.get(&node) != Some(&entry.state) {
 				holding.shown.insert(node.clone(), entry.state);
 				let _ = self.changes.send(Change { node, entry });
@@ -488,13 +701,22 @@ fn current(timed: &BTreeMap<String, (Duration, Instant)>, now: Instant) -> Round
 		.collect()
 }
 
-/// Reads host every `every`, for as long as the relay runs.
+/// Reads host every `every`, for as long as the relay runs, and the meter's minute once each
+/// minute ends.
 pub async fn watch(relay: Arc<Relay>, source: Arc<dyn crate::host::Reader>, every: Duration) {
 	let mut ticks = tokio::time::interval(every);
 	ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+	let mut counting = minute_of(Timestamp::now());
 	loop {
 		ticks.tick().await;
-		relay.observe(source.read().await);
+		let reading = source.read().await;
+		let now = Timestamp::now();
+		let mut minute = None;
+		if minute_of(now) != counting {
+			let ended = std::mem::replace(&mut counting, minute_of(now));
+			minute = source.minute(ended).await.map(|readings| (ended, readings));
+		}
+		relay.observe_at(reading, minute, now);
 	}
 }
 
@@ -651,12 +873,106 @@ mod tests {
 		assert!(changes.try_recv().is_err() && !relay.state().nodes.contains_key("buf"));
 	}
 
+	fn round() -> Reading {
+		let machine = serde_json::json!({ "info": {}, "sample": { "values": { "cpu.usage": 3.0 } } });
+		Reading { events: Ok(vec![]), apps: Ok(vec![]), machine: Ok(machine) }
+	}
+
+	fn own_version(relay: &Relay) -> u64 {
+		relay.versions()[relay.node()]
+	}
+
+	#[test]
+	fn a_version_stands_while_nothing_changes_unless_a_neighbor_older_than_the_beat_is_met() {
+		let relay = relay("rdu");
+		relay.observe(round());
+		let first = own_version(&relay);
+		std::thread::sleep(Duration::from_millis(3));
+		relay.observe(round());
+		assert_eq!(own_version(&relay), first);
+		relay.met(1, true);
+		relay.met(2, false);
+		relay.observe(round());
+		let again = own_version(&relay);
+		assert!(again > first);
+		relay.parted(2);
+		std::thread::sleep(Duration::from_millis(3));
+		relay.observe(round());
+		assert_eq!(own_version(&relay), again);
+	}
+
+	#[test]
+	fn a_beat_moves_when_a_node_was_heard_and_a_neighbors_beat_of_this_one_is_not_taken() {
+		let relay = relay("rdu");
+		let version = u64::try_from(Timestamp::now().as_millisecond()).unwrap() - 20_000;
+		relay.take("tyo", Carried { version, snapshot: Arc::new(serde_json::json!({})) }, None);
+		assert_eq!(relay.state().nodes["tyo"].state, Presence::Late);
+		let mut pulses = relay.subscribe_pulses();
+		let mut changes = relay.subscribe_changes();
+		relay.beaten("tyo", version + 18_000, Some("buf"));
+		assert!(matches!(pulses.try_recv().unwrap(), Pulse::Beat { node, .. } if node == "tyo"));
+		let change = changes.try_recv().unwrap();
+		assert_eq!((change.node.as_str(), change.entry.state), ("tyo", Presence::Live));
+		relay.beaten("rdu", version, Some("tyo"));
+		assert!(pulses.try_recv().is_err());
+		assert_eq!(relay.beats().get("tyo"), Some(&(version + 18_000)));
+	}
+
+	#[test]
+	fn a_nodes_newest_minute_is_shown_with_its_readings_and_round_trips() {
+		let relay = relay("rdu");
+		let version = u64::try_from(Timestamp::now().as_millisecond()).unwrap();
+		relay.take("tyo", Carried { version, snapshot: Arc::new(serde_json::json!({})) }, None);
+		let mut changes = relay.subscribe_changes();
+		let at = crate::history::minute_of(Timestamp::now()) - crate::history::MINUTE;
+		let readings =
+			Readings::from([("cpu.usage".into(), crate::history::Gauge { mean: 4.0, max: 9.0 })]);
+		let minute = Minute {
+			at,
+			beats: 20,
+			down: BTreeMap::new(),
+			held: 0,
+			round_trip: RoundTrips::from([("rdu".into(), 0.15)]),
+			leaving: None,
+			readings: readings.clone(),
+		};
+		let row = crate::history::Row { version: 5, minute };
+		let batch = crate::history::Batch { node: "tyo".into(), above: 0, version: 5, rows: vec![row] };
+		assert!(relay.take_minutes(batch));
+		let entry = changes.try_recv().unwrap().entry;
+		assert_eq!(entry.readings.map(|minutely| minutely.values), Some(readings));
+		assert_eq!(entry.round_trip, Some(RoundTrips::from([("rdu".into(), 0.15)])));
+		assert!(relay.state().nodes["tyo"].readings.is_some());
+	}
+
+	#[test]
+	fn a_lease_lends_this_nodes_readings_to_a_page_here_and_to_a_neighbor_holding_one() {
+		let relay = relay("rdu");
+		let mut pulses = relay.subscribe_pulses();
+		let mut lent = relay.subscribe_lent();
+		let readings = |pulses: &mut broadcast::Receiver<Pulse>| {
+			let pulsed: Vec<Pulse> = std::iter::from_fn(|| pulses.try_recv().ok()).collect();
+			pulsed.into_iter().any(|pulse| matches!(pulse, Pulse::Readings { node, .. } if node == "rdu"))
+		};
+		relay.observe(round());
+		assert!(!readings(&mut pulses) && lent.try_recv().is_err());
+		relay.watch("rdu");
+		relay.observe(round());
+		assert!(readings(&mut pulses) && lent.try_recv().is_err());
+		relay.leased("tyo", Duration::from_secs(600));
+		assert!(relay.leased_to("tyo"));
+		relay.observe(round());
+		assert_eq!(lent.try_recv().unwrap(), serde_json::json!({ "values": { "cpu.usage": 3.0 } }));
+	}
+
 	#[test]
 	fn a_peer_not_heard_is_shown_waiting_with_nothing_held() {
 		let peers = BTreeSet::from(["tyo".to_owned()]);
 		let relay = Relay::new("rdu".into(), "s3cret".into(), peers, Store::memory().unwrap()).unwrap();
 		let state = relay.state();
-		assert_eq!(state.nodes["tyo"], Entry { held: None, state: Presence::Waiting, runs: None });
+		let waiting =
+			Entry { held: None, state: Presence::Waiting, runs: None, readings: None, round_trip: None };
+		assert_eq!(state.nodes["tyo"], waiting);
 	}
 
 	#[test]
@@ -692,7 +1008,9 @@ mod tests {
 		let sent: Vec<_> = std::iter::from_fn(|| changes.try_recv().ok()).map(|c| c.node).collect();
 		assert_eq!(sent, ["sin"]);
 		let nodes = relay.state().nodes;
-		assert_eq!(nodes["sin"], Entry { held: None, state: Presence::Waiting, runs: None });
+		let waiting =
+			Entry { held: None, state: Presence::Waiting, runs: None, readings: None, round_trip: None };
+		assert_eq!(nodes["sin"], waiting);
 		// tyo, heard, is held until it ages; buf, never heard, is no longer listed.
 		assert!(nodes.contains_key("tyo") && !nodes.contains_key("buf"));
 	}

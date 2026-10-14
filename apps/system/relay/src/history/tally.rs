@@ -102,6 +102,7 @@ impl Counting {
 			held: self.held,
 			round_trip: round_trip.collect(),
 			leaving,
+			readings: super::Readings::new(),
 		}
 	}
 }

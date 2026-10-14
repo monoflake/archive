@@ -3,6 +3,8 @@
 //! node says it is leaving before it goes".
 
 use crate::cluster::Held;
+use crate::history::Readings;
+use crate::own::RoundTrips;
 use crate::relay::Relay;
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -64,6 +66,21 @@ pub struct Entry {
 	/// again when it moves, as the snapshot no longer carries the events -- RFC grmtb.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub runs: Option<u64>,
+	/// The machine's readings over its newest minute held, absent where none carries them.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub readings: Option<Minutely>,
+	/// Its relay's round trip to each neighbor, in seconds: this relay's own as timed now, any
+	/// other's over its newest minute held.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub round_trip: Option<RoundTrips>,
+}
+
+/// A node's readings over one minute, as `/live` shows them: when it began, and each metric's mean
+/// and highest.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Minutely {
+	pub at: Timestamp,
+	pub values: Readings,
 }
 
 /// The state of a node held as `held`, or of a peer not yet heard, at `now`, `uptime` into this
@@ -158,12 +175,14 @@ mod tests {
 	#[test]
 	fn an_entry_carries_what_is_held_and_a_peer_not_heard_its_state_alone() {
 		let held = Some(held(0, json!({ "apps": [] })));
-		let entry = Entry { held, state: Presence::Live, runs: Some(7) };
+		let entry =
+			Entry { held, state: Presence::Live, runs: Some(7), readings: None, round_trip: None };
 		let written = serde_json::to_value(&entry).unwrap();
 		assert_eq!(written["state"], "live");
 		assert_eq!(written["version"], 1);
 		assert_eq!((&written["snapshot"], &written["runs"]), (&json!({ "apps": [] }), &json!(7)));
-		let waiting = Entry { held: None, state: Presence::Waiting, runs: None };
+		let waiting =
+			Entry { held: None, state: Presence::Waiting, runs: None, readings: None, round_trip: None };
 		assert_eq!(serde_json::to_value(&waiting).unwrap(), json!({ "state": "waiting" }));
 	}
 }

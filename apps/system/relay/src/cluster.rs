@@ -1,6 +1,6 @@
-//! Every node's newest snapshot as this relay holds it, and the comparison two relays make when
-//! they meet. A snapshot is carried as the JSON its node wrote, so a relay passes on a field it is
-//! too old to know.
+//! Every node's newest snapshot as this relay holds it, its newest beat, and the comparison two
+//! relays make when they meet. A snapshot is carried as the JSON its node wrote, so a relay passes
+//! on a field it is too old to know.
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -12,9 +12,9 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Held {
 	pub version: u64,
-	/// When its origin took this version, never later than this relay's clock: a version five
-	/// minutes old is held as five minutes old, however it arrived. See spec/architecture/relay.md,
-	/// "A node says it is leaving before it goes".
+	/// When its origin last spoke -- its newest beat, or this version where that is newer -- never
+	/// later than this relay's clock: a beat five minutes old is held as five minutes old, however it
+	/// arrived. See spec/architecture/relay.md, "A node says it is leaving before it goes".
 	pub heard_at: Timestamp,
 	pub snapshot: Arc<Value>,
 }
@@ -32,6 +32,8 @@ pub type Versions = BTreeMap<String, u64>;
 #[derive(Debug, Default)]
 pub struct Cluster {
 	nodes: BTreeMap<String, Held>,
+	/// Each node's newest beat, its origin's clock in milliseconds, held or not yet.
+	beats: Versions,
 }
 
 impl Cluster {
@@ -41,10 +43,31 @@ impl Cluster {
 		if self.nodes.get(node).is_some_and(|held| held.version >= carried.version) {
 			return false;
 		}
-		let heard_at = heard(carried.version, now);
+		let spoke = self.beats.get(node).map_or(carried.version, |beat| carried.version.max(*beat));
+		let heard_at = heard(spoke, now);
 		let held = Held { version: carried.version, heard_at, snapshot: carried.snapshot };
 		self.nodes.insert(node.to_owned(), held);
 		true
+	}
+
+	/// Takes `node`'s beat at `at`, its origin's clock; when it was heard now, where that moved
+	/// for a node held. An older beat than held moves nothing.
+	pub fn beat(&mut self, node: &str, at: u64, now: Timestamp) -> Option<Timestamp> {
+		if self.beats.get(node).is_some_and(|held| *held >= at) {
+			return None;
+		}
+		self.beats.insert(node.to_owned(), at);
+		let held = self.nodes.get_mut(node)?;
+		let heard_at = heard(at.max(held.version), now);
+		(heard_at > held.heard_at).then(|| {
+			held.heard_at = heard_at;
+			heard_at
+		})
+	}
+
+	/// Each node's newest beat held, for a neighbor to take what it lacks.
+	pub fn beats(&self) -> Versions {
+		self.beats.clone()
 	}
 
 	pub fn versions(&self) -> Versions {
@@ -124,6 +147,19 @@ mod tests {
 		assert!(!cluster.merge("rdu", carried(taken(0), "again"), at(6)));
 		let held = &cluster.nodes()["rdu"];
 		assert_eq!((held.heard_at, held.snapshot["said"].as_str()), (at(0), Some("new")));
+	}
+
+	#[test]
+	fn a_beat_moves_when_a_node_was_heard_and_never_back() {
+		let mut cluster = Cluster::default();
+		// A beat ahead of the snapshot it belongs to is kept until the snapshot comes.
+		assert_eq!(cluster.beat("rdu", taken(2), at(2)), None);
+		cluster.merge("rdu", carried(taken(0), "old"), at(2));
+		assert_eq!(cluster.nodes()["rdu"].heard_at, at(2));
+		assert_eq!(cluster.beat("rdu", taken(5), at(5)), Some(at(5)));
+		assert_eq!(cluster.beat("rdu", taken(4), at(6)), None);
+		assert_eq!(cluster.nodes()["rdu"].heard_at, at(5));
+		assert_eq!(cluster.beats(), Versions::from([("rdu".into(), taken(5))]));
 	}
 
 	#[test]
