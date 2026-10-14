@@ -25,7 +25,11 @@ export type Halt =
 
 /** Thrown inside a step's own work to end the turn; never reaches the workflow. */
 class Stop {
-	constructor(readonly halt: Halt) {}
+	readonly halt: Halt;
+
+	constructor(halt: Halt) {
+		this.halt = halt;
+	}
 }
 
 /** Picks a unique value out of a race with a step's callback. */

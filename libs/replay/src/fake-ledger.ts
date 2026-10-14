@@ -34,10 +34,13 @@ export class FakeLedger {
 	/** A route that answers no envelope: the ledger not reached. */
 	down = false;
 
-	constructor(
-		readonly workflow = 'mirror',
-		readonly params: unknown = { backup: 'base_1' },
-	) {}
+	readonly workflow: string;
+	readonly params: unknown;
+
+	constructor(workflow = 'mirror', params: unknown = { backup: 'base_1' }) {
+		this.workflow = workflow;
+		this.params = params;
+	}
 
 	/** The turn the ledger would hand out now, its done steps answered. */
 	turn(): Turn {

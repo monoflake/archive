@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -24,6 +25,12 @@ describe('the runner', () => {
 		expect(SHIPPED).toEqual(
 			expect.arrayContaining(['replay.ts', 'step.ts', 'ledger.ts', 'config.ts']),
 		);
+	});
+
+	// The executor runs it as written, with Node's types stripped and nothing compiled.
+	it.each(SHIPPED)('%s is TypeScript Node can run by stripping its types', (file) => {
+		const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+		expect(() => stripTypeScriptTypes(source, { mode: 'strip' })).not.toThrow();
 	});
 
 	it.each(SHIPPED)('%s uses web APIs alone', (file) => {
