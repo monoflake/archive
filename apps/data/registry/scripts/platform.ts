@@ -11,6 +11,10 @@ import { parseArgs } from 'node:util';
 import { parse } from 'smol-toml';
 import * as v from 'valibot';
 import { Catalog, type Description, type Field } from './catalog.gen.ts';
+import { Failure, fail } from './failure.ts';
+import { PORT as SECRET_PORT, TOKEN as SECRET_TOKEN, type SecretWorld, runSecret } from './secret.ts';
+
+export { Failure };
 
 const APP = 'platform';
 /** Who a change is recorded as made by. */
@@ -30,13 +34,6 @@ const VERBS = ['list', 'get', 'create', 'patch'] as const;
 type Verb = (typeof VERBS)[number];
 /** The options every write takes, which no item's option may be named. */
 const WRITE_OPTIONS = ['set', 'json', 'unset', 'dry-run', 'help'];
-
-/** A failure the task reports as one line and exits 1 on. */
-export class Failure extends Error {}
-
-function fail(message: string): never {
-	throw new Failure(message);
-}
 
 /** A resource as `/v1` answers it -- RFC cpc2b. */
 interface Resource {
@@ -589,7 +586,8 @@ function usageOf(kinds: readonly Description[]): string {
 	return (
 		`name a kind and a verb: \`mise run ${APP} <kind> ${VERBS.join('|')} [name-or-id]\`, an id` +
 		` given whole or by its first ${SHORT} digits or more, a kind` +
-		` being one of ${listed(kinds)}; \`<kind> <verb> --help\` says its fields`
+		` being one of ${listed(kinds)}; \`<kind> <verb> --help\` says its fields;` +
+		` an app's values are \`mise run ${APP} secret list|set|delete\``
 	);
 }
 
@@ -718,12 +716,13 @@ async function typedIn(prompt: string): Promise<string> {
 	});
 }
 
-/** The registry's cores, from its service.toml. */
-function placements(): string[] {
-	const declared = parse(readFileSync(join(import.meta.dirname, '../service.toml'), 'utf8'));
+/** The nodes the service declared in `directory`'s service.toml runs on: the registry's cores. */
+function placements(directory = '..'): string[] {
+	const path = join(import.meta.dirname, directory, 'service.toml');
+	const declared = parse(readFileSync(path, 'utf8'));
 	const cores = declared.placements;
 	if (!Array.isArray(cores) || !cores.every((core) => typeof core === 'string')) {
-		fail("the registry's service.toml places it on no nodes");
+		fail(`${path} places its service on no nodes`);
 	}
 	return cores;
 }
@@ -740,7 +739,7 @@ function address(node: string): string {
 }
 
 const WORLD: World = {
-	placements,
+	placements: () => placements(),
 	address,
 	port: PORT,
 	token: () => process.env[TOKEN],
@@ -748,9 +747,19 @@ const WORLD: World = {
 	print: (text) => console.log(text),
 };
 
+/** The secret service, on the cores its own service.toml names. */
+const SECRET_WORLD: SecretWorld = {
+	...WORLD,
+	placements: () => placements('../../secrets'),
+	port: SECRET_PORT,
+	token: () => process.env[SECRET_TOKEN],
+};
+
 if (import.meta.main) {
 	try {
-		await run(WORLD, process.argv.slice(2));
+		const args = process.argv.slice(2);
+		if (args[0] === 'secret') await runSecret(SECRET_WORLD, args.slice(1));
+		else await run(WORLD, args);
 	} catch (error) {
 		if (!(error instanceof Failure)) throw error;
 		console.error(`${APP}: ${error.message}`);
