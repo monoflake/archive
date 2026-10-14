@@ -12,12 +12,20 @@ import { ask, turnsOf } from './ledger.ts';
 export interface Running {
 	readonly ended: Promise<Ended>;
 	terminate(): void;
+	/** Told when a step starts asking the ledger or running its callback, and when none is. */
+	onBusy(listener: (busy: boolean) => void): void;
 }
 
 export type Start = (turn: Turn) => Running;
 
 /** A lease is renewed this often, a third of its 30 seconds. See RFC 23wgz. */
 export const RENEW_MS = 10_000;
+
+/**
+ * A turn may go this long with no step asking the ledger or running its callback; past it, it has
+ * stalled. See spec/architecture/executor.md, "The limits".
+ */
+export const STALL_MS = 300_000;
 
 /** A poll every 15 to 30 seconds, at random, so nodes started together do not poll together. */
 export const POLL_MS: readonly [number, number] = [15_000, 30_000];
@@ -31,6 +39,7 @@ export interface DriverOptions {
 	readonly ledger: LedgerFetch;
 	readonly start: Start;
 	readonly renewMs?: number;
+	readonly stallMs?: number;
 	readonly pollMs?: readonly [number, number];
 	readonly random?: () => number;
 	readonly log?: (line: string) => void;
@@ -40,6 +49,8 @@ interface Held {
 	readonly turn: Turn;
 	readonly running: Running;
 	readonly renewal: ReturnType<typeof setInterval>;
+	/** Runs while no step is asking the ledger or running its callback. */
+	stall: ReturnType<typeof setTimeout> | undefined;
 	/** When the lease runs out on the ledger's clock, as last told, in milliseconds. */
 	expiresAt: number;
 }
@@ -155,10 +166,19 @@ export class Driver {
 		}
 		const running = this.#options.start(turn);
 		const renewal = setInterval(() => void this.#renew(key), this.#options.renewMs ?? RENEW_MS);
-		const entry: Held = { turn, running, renewal, expiresAt: Date.parse(turn.expires_at) };
+		const expiresAt = Date.parse(turn.expires_at);
+		const entry: Held = { turn, running, renewal, stall: undefined, expiresAt };
 		this.#held.set(key, entry);
+		// The clock starts with the turn, since the code runs from the top before any step asks.
+		const idle = () => {
+			clearTimeout(entry.stall);
+			entry.stall = setTimeout(() => void this.#stalled(entry), this.#options.stallMs ?? STALL_MS);
+		};
+		idle();
+		running.onBusy((busy) => (busy ? clearTimeout(entry.stall) : idle()));
 		void running.ended.then((ended) => {
 			clearInterval(renewal);
+			clearTimeout(entry.stall);
 			if (this.#held.get(key) === entry) this.#held.delete(key);
 			const why =
 				ended.ended === 'halted' ? ` (${ended.why}${ended.detail ? `: ${ended.detail}` : ''})` : '';
@@ -186,9 +206,28 @@ export class Driver {
 		}
 	}
 
+	/**
+	 * A turn past its limit with no step asking: stopped, and told to the ledger under its lease,
+	 * which makes the run ready for the next turn or fails it `turn_stalled`.
+	 */
+	async #stalled(held: Held): Promise<void> {
+		const key = `${held.turn.service}/${held.turn.run}`;
+		if (this.#held.get(key) !== held) return;
+		this.#drop(held, 'it stalled');
+		const { service, run, fence } = held.turn;
+		const path = `/v1/runs/${encodeURIComponent(service)}/${encodeURIComponent(run)}/stalls`;
+		const answer = await ask(this.#options.ledger, 'POST', path, {
+			node: this.#options.node,
+			fence,
+		});
+		const told = answer.ok ? `the run is ${String(answer.data.status)}` : answer.detail;
+		this.#log(`${key} at fence ${fence} stalled: ${told}`);
+	}
+
 	#drop(held: Held, why: string): void {
 		const key = `${held.turn.service}/${held.turn.run}`;
 		clearInterval(held.renewal);
+		clearTimeout(held.stall);
 		if (this.#held.get(key) === held) this.#held.delete(key);
 		held.running.terminate();
 		this.#log(`${key} at fence ${held.turn.fence} stopped: ${why}`);

@@ -59,6 +59,24 @@ describe('a turn in a thread', () => {
 		expect(outcomeOf('echo-1')).toMatchObject({ node: 'tyo', fence: 1, outcome: 'done' });
 	});
 
+	it('says when its steps are asking the ledger, for the stall clock', async () => {
+		const running = start()(turn('echo-busy', 'echo'));
+		const told: boolean[] = [];
+		running.onBusy((busy) => told.push(busy));
+		expect(await running.ended).toMatchObject({ ended: 'done' });
+		expect(told).toEqual([true, false]);
+	});
+
+	it('never says busy of code that awaits outside a step', async () => {
+		const running = start()(turn('hang-busy', 'hang'));
+		const told: boolean[] = [];
+		running.onBusy((busy) => told.push(busy));
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		running.terminate();
+		await running.ended;
+		expect(told).toEqual([]);
+	});
+
 	it('starts every turn in a global scope of its own', async () => {
 		const run = start();
 		const first = await run(turn('count-1', 'counter')).ended;

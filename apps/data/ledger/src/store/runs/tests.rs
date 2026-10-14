@@ -673,3 +673,95 @@ async fn the_gate_is_open_only_where_patroni_says_the_node_leads() {
 	assert!(!crate::scheduler::leads(&http, &serve(StatusCode::SERVICE_UNAVAILABLE).await).await);
 	assert!(!crate::scheduler::leads(&http, "http://gate.invalid/primary").await);
 }
+
+/// The turn `node` is granted next, for a run already open.
+async fn granted(world: &World, node: &Executor) -> Turn {
+	node.poll(1).await;
+	world.store.tick().await.unwrap();
+	node.poll(1).await.remove(0)
+}
+
+/// A turn that ends released, by a sleep of its own name: `world.due` wakes it.
+async fn released(world: &World, node: &Executor, name: &str) {
+	let turn = granted(world, node).await;
+	let slept = world.store.sleep(lease(&turn), name, i64::MAX).await.unwrap();
+	assert!(matches!(slept, Ok(Slept::Sleeping { .. })), "{slept:?}");
+	world.due().await;
+}
+
+async fn turns_of(world: &World) -> Value {
+	world.view("a").await["run"]["turns"].clone()
+}
+
+#[tokio::test]
+async fn a_run_fails_once_three_of_its_last_five_turns_stalled() {
+	let Some(world) = world().await else { return };
+	world.open("a", "w").await;
+	let node = Executor::new(&world.router, "tyo", &["w"]);
+	for (index, name) in ["one", "two"].into_iter().enumerate() {
+		let (status, answer) = node.stall(&granted(&world, &node).await).await;
+		assert_eq!(status, StatusCode::OK, "{answer}");
+		assert_eq!(answer["data"]["status"], "ready", "stall {index}");
+		assert_eq!(world.state_of("a").await, "ready");
+		released(&world, &node, name).await;
+	}
+	assert_eq!(turns_of(&world).await, json!(["stalled", "released", "stalled", "released"]));
+	let (status, answer) = node.stall(&granted(&world, &node).await).await;
+	assert_eq!((status, answer["code"].as_str()), (StatusCode::CONFLICT, Some("turn_stalled")));
+	let view = world.view("a").await;
+	assert_eq!(view["run"]["status"], "failed");
+	assert!(view["run"]["error"].as_str().unwrap().starts_with("turn_stalled: 3 of its last 5"));
+	assert!(view["lease"].is_null());
+	let task = world.store.get("certs", "a").await.unwrap().unwrap();
+	assert_eq!(task.task.record.state, State::Failed);
+}
+
+#[tokio::test]
+async fn two_stalls_among_the_last_five_turns_leave_the_run_to_the_next() {
+	let Some(world) = world().await else { return };
+	world.open("a", "w").await;
+	let node = Executor::new(&world.router, "tyo", &["w"]);
+	node.stall(&granted(&world, &node).await).await;
+	for name in ["one", "two", "three", "four"] {
+		released(&world, &node, name).await;
+	}
+	// The first stall has left the last five: a stall now is the second among them.
+	let (status, answer) = node.stall(&granted(&world, &node).await).await;
+	assert_eq!(status, StatusCode::OK, "{answer}");
+	assert_eq!(
+		turns_of(&world).await,
+		json!(["released", "released", "released", "released", "stalled"])
+	);
+	node.stall(&granted(&world, &node).await).await;
+	assert_eq!(world.state_of("a").await, "ready", "two of the last five stalled");
+}
+
+#[tokio::test]
+async fn a_node_lost_is_not_a_stall() {
+	let Some(world) = world().await else { return };
+	world.open("a", "w").await;
+	let node = Executor::new(&world.router, "tyo", &["w"]);
+	for _ in 0..3 {
+		granted(&world, &node).await;
+		world.lapse().await;
+	}
+	assert_eq!(turns_of(&world).await, json!([]));
+	let (status, answer) = node.stall(&granted(&world, &node).await).await;
+	assert_eq!(status, StatusCode::OK, "{answer}");
+	assert_eq!(turns_of(&world).await, json!(["stalled"]));
+}
+
+#[tokio::test]
+async fn a_stall_under_a_stale_fence_is_refused() {
+	let Some(world) = world().await else { return };
+	world.open("a", "w").await;
+	let node = Executor::new(&world.router, "tyo", &["w"]);
+	let lost = granted(&world, &node).await;
+	world.lapse().await;
+	let current = granted(&world, &node).await;
+	assert!(current.fence > lost.fence);
+	let (status, answer) = node.stall(&lost).await;
+	assert_eq!((status, answer["code"].as_str()), (StatusCode::CONFLICT, Some("stale_lease")));
+	assert_eq!(turns_of(&world).await, json!([]));
+	assert_eq!(world.state_of("a").await, "running");
+}

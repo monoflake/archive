@@ -26,6 +26,11 @@ const ALIVE_NANOS: i64 = 60_000_000_000;
 /// cannot loop for ever. A crash is not an attempt. See RFC 23wgz.
 pub const MAX_STARTS: i32 = 20;
 
+/// A run whose last `TURNS` turns stalled `STALLS` times fails `turn_stalled`: stalling is the
+/// code's own doing, so it is given up on sooner than a step's twenty starts. See RFC 23wgz.
+pub const STALLS: usize = 3;
+pub const TURNS: usize = 5;
+
 /// A turn carries the results of its done steps up to this many bytes; past it `partial` is set
 /// and the executor reads the rest one by one.
 const TURN_BYTES: i64 = 8 << 20;
@@ -57,6 +62,7 @@ mod waits;
 pub use config::{Backoff, Class, Kind, NewRun, Retries, StepConfig};
 pub use grant::{Granted, Turn};
 pub use open::{Created, LeaseRow, RunRow, RunView, StepRow};
+pub use outcome::Stalled;
 pub use steps::{Begun, Finished, Outcome};
 pub use waits::{Slept, Waited};
 
@@ -85,6 +91,14 @@ impl Store {
 
 fn stage(name: &str) -> String {
 	format!("step.{name}")
+}
+
+/// The SQL that keeps how a turn ended among the run's last `TURNS`, as `turns = ...`.
+fn turn_ended(end: &str) -> String {
+	format!(
+		"turns = (array_append(turns, '{end}'))[greatest(cardinality(turns) - {}, 1):]",
+		TURNS - 2
+	)
 }
 
 fn millis(ms: u64) -> i64 {

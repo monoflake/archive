@@ -156,6 +156,13 @@ impl Executor {
 		ended
 	}
 
+	/// The turn stalled: its code went past the limit with no step asking, so the node ended it and
+	/// says so. Answers what the ledger did.
+	pub async fn stall(&self, turn: &Turn) -> (StatusCode, Value) {
+		let path = format!("/v1/runs/{}/{}/stalls", turn.service, turn.run);
+		call(&self.router, "POST", &path, &json!({ "node": self.node, "fence": turn.fence })).await
+	}
+
 	/// Polls and replays every turn this node holds, by the workflow named in each.
 	pub async fn work(&self, code: &HashMap<String, Workflow>) -> Vec<(String, Result<Value, Halt>)> {
 		let mut ended = Vec::new();

@@ -5,7 +5,7 @@ use crate::api::Shared;
 use crate::codes;
 use crate::store::nanos;
 use crate::store::runs::{
-	Begun, Created, Finished, Lease, NewRun, Outcome, Refused, Slept, StepConfig, Waited,
+	Begun, Created, Finished, Lease, NewRun, Outcome, Refused, Slept, Stalled, StepConfig, Waited,
 };
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
@@ -28,6 +28,7 @@ pub fn routes() -> Router<Shared> {
 		.route("/v1/runs/{service}/{id}/waits", post(wait))
 		.route("/v1/runs/{service}/{id}/events", post(event))
 		.route("/v1/runs/{service}/{id}/outcome", put(outcome))
+		.route("/v1/runs/{service}/{id}/stalls", post(stall))
 }
 
 type Body<T> = Result<axum::Json<T>, JsonRejection>;
@@ -338,6 +339,20 @@ async fn outcome(
 		end.error,
 	);
 	checked(done.await, |()| response::success(StatusCode::OK, json!({})))
+}
+
+/// A turn that stalled, told by its holder: the run is ready for the next turn, or fails
+/// `turn_stalled`, answered as the one write that ended it.
+async fn stall(
+	Path((service, id)): Path<(String, String)>,
+	State(store): State<Shared>,
+	body: Body<Holder>,
+) -> Response {
+	let Ok(axum::Json(holder)) = body else { return invalid() };
+	checked(store.stall(holder.on(&service, &id)).await, |stalled| match stalled {
+		Stalled::Ready => response::success(StatusCode::OK, json!({ "status": "ready" })),
+		Stalled::Failed(error) => codes::failure_with("turn_stalled", error),
+	})
 }
 
 #[cfg(test)]

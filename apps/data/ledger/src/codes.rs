@@ -55,7 +55,7 @@ mod tests {
 
 	#[test]
 	fn every_declared_code_is_the_ledgers_own_and_well_formed() {
-		assert_eq!(declared().len(), 5, "codes.json did not parse whole");
+		assert_eq!(declared().len(), 6, "codes.json did not parse whole");
 		for (code, declared) in declared() {
 			assert!(code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'), "{code}");
 			assert!(response::message_of(code).is_none(), "{code} is lib's already");

@@ -125,7 +125,8 @@ pub(super) async fn step_of(
 	)
 }
 
-/// The run goes to `status` until `run_at`, and its lease is let go.
+/// The run goes to `status` until `run_at`, and its lease is let go: the turn ended `released`,
+/// kept among the run's last turns.
 pub(super) async fn release(
 	tx: &Transaction<'_>,
 	service: &str,
@@ -135,7 +136,11 @@ pub(super) async fn release(
 	now: i64,
 ) -> anyhow::Result<()> {
 	tx.execute(
-		"UPDATE runs SET status = $3, run_at = $4, updated_at = $5 WHERE service = $1 AND id = $2",
+		&format!(
+			"UPDATE runs SET status = $3, run_at = $4, updated_at = $5, {} \
+			 WHERE service = $1 AND id = $2",
+			super::turn_ended("released")
+		),
 		&[&service, &run, &status, &run_at, &now],
 	)
 	.await?;

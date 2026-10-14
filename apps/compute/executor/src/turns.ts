@@ -38,6 +38,7 @@ export function threads(options: Threads): Start {
 			return {
 				ended: Promise.resolve({ ended: 'halted', why: 'unreachable', detail }),
 				terminate() {},
+				onBusy() {},
 			};
 		}
 		const data: TurnData = {
@@ -51,9 +52,15 @@ export function threads(options: Threads): Start {
 			workerData: data,
 			resourceLimits: { maxOldGenerationSizeMb: options.heapMb ?? HEAP_MB },
 		});
+		const listeners: ((busy: boolean) => void)[] = [];
 		const ended = new Promise<Ended>((resolve) => {
-			worker.once('message', (answer: Ended) => {
-				resolve(answer);
+			// A thread says when its steps are busy, `{busy}`, and once how the turn ended.
+			worker.on('message', (message: Ended | { busy: boolean }) => {
+				if ('busy' in message) {
+					for (const listener of listeners) listener(message.busy);
+					return;
+				}
+				resolve(message);
 				void worker.terminate();
 			});
 			worker.once('error', (error: Error) => {
@@ -67,6 +74,10 @@ export function threads(options: Threads): Start {
 				resolve({ ended: 'halted', why: 'unreachable', detail: `the thread exited with ${code}` });
 			});
 		});
-		return { ended, terminate: () => void worker.terminate() };
+		return {
+			ended,
+			terminate: () => void worker.terminate(),
+			onBusy: (listener) => void listeners.push(listener),
+		};
 	};
 }

@@ -103,7 +103,7 @@ lease, for a `step.do` that declares where it runs, is not built; `steps` carrie
 
 ### The tables
 
-Migrations 2 to 5, all expands, in the ledger's own style:
+Migrations 2 to 6, all expands, in the ledger's own style:
 
 - **`runs`**, keyed `(service, id)` with a foreign key to `tasks`: `workflow`, `class`, `status`
   (`ready`, `running`, `sleeping`, `waiting`, `done`, `failed`), `params`, `output`, `error`,
@@ -183,11 +183,20 @@ All under `/v1`, in the envelope, on the private side as the rest of the ledger.
 | `POST /runs/{service}/{id}/sleeps`                | `{node, fence, name, wake_at}`                              | `{status: "done"}` or `{status: "sleeping", wake_at}`                                               |
 | `POST /runs/{service}/{id}/waits`                 | `{node, fence, name, type, timeout_ms}`                     | `{status: "done", event}`, `{status: "failed", error}` or `{status: "waiting", wake_at}`            |
 | `POST /runs/{service}/{id}/events`                | `{key, type, payload?}`                                     | `{new}`                                                                                             |
+| `POST /runs/{service}/{id}/stalls`                | `{node, fence}`                                             | `{status: "ready"}`, or `409 turn_stalled` on the third stall in five                               |
 | `PUT /runs/{service}/{id}/outcome`                | `{node, fence, outcome: "done"\|"failed", output?, error?}` | `{}`; the same end said twice is the same                                                           |
 
 `outcome` of a step is `success`, `error` or `fatal`. **The ledger's own codes are declared in
 its `codes.json`**, never in lib's -- RFC v7g2p: `stale_lease`, `replay_diverged` and
-`run_exists_differently` `409`, `result_too_large` `413`, `no_such_run` `404`.
+`run_exists_differently` `409`, `result_too_large` `413`, `no_such_run` `404`, and `turn_stalled`
+`409`.
+
+**A run remembers how its last five turns ended**, `turns` on the run (migration 6): `released` for
+one that let its lease go to a sleep, a wait or a retry, `stalled` for one the executor reported
+stalled. A node lost, a lease lapsed and a `stale_lease` add nothing, so only the code's own doing
+counts. A stall lets the lease go and makes the run `ready` again; **the third stall among the last
+five fails the run and its task** `turn_stalled`, answered on that same write -- RFC 23wgz,
+[executor.md](executor.md), "The limits".
 
 ### Workflows' API on these routes
 

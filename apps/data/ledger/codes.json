@@ -18,5 +18,9 @@
 	"stale_lease": {
 		"status": 409,
 		"message": "The run is not leased to this caller at this fence"
+	},
+	"turn_stalled": {
+		"status": 409,
+		"message": "Too many of the run's last turns stalled, so it failed"
 	}
 }

@@ -1,12 +1,13 @@
 import type { Ended, LedgerFetch, Turn } from '@monoflake/replay';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Driver, type DriverOptions, RENEW_MS } from './driver.ts';
+import { Driver, type DriverOptions, RENEW_MS, STALL_MS } from './driver.ts';
 
 /** The ledger's two executor routes in memory: the turns a poll answers, and renewals. */
 class Ledger {
 	turns: Turn[] = [];
 	polls: Record<string, unknown>[] = [];
 	renewals: Record<string, unknown>[] = [];
+	stalls: Record<string, unknown>[] = [];
 	/** What a renewal answers: a later expiry, a refusal, or nothing at all. */
 	renewal: 'renewed' | 'stale' | 'down' = 'renewed';
 
@@ -15,6 +16,12 @@ class Ledger {
 		if (path.endsWith('/polls')) {
 			this.polls.push(body);
 			return Response.json({ status: 'success', data: { turns: this.turns } });
+		}
+		if (path.endsWith('/stalls')) {
+			// The run goes back to ready, so no poll answers its turn again.
+			this.stalls.push({ path, ...body });
+			this.turns = [];
+			return Response.json({ status: 'success', data: { status: 'ready' } });
 		}
 		this.renewals.push({ path, ...body });
 		if (this.renewal === 'down') throw new TypeError('fetch failed');
@@ -31,6 +38,7 @@ class Runs {
 	readonly started: Turn[] = [];
 	readonly terminated: string[] = [];
 	readonly #ends = new Map<string, (ended: Ended) => void>();
+	readonly #busy = new Map<string, (busy: boolean) => void>();
 
 	readonly start = (given: Turn) => {
 		const key = `${given.run}@${given.fence}`;
@@ -42,8 +50,14 @@ class Runs {
 				this.terminated.push(key);
 				this.#ends.get(key)?.({ ended: 'halted', why: 'unreachable', detail: 'terminated' });
 			},
+			onBusy: (listener: (busy: boolean) => void) => void this.#busy.set(key, listener),
 		};
 	};
+
+	/** A step of `run` starts or stops asking the ledger. */
+	busy(run: string, busy: boolean, fence = 1): void {
+		this.#busy.get(`${run}@${fence}`)?.(busy);
+	}
 
 	end(run: string, fence = 1): void {
 		this.#ends.get(`${run}@${fence}`)?.({ ended: 'done', output: null });
@@ -205,5 +219,44 @@ describe('the driver', () => {
 		await at.ring();
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(ledger.polls).toHaveLength(polled);
+	});
+
+	it('stops a turn that goes five minutes with no step asking, and tells the ledger it stalled', async () => {
+		ledger.turns = [turn('a', 4)];
+		const at = driver();
+		await at.ring();
+		await vi.advanceTimersByTimeAsync(STALL_MS - 1);
+		expect(runs.terminated).toEqual([]);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(runs.terminated).toEqual(['a@4']);
+		expect(ledger.stalls).toEqual([{ path: '/v1/runs/test/a/stalls', node: 'tyo', fence: 4 }]);
+		expect(lines).toContain('test/a at fence 4 stalled: the run is ready');
+		await stopped(at);
+	});
+
+	it('runs the stall clock only while no step is asking the ledger', async () => {
+		ledger.turns = [turn('a')];
+		const at = driver();
+		await at.ring();
+		await vi.advanceTimersByTimeAsync(STALL_MS - 1_000);
+		runs.busy('a', true);
+		await vi.advanceTimersByTimeAsync(STALL_MS * 2);
+		expect(runs.terminated, 'a step asking holds the clock').toEqual([]);
+		runs.busy('a', false);
+		await vi.advanceTimersByTimeAsync(STALL_MS - 1);
+		expect(runs.terminated, 'the clock starts again from nothing').toEqual([]);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(runs.terminated).toEqual(['a@1']);
+		await stopped(at);
+	});
+
+	it('does not count a turn that ended or was stopped as stalled', async () => {
+		ledger.turns = [turn('a')];
+		const at = driver();
+		await at.ring();
+		runs.end('a');
+		await vi.advanceTimersByTimeAsync(STALL_MS * 2);
+		expect(ledger.stalls).toEqual([]);
+		await stopped(at);
 	});
 });

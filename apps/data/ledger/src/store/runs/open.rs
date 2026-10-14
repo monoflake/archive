@@ -22,6 +22,8 @@ pub struct RunRow {
 	pub fence: i64,
 	pub created_at: Timestamp,
 	pub finished_at: Option<Timestamp>,
+	/// How its last turns ended, oldest first: `released` or `stalled`.
+	pub turns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,7 +138,8 @@ impl Store {
 		let client = self.pool.get().await?;
 		let Some(row) = client
 			.query_opt(
-				"SELECT workflow, class, status, params, output, error, run_at, fence, created_at, finished_at
+				"SELECT workflow, class, status, params, output, error, run_at, fence, created_at, finished_at,
+					turns
 				FROM runs WHERE service = $1 AND id = $2",
 				&[&service, &id],
 			)
@@ -157,6 +160,7 @@ impl Store {
 			fence: row.get(7),
 			created_at: timestamp(row.get(8)),
 			finished_at: row.get::<_, Option<i64>>(9).map(timestamp),
+			turns: row.get(10),
 		};
 		let steps = client
 			.query(
