@@ -98,25 +98,26 @@ before.
   read from the relay's host once, within a second: `upgrade` while host's newest row for the relay
   is a deploy, a rollback or a rollback with its data still running, `restart` otherwise, a reboot
   and a stop by hand included, which the relay cannot tell apart. 180 seconds covers a cloud
-  machine's reboot, `/data` mounted and the health check passed. - **The relay waits up to two
-  seconds for the snapshot to be sent to each neighbor, then stops**, inside the twenty seconds
-  every container is given -- infra's `spec/architecture/host.md`, "The control plane going down is
-  not an outage". The snapshot is versioned and gossiped like any other, so a neighbor that missed
-  the push takes it by comparison, after its origin has gone. - **Each node's entry carries `state`,
-  the relay's own reading of it**, which the console draws and never computes: `live` heard within
-  10 seconds, `late` within 60, `upgrading` or `restarting` while an announced `leaving` is within
-  its `within` of `heard_at`, `waiting` for a peer not yet heard in the relay's
-  first 60 seconds, and `gone` otherwise. A newer version without `leaving` is the node back. A
-  state that time alone changes is sent again on `/live`, by a sweep every second. - **A node's own
-  snapshot is a new version every round**, whether or not what it says changed, so a node is heard
-  because it spoke and not because its readings happened to move. - **`heard_at` is when its origin
-  took the version, never later than this relay's clock**: a version is the origin's clock in
-  milliseconds, so a relay that starts and is handed a neighbor's snapshot five minutes old holds it
-  as five minutes old, not as heard now. Clocks on the tailnet agree within a second, against
-  thresholds of ten and sixty. - **The relay reaches the canary first**, as host, keeper and Caddy
-  do -- infra's `spec/architecture/host.md`, "A new host, keeper or Caddy reaches the canary first"
-  -- so a run that rebuilt it restarts nrt's alone, and the rest announce their leaving to a relay
-  already back.
+  machine's reboot, `/data` mounted and the health check passed.
+- **The relay waits up to two seconds for the snapshot to be written to each neighbor's socket, then
+  stops**, inside the twenty seconds every container is given -- infra's
+  `spec/architecture/host.md`, "The control plane going down is not an outage". The snapshot is
+  versioned and gossiped like any other, so a neighbor that missed the push takes it by comparison,
+  after its origin has gone.
+- **Each node's entry carries `state`, the relay's own reading of it**, which the console draws and
+  never computes: `live` heard within 10 seconds, `late` within 60, `upgrading` or `restarting`
+  while an announced `leaving` is within its `within` of `heard_at`, `waiting` for a peer not yet
+  heard in the relay's first 60 seconds, and `gone` otherwise. A newer version without `leaving` is
+  the node back. A state that time alone changes is sent again on `/live`, by a sweep every second.
+- **A node's own snapshot is a new version every round**, whether or not what it says changed, so a
+  node is heard because it spoke and not because its readings happened to move.
+- **`heard_at` is when its origin took the version, never later than this relay's clock**: a version
+  is the origin's clock in milliseconds, so a relay that starts and is handed a neighbor's snapshot
+  five minutes old holds it as five minutes old, not as heard now. Clocks on the tailnet agree
+  within a second, against thresholds of ten and sixty.
+- **The relay reaches the canary first**, as host, keeper and Caddy do -- infra's
+  `spec/architecture/host.md`, "A new host, keeper or Caddy reaches the canary first" -- so a run
+  that rebuilt it restarts nrt's alone, and the rest announce their leaving to a relay already back.
 
 Decided with the author on 2026-10-09.
 
