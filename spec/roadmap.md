@@ -4,7 +4,8 @@ Where the platform is going, without the steps. What is not done is an RFC -- th
 `spec/planning.md`.
 
 - **The platform deploys and operates itself before anybody else uses it**, measured by the acts
-  still done by hand -- RFC bz8nz -- in this order: the nodes
+  still done by hand, [architecture/operations.md](architecture/operations.md) -- RFC bz8nz -- in
+  this order: the nodes
   in its registry (RFC ja5hm and qcyb3); a controller in every layer bringing what runs toward what
   the registry wants (RFC jln34); every act done from the console through one contract (RFC dk6wz and
   cpc2b); what a node runs signed by the core (RFC 8vy7x); and only then accounts.
