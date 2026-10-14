@@ -14,84 +14,84 @@ export const Action: v.GenericSchema<Action> = v.never();
  * One kind as the catalog describes it.
  */
 export type Description = {
-actions: Action[];
-/**
- * The fields a list shows first, in order.
- */
-columns: string[];
-fields: Field[];
-name: Kind;
-/**
- * False for a kind whose resources have no name, an account's: each is its id, made by a `POST`
- * to its collection, and shown by its fields and its id's first eight digits -- RFC 32hd9.
- */
-named: boolean;
-/**
- * Its collection's segment of a route, `/v1/<plural>`, so no reader derives one.
- */
-plural: string;
+	actions: Action[];
+	/**
+	 * The fields a list shows first, in order.
+	 */
+	columns: string[];
+	fields: Field[];
+	name: Kind;
+	/**
+	 * False for a kind whose resources have no name, an account's: each is its id, made by a `POST`
+	 * to its collection, and shown by its fields and its id's first eight digits -- RFC 32hd9.
+	 */
+	named: boolean;
+	/**
+	 * Its collection's segment of a route, `/v1/<plural>`, so no reader derives one.
+	 */
+	plural: string;
 };
 export const Description: v.GenericSchema<Description> = v.object({
-actions: v.array(v.lazy(() => Action)),
-columns: v.array(v.string()),
-fields: v.array(v.lazy(() => Field)),
-name: v.lazy(() => Kind),
-named: v.boolean(),
-plural: v.string(),
+	actions: v.array(v.lazy(() => Action)),
+	columns: v.array(v.string()),
+	fields: v.array(v.lazy(() => Field)),
+	name: v.lazy(() => Kind),
+	named: v.boolean(),
+	plural: v.string(),
 });
 
 export type Field = {
-/**
- * What a `choice` may be, or each item of a `list` of choices, each once; empty for every other
- * field.
- */
-choices?: string[];
-/**
- * False for what only the registry writes.
- */
-editable: boolean;
-/**
- * The fields of each item of a `list` of objects, as an account's `identities`, in this same
- * shape; an item's identifying field is its first required `choice`. Empty for every other
- * field.
- */
-fields?: Field[];
-/**
- * The kind a `reference` names a resource of, by its id; absent, never null, for every other
- * field.
- */
-kind?: Kind;
-/**
- * Kept and answered like any other value, and drawn hidden until the reader asks to see it, as
- * an identity's `value` -- RFC cpc2b; beside its ordinary `type`.
- */
-masked?: boolean;
-name: string;
-required: boolean;
-/**
- * Written and never read back, its value handed to the secret service and answered by the name
- * it is kept under; beside its ordinary `type`. No field is one today.
- */
-secret?: boolean;
-type: Type;
+	/**
+	 * What a `choice` may be, or each item of a `list` of choices, each once; empty for every other
+	 * field.
+	 */
+	choices?: string[];
+	/**
+	 * False for what only the registry writes.
+	 */
+	editable: boolean;
+	/**
+	 * The fields of each item of a `list` of objects, as an account's `identities`, in this same
+	 * shape; an item's identifying field is its first required `choice`. Empty for every other
+	 * field.
+	 */
+	fields?: Field[];
+	/**
+	 * The kind a `reference` names a resource of, by its id; absent, never null, for every other
+	 * field.
+	 */
+	kind?: Kind;
+	/**
+	 * Kept and answered like any other value, and drawn hidden until the reader asks to see it, as
+	 * an identity's `value` -- RFC cpc2b; beside its ordinary `type`.
+	 */
+	masked?: boolean;
+	name: string;
+	required: boolean;
+	/**
+	 * Written and never read back, its value handed to the secret service and answered by the name
+	 * it is kept under; beside its ordinary `type`. No field is one today.
+	 */
+	secret?: boolean;
+	type: Type;
 };
 export const Field: v.GenericSchema<Field> = v.object({
-choices: v.exactOptional(v.array(v.string())),
-editable: v.boolean(),
-fields: v.exactOptional(v.array(v.lazy(() => Field))),
-kind: v.exactOptional(v.lazy(() => Kind)),
-masked: v.exactOptional(v.boolean()),
-name: v.string(),
-required: v.boolean(),
-secret: v.exactOptional(v.boolean()),
-type: v.lazy(() => Type),
+	choices: v.exactOptional(v.array(v.string())),
+	editable: v.boolean(),
+	fields: v.exactOptional(v.array(v.lazy(() => Field))),
+	kind: v.exactOptional(v.lazy(() => Kind)),
+	masked: v.exactOptional(v.boolean()),
+	name: v.string(),
+	required: v.boolean(),
+	secret: v.exactOptional(v.boolean()),
+	type: v.lazy(() => Type),
 });
 
 /**
  * Every kind of resource the registry holds, answered by its name.
  */
-export type Kind = "node" | "app" | "account";
-export const Kind: v.GenericSchema<Kind> = v.picklist(["node", "app", "account"]);
+export type Kind = 'node' | 'app' | 'account';
+export const Kind: v.GenericSchema<Kind> = v.picklist(['node', 'app', 'account']);
 
 /**
  * `object`: A value of named keys of its own, as an app's `release`; app.rs holds its shape.
@@ -99,8 +99,12 @@ export const Kind: v.GenericSchema<Kind> = v.picklist(["node", "app", "account"]
  * `reference`: The id of a resource of the field's `kind`, as a node's `account`, which the console draws as
  * a choice among them -- RFC 2kuvi.
  */
-export type Type = "string" | "integer" | "boolean" | "choice" | "list" | "object" | "reference";
-export const Type: v.GenericSchema<Type> = v.union([v.picklist(["string", "integer", "boolean", "choice", "list"]), v.literal("object"), v.literal("reference")]);
+export type Type = 'string' | 'integer' | 'boolean' | 'choice' | 'list' | 'object' | 'reference';
+export const Type: v.GenericSchema<Type> = v.union([
+	v.picklist(['string', 'integer', 'boolean', 'choice', 'list']),
+	v.literal('object'),
+	v.literal('reference'),
+]);
 
 /**
  * What `GET /v1/kinds` answers inside the envelope: every kind the registry holds. Its JSON
@@ -108,8 +112,8 @@ export const Type: v.GenericSchema<Type> = v.union([v.picklist(["string", "integ
  * another language is derived from -- RFC bq3vn and the workspace's spec/json.md.
  */
 export type Catalog = {
-items: Description[];
+	items: Description[];
 };
 export const Catalog: v.GenericSchema<Catalog> = v.object({
-items: v.array(v.lazy(() => Description)),
+	items: v.array(v.lazy(() => Description)),
 });

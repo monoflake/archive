@@ -152,7 +152,9 @@ function given(verb: Verb, args: readonly string[]): Given {
 	if ((values.json && verb !== 'list') || (values['dry-run'] && verb === 'list')) fail(USAGE);
 	if (app !== undefined && !LABEL.test(app)) fail(`${app} is no app's name: one DNS label`);
 	if (name !== undefined && !VARIABLE.test(name)) {
-		fail(`${name} is no variable's name: capitals, digits and underscores, not starting with a digit`);
+		fail(
+			`${name} is no variable's name: capitals, digits and underscores, not starting with a digit`,
+		);
 	}
 	const scope = values.scope;
 	if (scope !== undefined && !LABEL.test(scope)) fail(`${scope} is no scope: one DNS label`);
@@ -177,7 +179,15 @@ export function table(items: readonly Item[]): string {
 	const rows = [['scope', 'app', 'name', 'class', 'revision', 'changed', 'value']];
 	for (const item of items) {
 		const value = item.class === 'config' ? (item.value ?? '') : '-';
-		rows.push([item.scope, item.app, item.name, item.class, String(item.revision), item.changed, value]);
+		rows.push([
+			item.scope,
+			item.app,
+			item.name,
+			item.class,
+			String(item.revision),
+			item.changed,
+			value,
+		]);
 	}
 	const widths = rows[0]!.map((_, at) => Math.max(...rows.map((row) => row[at]!.length)));
 	return rows

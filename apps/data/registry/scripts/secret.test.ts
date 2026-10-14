@@ -29,13 +29,31 @@ class Service {
 	requests: Sent[] = [];
 	held: Held[] = [
 		{ scope: 'platform', app: 'geo', name: 'LEVEL', class: 'config', revision: 3, value: 'debug' },
-		{ scope: 'platform', app: 'geo', name: 'TOKEN', class: 'secret', revision: 4, value: 'held-s3cret' },
-		{ scope: 'canmi', app: 'shot', name: 'KEY', class: 'secret', revision: 2, value: 'other-s3cret' },
+		{
+			scope: 'platform',
+			app: 'geo',
+			name: 'TOKEN',
+			class: 'secret',
+			revision: 4,
+			value: 'held-s3cret',
+		},
+		{
+			scope: 'canmi',
+			app: 'shot',
+			name: 'KEY',
+			class: 'secret',
+			revision: 2,
+			value: 'other-s3cret',
+		},
 	];
 
 	item(held: Held) {
 		const { value, ...named } = held;
-		return { ...named, changed: '2026-10-14T00:00:00Z', ...(held.class === 'config' ? { value } : {}) };
+		return {
+			...named,
+			changed: '2026-10-14T00:00:00Z',
+			...(held.class === 'config' ? { value } : {}),
+		};
 	}
 
 	answer(sent: Sent): [number, unknown] {
@@ -50,10 +68,16 @@ class Service {
 		}
 		const [, , , app, name] = pathname.split('/');
 		const scope = new URLSearchParams(query).get('scope') ?? 'platform';
-		const at = this.held.findIndex((one) => one.scope === scope && one.app === app && one.name === name);
+		const at = this.held.findIndex(
+			(one) => one.scope === scope && one.app === app && one.name === name,
+		);
 		const found = this.held[at];
-		const missing: [number, unknown] = [404, { status: 'error', code: 'no_such_resource', message: 'None' }];
-		if (sent.method === 'GET') return found ? [200, { status: 'success', data: this.item(found) }] : missing;
+		const missing: [number, unknown] = [
+			404,
+			{ status: 'error', code: 'no_such_resource', message: 'None' },
+		];
+		if (sent.method === 'GET')
+			return found ? [200, { status: 'success', data: this.item(found) }] : missing;
 		const body = sent.body!;
 		if (body.revision !== (found?.revision ?? 0)) {
 			return [409, { status: 'error', code: 'invalid_revision', message: 'Changed since' }];
@@ -172,7 +196,12 @@ describe('platform secret', () => {
 
 	it('sets a config over a value at the revision read, in the scope named', async () => {
 		await task('set', 'geo', 'LEVEL', '--config');
-		expect(writes()[0]!.body).toEqual({ by: 'operator', revision: 3, value: VALUE, class: 'config' });
+		expect(writes()[0]!.body).toEqual({
+			by: 'operator',
+			revision: 3,
+			value: VALUE,
+			class: 'config',
+		});
 		await task('set', 'shot', 'KEY', '--scope', 'canmi');
 		const [, scoped] = writes();
 		expect([scoped!.path, scoped!.body!.revision]).toEqual(['/v1/secrets/shot/KEY?scope=canmi', 2]);

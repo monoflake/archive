@@ -12,7 +12,12 @@ import { parse } from 'smol-toml';
 import * as v from 'valibot';
 import { Catalog, type Description, type Field } from './catalog.gen.ts';
 import { Failure, fail } from './failure.ts';
-import { PORT as SECRET_PORT, TOKEN as SECRET_TOKEN, type SecretWorld, runSecret } from './secret.ts';
+import {
+	PORT as SECRET_PORT,
+	TOKEN as SECRET_TOKEN,
+	type SecretWorld,
+	runSecret,
+} from './secret.ts';
 
 export { Failure };
 
@@ -141,7 +146,8 @@ function keyGiven(kind: Description, verb: Verb): string {
 function usage(kind: Description, verb: Verb): string {
 	const key = keyGiven(kind, verb);
 	if (verb === 'list' || verb === 'get') {
-		const options = '[--json] [--reveal]\n\n  --json    the answer as it is\n  --reveal  every masked value';
+		const options =
+			'[--json] [--reveal]\n\n  --json    the answer as it is\n  --reveal  every masked value';
 		return `usage: mise run ${APP} ${kind.name} ${verb}${key} ${options}\n\n${described(kind)}`;
 	}
 	const items = [...itemOptions(kind)].map(
@@ -306,7 +312,9 @@ async function items(
 			const [name, equals, raw] = split(pair, option);
 			const inner = fields.get(name);
 			if (inner === undefined) {
-				fail(`${name} is not a field of ${field.name}'s items; they hold ${[...fields.keys()].join(', ')}`);
+				fail(
+					`${name} is not a field of ${field.name}'s items; they hold ${[...fields.keys()].join(', ')}`,
+				);
 			}
 			if (isSecret(inner)) fail(`${name} is secret, ${NEVER_FROM_ARGUMENTS}`);
 			if (!isEditable(inner)) fail(`${name} is not editable; the registry writes it`);
@@ -320,7 +328,12 @@ async function items(
 				}
 				continue;
 			}
-			const secret = await asked(world, `${singular(field.name)} ${value}: ${name}`, inner.required, dry);
+			const secret = await asked(
+				world,
+				`${singular(field.name)} ${value}: ${name}`,
+				inner.required,
+				dry,
+			);
 			if (secret !== undefined) item[name] = secret;
 		}
 		made.set(named, item);
@@ -389,11 +402,13 @@ export async function changes(
 		} catch {
 			fail(`--json ${name}= takes JSON, not '${text}'`);
 		}
-		if (secretInside(fields.get(name), value)) fail(`${name} carries a secret, ${NEVER_FROM_ARGUMENTS}`);
+		if (secretInside(fields.get(name), value))
+			fail(`${name} carries a secret, ${NEVER_FROM_ARGUMENTS}`);
 		put(name, value);
 	}
 	for (const name of given.unset) {
-		if (fields.get(name)?.required) fail(`${name} is required, so it is changed and never taken out`);
+		if (fields.get(name)?.required)
+			fail(`${name} is required, so it is changed and never taken out`);
 		put(name, null);
 	}
 	for (const field of fields.values()) {
@@ -473,7 +488,9 @@ async function catalog(world: World): Promise<Description[]> {
 	const data = dataOf(await ask(world, 'GET', '/v1/kinds'), 'GET /v1/kinds');
 	const read = v.safeParse(Catalog, data);
 	if (!read.success) {
-		fail(`the registry's catalog is not what catalog.schema.json describes:\n${v.summarize(read.issues)}`);
+		fail(
+			`the registry's catalog is not what catalog.schema.json describes:\n${v.summarize(read.issues)}`,
+		);
 	}
 	return read.output.items;
 }
@@ -613,7 +630,9 @@ export async function run(world: World, args: readonly string[]): Promise<void> 
 	if (verb === 'list') {
 		const found = dataOf(await ask(world, 'GET', `/v1/${plural}`), `GET /v1/${plural}`);
 		const resources = (found as { items: Resource[] }).items;
-		world.print(options.raw ? JSON.stringify(resources, null, 2) : table(kind, resources, options.reveal));
+		world.print(
+			options.raw ? JSON.stringify(resources, null, 2) : table(kind, resources, options.reveal),
+		);
 		return;
 	}
 	if (verb === 'get') {

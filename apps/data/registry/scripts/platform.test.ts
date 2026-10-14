@@ -29,7 +29,13 @@ const WITH_A_SECRET = structuredClone(CATALOG).map((kind) =>
 								...field,
 								fields: [
 									field.fields![0]!,
-									{ name: 'value', type: 'string' as const, secret: true, editable: true, required: false },
+									{
+										name: 'value',
+										type: 'string' as const,
+										secret: true,
+										editable: true,
+										required: false,
+									},
 									{ name: 'secret', type: 'string' as const, editable: false, required: false },
 								],
 							},
@@ -393,7 +399,9 @@ describe('writing', () => {
 
 	it('sends nothing without the token', async () => {
 		token = '';
-		expect(await refused('app', 'create', 'web', '--set', 'placements=tyo')).toContain('REGISTRY_TOKEN');
+		expect(await refused('app', 'create', 'web', '--set', 'placements=tyo')).toContain(
+			'REGISTRY_TOKEN',
+		);
 	});
 
 	it('fails a patch with nothing to change', async () => {
@@ -427,7 +435,13 @@ describe('masked values', () => {
 	});
 
 	it('replace the item of their key on a patch and keep the rest', async () => {
-		const { failed } = await task('account', 'patch', ACCOUNT_ID.slice(0, 8), '--identity', 'email,value=new');
+		const { failed } = await task(
+			'account',
+			'patch',
+			ACCOUNT_ID.slice(0, 8),
+			'--identity',
+			'email,value=new',
+		);
 		expect(failed).toBeUndefined();
 		const sent = [IDENTITIES[0], { kind: 'email', value: 'new' }];
 		expect(writes()[0]!.body!.spec.identities).toEqual(sent);
@@ -473,7 +487,13 @@ describe('secrets', () => {
 	});
 
 	it('replaces the item of its key on a patch and keeps the rest', async () => {
-		const { failed } = await task('account', 'patch', ACCOUNT_ID.slice(0, 8), '--identity', 'email');
+		const { failed } = await task(
+			'account',
+			'patch',
+			ACCOUNT_ID.slice(0, 8),
+			'--identity',
+			'email',
+		);
 		expect(failed).toBeUndefined();
 		const identities = writes()[0]!.body!.spec.identities as Record<string, unknown>[];
 		expect(identities.map((one) => one.kind)).toEqual(['username', 'email']);
@@ -492,12 +512,20 @@ describe('secrets', () => {
 	});
 
 	it('refuses what the registry writes', async () => {
-		const failed = await refused('account', 'patch', ACCOUNT_ID.slice(0, 8), '--identity', 'email,secret=a/b/C');
+		const failed = await refused(
+			'account',
+			'patch',
+			ACCOUNT_ID.slice(0, 8),
+			'--identity',
+			'email,secret=a/b/C',
+		);
 		expect(failed).toContain('not editable');
 	});
 
 	it("holds an item's key to its choices", async () => {
-		expect(await refused('account', 'patch', ACCOUNT_ID.slice(0, 8), '--identity', 'password')).toContain('one of');
+		expect(
+			await refused('account', 'patch', ACCOUNT_ID.slice(0, 8), '--identity', 'password'),
+		).toContain('one of');
 	});
 
 	it('asks for nothing on a dry run, sends nothing, and hides every secret', async () => {
