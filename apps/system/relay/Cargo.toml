@@ -30,6 +30,8 @@ tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "s
 tokio-tungstenite = "0.29"
 tower-http = { version = "0.6.11", features = ["compression-br", "compression-gzip"] }
 url = "2.5.8"
+# The mesh's frames, a zstd stream per direction of each connection; see src/compression.rs.
+zstd-safe = { version = "7.3.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

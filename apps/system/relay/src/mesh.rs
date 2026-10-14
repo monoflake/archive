@@ -7,6 +7,7 @@
 //! spec/architecture/relay.md.
 
 use crate::cluster::{Carried, Versions};
+use crate::compression::{Packer, Unpacker};
 use crate::config::Peer;
 use crate::relay::{Relay, Update, VERSION};
 use crate::runs::Batch;
@@ -72,6 +73,9 @@ pub enum Message {
 		/// Whether it lends and reads fine readings.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		watch: Option<bool>,
+		/// Whether it reads compressed frames; see `compression`.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		zstd: Option<bool>,
 	},
 	/// What it holds, every comparison; answered with what it lacks. `beats` is each node's newest
 	/// beat held, so a node heard only through a neighbor stays live.
@@ -108,6 +112,8 @@ pub enum MeshError {
 	Slow(Duration),
 	#[error("a message this relay cannot read: {0}")]
 	Malformed(#[from] serde_json::Error),
+	#[error("a compressed frame this relay cannot read: {0}")]
+	Corrupt(std::io::Error),
 	#[error("it speaks version {0} of the mesh")]
 	Version(u32),
 	#[error("it opened with something other than hello")]
@@ -219,15 +225,21 @@ fn written(joined: Result<Result<(), SocketError>, JoinError>) -> Result<(), Mes
 	}
 }
 
-/// Writes what the conversation queues, in order, until the queue closes or a write fails; this
-/// node's own version is told to `peer` once it is written.
+/// Writes what the conversation queues, in order, until the queue closes or a write fails, each
+/// text frame compressed where `packer` is given; this node's own version is told to `peer` once it
+/// is written.
 async fn write<W: Writer>(
 	relay: Arc<Relay>,
 	peer: String,
 	mut writer: W,
+	mut packer: Option<Packer>,
 	mut queue: mpsc::Receiver<Outgoing>,
 ) -> Result<(), SocketError> {
 	while let Some(Outgoing { frame, own }) = queue.recv().await {
+		let frame = match (frame, &mut packer) {
+			(Frame::Text(text), Some(packer)) => Frame::Binary(packer.pack(text.as_bytes())?.into()),
+			(frame, _) => frame,
+		};
 		writer.send(frame).await?;
 		if let Some(version) = own {
 			relay.told(&peer, version);
@@ -261,18 +273,20 @@ pub async fn converse<S: Halves>(
 		minutes: Some(relay.minute_versions()),
 		beats: Some(true),
 		watch: Some(true),
+		zstd: relay.compresses().then_some(true),
 	};
 	writer.send(Frame::Text(serde_json::to_string(&hello)?)).await?;
 
 	let theirs = tokio::time::timeout(INTRODUCTION, introduced(&mut reader))
 		.await
 		.map_err(|_| MeshError::Slow(INTRODUCTION))??;
-	let (peer, versions, runs, theirs_minutes, hears_beats, lends) = match theirs {
+	let (peer, versions, runs, theirs_minutes, hears_beats, lends, packs) = match theirs {
 		Message::Hello { version, .. } if version != VERSION => {
 			return Err(MeshError::Version(version));
 		}
-		Message::Hello { node, versions, runs, minutes, beats, watch, .. } => {
-			(node, versions, runs, minutes, beats == Some(true), watch == Some(true))
+		Message::Hello { node, versions, runs, minutes, beats, watch, zstd, .. } => {
+			let packs = zstd == Some(true) && relay.compresses();
+			(node, versions, runs, minutes, beats == Some(true), watch == Some(true), packs)
 		}
 		Message::Versions { .. }
 		| Message::Node { .. }
@@ -296,7 +310,12 @@ pub async fn converse<S: Halves>(
 	relay.met(speaking.conversation, hears_beats);
 	let (queue, queued) = mpsc::channel(QUEUE);
 	let mut outbox = Outbox { queue, dropped: 0 };
-	let mut writing = Writing(tokio::spawn(write(relay.clone(), peer.clone(), writer, queued)));
+	// What this end sends is compressed for a neighbor that reads it; what it receives compressed,
+	// it unpacks, on a stream of its own begun with the first such frame.
+	let packer = if packs { Some(Packer::new().map_err(SocketError::from)?) } else { None };
+	let mut unpacker: Option<Unpacker> = None;
+	let writes = write(relay.clone(), peer.clone(), writer, packer, queued);
+	let mut writing = Writing(tokio::spawn(writes));
 	// A neighbor that said nothing of runs or minutes is older than them; see `Message`.
 	let (reads_runs, reads_minutes) = (runs.is_some(), theirs_minutes.is_some());
 	behind(&relay, &mut outbox, &versions, &peer)?;
@@ -313,8 +332,28 @@ pub async fn converse<S: Halves>(
 	loop {
 		tokio::select! {
 			received = reader.receive() => {
-				match received? {
-					Received::Text(text) => match serde_json::from_str(&text)? {
+				let text = match received? {
+					Received::Text(text) => Some(text.into_bytes()),
+					// A relay with them off reads none, as one older than them passes them over.
+					Received::Binary(_) if !relay.compresses() => None,
+					Received::Binary(packed) => {
+						let unpacker = match &mut unpacker {
+							Some(unpacker) => unpacker,
+							None => unpacker.insert(Unpacker::new().map_err(MeshError::Corrupt)?),
+						};
+						Some(unpacker.unpack(&packed).map_err(MeshError::Corrupt)?)
+					}
+					Received::Pong(payload) => {
+						if let Some(round_trip) = round_trip(origin, &payload, Instant::now()) {
+							relay.timed(&peer, round_trip);
+						}
+						None
+					}
+					Received::Closed => break,
+					Received::Other => None,
+				};
+				if let Some(text) = text {
+					match serde_json::from_slice(&text)? {
 						Message::Node { node, state } => {
 							relay.take(&node, state, Some(&peer));
 						}
@@ -344,14 +383,7 @@ pub async fn converse<S: Halves>(
 							}
 						}
 						Message::Hello { .. } => {}
-					},
-					Received::Pong(payload) => {
-						if let Some(round_trip) = round_trip(origin, &payload, Instant::now()) {
-							relay.timed(&peer, round_trip);
-						}
 					}
-					Received::Closed => break,
-					Received::Other => {}
 				}
 			}
 			update = updates.recv() => match update {
@@ -516,6 +548,8 @@ async fn introduced<R: Reader>(reader: &mut R) -> Result<Message, MeshError> {
 		match reader.receive().await? {
 			Received::Text(text) => return Ok(serde_json::from_str(&text)?),
 			Received::Closed => return Err(MeshError::Closed),
+			// The hello is never compressed; anything before it is no introduction.
+			Received::Binary(_) => return Err(MeshError::Unintroduced),
 			Received::Pong(_) | Received::Other => {}
 		}
 	}
@@ -605,16 +639,22 @@ mod tests {
 		}
 	}
 
-	/// Where a fake keeps what it is sent, as its writing half.
+	/// Where a fake keeps what it is sent, as its writing half, a compressed frame unpacked.
 	struct Kept {
 		sent: Arc<Mutex<Vec<Message>>>,
 		echo: Option<mpsc::UnboundedSender<Received>>,
+		unpacker: Option<Unpacker>,
 	}
 
 	impl Writer for Kept {
 		async fn send(&mut self, frame: Frame) -> Result<(), SocketError> {
 			match frame {
 				Frame::Text(text) => self.sent.lock().unwrap().push(serde_json::from_str(&text).unwrap()),
+				Frame::Binary(packed) => {
+					let unpacker = self.unpacker.get_or_insert_with(|| Unpacker::new().unwrap());
+					let text = unpacker.unpack(&packed).unwrap();
+					self.sent.lock().unwrap().push(serde_json::from_slice(&text).unwrap());
+				}
 				Frame::Ping(payload) => {
 					if let Some(echo) = &self.echo {
 						let _ = echo.send(Received::Pong(payload));
@@ -630,7 +670,7 @@ mod tests {
 		type Writer = Kept;
 
 		fn halves(self) -> (Fed, Kept) {
-			(Fed(self.incoming), Kept { sent: self.sent, echo: self.echo })
+			(Fed(self.incoming), Kept { sent: self.sent, echo: self.echo, unpacker: None })
 		}
 	}
 
@@ -652,6 +692,7 @@ mod tests {
 			minutes: None,
 			beats: None,
 			watch: None,
+			zstd: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -684,6 +725,7 @@ mod tests {
 			minutes: None,
 			beats: None,
 			watch: None,
+			zstd: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -742,6 +784,7 @@ mod tests {
 			minutes,
 			beats: None,
 			watch: None,
+			zstd: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -800,6 +843,7 @@ mod tests {
 				minutes: None,
 				beats: None,
 				watch: None,
+				zstd: None,
 			};
 			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 			let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: None });
@@ -822,6 +866,7 @@ mod tests {
 				minutes: None,
 				beats: None,
 				watch: None,
+				zstd: None,
 			};
 			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 			feed.send(Received::Closed).unwrap();
@@ -844,6 +889,7 @@ mod tests {
 			minutes: None,
 			beats: None,
 			watch: None,
+			zstd: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: Some(feed) });
@@ -858,6 +904,100 @@ mod tests {
 		let round_trips = relay.round_trips();
 		assert_eq!(round_trips.keys().collect::<Vec<_>>(), ["tyo"]);
 		assert!((0.0..1000.0).contains(&round_trips["tyo"]));
+	}
+
+	/// A socket whose every frame written is kept as it was written, compressed or not.
+	struct Raw {
+		incoming: mpsc::UnboundedReceiver<Received>,
+		frames: Arc<Mutex<Vec<Frame>>>,
+	}
+
+	struct Recorded(Arc<Mutex<Vec<Frame>>>);
+
+	impl Writer for Recorded {
+		async fn send(&mut self, frame: Frame) -> Result<(), SocketError> {
+			self.0.lock().unwrap().push(frame);
+			Ok(())
+		}
+	}
+
+	impl Halves for Raw {
+		type Reader = Fed;
+		type Writer = Recorded;
+
+		fn halves(self) -> (Fed, Recorded) {
+			(Fed(self.incoming), Recorded(self.frames))
+		}
+	}
+
+	/// tyo's hello, saying it reads compressed frames where `zstd`.
+	fn hello_from_tyo(zstd: Option<bool>) -> Received {
+		let hello = Message::Hello {
+			version: VERSION,
+			node: "tyo".into(),
+			versions: Versions::new(),
+			runs: None,
+			minutes: None,
+			beats: Some(true),
+			watch: None,
+			zstd,
+		};
+		Received::Text(serde_json::to_string(&hello).unwrap())
+	}
+
+	#[tokio::test]
+	async fn a_neighbor_that_reads_compressed_frames_is_sent_them_and_one_that_does_not_plain() {
+		for (zstd, packed) in [(Some(true), true), (None, false)] {
+			let relay = relay("rdu");
+			let snapshot = Arc::new(serde_json::json!({ "apps": [{ "name": "geo" }] }));
+			relay.take("rdu", Carried { version: 9, snapshot }, None);
+			let (feed, incoming) = mpsc::unbounded_channel();
+			feed.send(hello_from_tyo(zstd)).unwrap();
+			drop(feed);
+			let frames = Arc::new(Mutex::new(Vec::new()));
+			let raw = Heard::new(Raw { incoming, frames: frames.clone() });
+			converse(relay, Some("tyo"), raw).await.unwrap();
+			let frames = frames.lock().unwrap();
+			// The hello goes plain either way: it is what says whether the other end reads them.
+			assert!(matches!(&frames[0], Frame::Text(hello) if hello.contains("\"zstd\":true")));
+			let mut unpacker = Unpacker::new().unwrap();
+			let sent: Vec<Message> = frames[1..]
+				.iter()
+				.map(|frame| match frame {
+					Frame::Binary(bytes) if packed => {
+						serde_json::from_slice(&unpacker.unpack(bytes).unwrap()).unwrap()
+					}
+					Frame::Text(text) if !packed => serde_json::from_str(text).unwrap(),
+					other => panic!("{zstd:?}: {other:?}"),
+				})
+				.collect();
+			assert!(
+				matches!(&sent[0], Message::Node { node, state } if node == "rdu" && state.version == 9)
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn a_corrupt_frame_ends_the_conversation_and_the_next_starts_fresh() {
+		let relay = relay("rdu");
+		let (feed, incoming) = mpsc::unbounded_channel();
+		feed.send(hello_from_tyo(Some(true))).unwrap();
+		feed.send(Received::Binary(Bytes::from_static(b"no zstd stream"))).unwrap();
+		let raw = Heard::new(Raw { incoming, frames: Arc::default() });
+		let ended = converse(relay.clone(), Some("tyo"), raw).await;
+		assert!(matches!(ended, Err(MeshError::Corrupt(_))), "{ended:?}");
+		drop(feed);
+
+		// Redialed: new contexts both ways, and the first compressed frame reads at once.
+		let (feed, incoming) = mpsc::unbounded_channel();
+		feed.send(hello_from_tyo(Some(true))).unwrap();
+		let beat = Message::Beat { node: "tyo".into(), at: 1_791_999_000_000 };
+		let packed = Packer::new().unwrap().pack(serde_json::to_string(&beat).unwrap().as_bytes());
+		feed.send(Received::Binary(packed.unwrap().into())).unwrap();
+		drop(feed);
+		let raw = Heard::new(Raw { incoming, frames: Arc::default() });
+		converse(relay.clone(), Some("tyo"), raw).await.unwrap();
+		assert_eq!(relay.beats().get("tyo"), Some(&1_791_999_000_000));
 	}
 
 	/// A socket to a neighbor gone without closing: the hello goes, and every write after it waits on
@@ -902,6 +1042,7 @@ mod tests {
 			minutes: None,
 			beats: None,
 			watch: None,
+			zstd: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		let silence = Duration::from_millis(300);
@@ -1021,6 +1162,7 @@ mod tests {
 			minutes: None,
 			beats: None,
 			watch: None,
+			zstd: None,
 		};
 		assert_eq!(
 			serde_json::to_value(&hello).unwrap(),

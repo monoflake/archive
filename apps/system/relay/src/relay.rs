@@ -152,6 +152,8 @@ pub struct Relay {
 	leases: Mutex<BTreeMap<String, Instant>>,
 	/// Each open conversation with a neighbor, and whether that neighbor hears by beats.
 	met: Mutex<BTreeMap<u64, bool>>,
+	/// Whether this relay says it reads compressed frames, and sends them to a neighbor that says so.
+	compressing: std::sync::atomic::AtomicBool,
 	runs: Mirror,
 	/// This node's own rows as each round finds them new or changed, for the mesh to push.
 	batches: broadcast::Sender<Batch>,
@@ -211,6 +213,7 @@ impl Relay {
 			lent: broadcast::channel(BACKLOG).0,
 			leases: Mutex::default(),
 			met: Mutex::default(),
+			compressing: std::sync::atomic::AtomicBool::new(true),
 			batches: broadcast::channel(BACKLOG).0,
 			started: Instant::now(),
 			speakers: Mutex::default(),
@@ -362,6 +365,17 @@ impl Relay {
 	/// A conversation ended.
 	pub fn parted(&self, conversation: u64) {
 		lock(&self.met).remove(&conversation);
+	}
+
+	/// Whether this relay reads and sends compressed frames; see `compression`.
+	pub fn compresses(&self) -> bool {
+		self.compressing.load(Ordering::Relaxed)
+	}
+
+	/// Turns compressed frames off from the next conversation on: a relay that stands in for one
+	/// older than them, as a test does.
+	pub fn set_compression(&self, on: bool) {
+		self.compressing.store(on, Ordering::Relaxed);
 	}
 
 	/// A page here asks for `node`'s fine readings: this node's own lent at once, any other's asked

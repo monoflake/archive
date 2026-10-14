@@ -183,6 +183,29 @@ async fn two_relays_converge_after_one_changes() {
 }
 
 #[tokio::test]
+async fn a_relay_that_compresses_and_one_that_does_not_still_hear_each_other() {
+	let rdu = start("rdu", "geo:1").await;
+	let tyo = start("tyo", "geo:7").await;
+	// tyo stands in for a relay older than compressed frames: it neither says it reads them nor
+	// sends them, so each end speaks to the other plain.
+	tyo.relay.set_compression(false);
+	hold(&rdu, &tyo);
+	hold(&tyo, &rdu);
+	until("each holds the other", || {
+		image(&rdu.relay, "tyo").as_deref() == Some("geo:7")
+			&& image(&tyo.relay, "rdu").as_deref() == Some("geo:1")
+	})
+	.await;
+	rdu.host.deploy("geo:2");
+	tyo.host.deploy("geo:8");
+	until("each hears the other's change", || {
+		image(&rdu.relay, "tyo").as_deref() == Some("geo:8")
+			&& image(&tyo.relay, "rdu").as_deref() == Some("geo:2")
+	})
+	.await;
+}
+
+#[tokio::test]
 async fn a_node_reaches_a_third_through_a_neighbor() {
 	// rdu and buf know tyo alone, and tyo dials nobody: it only accepts.
 	let rdu = start("rdu", "geo:1").await;

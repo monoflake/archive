@@ -43,15 +43,17 @@ pub struct Silent(pub Duration);
 #[error("a write waited {0:?}")]
 pub struct Stalled(pub Duration);
 
-/// A frame, of what this relay reads: text, a pong, or the other end gone. Pings are answered
-/// beneath.
+/// A frame, of what this relay reads: text, a compressed frame, a pong, or the other end gone.
+/// Pings are answered beneath.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Received {
 	Text(String),
+	/// A frame the mesh compressed; see `compression`.
+	Binary(Bytes),
 	/// The answer to a ping, carrying back what the ping carried.
 	Pong(Bytes),
 	Closed,
-	/// A ping or binary: proof of life, and nothing more.
+	/// A ping: proof of life, and nothing more.
 	Other,
 }
 
@@ -59,6 +61,8 @@ pub enum Received {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
 	Text(String),
+	/// A frame compressed for a neighbor that reads them.
+	Binary(Bytes),
 	/// Carrying what the pong is to carry back.
 	Ping(Bytes),
 }
@@ -99,6 +103,12 @@ pub trait Halves: Send {
 	fn halves(self) -> (Self::Reader, Self::Writer);
 }
 
+impl From<std::io::Error> for SocketError {
+	fn from(error: std::io::Error) -> Self {
+		failed(error)
+	}
+}
+
 fn failed(error: impl std::error::Error + Send + Sync + 'static) -> SocketError {
 	SocketError(Box::new(error))
 }
@@ -107,6 +117,7 @@ fn accepted(next: Option<Result<Accepted, axum::Error>>) -> Result<Received, Soc
 	Ok(match next {
 		None | Some(Ok(Accepted::Close(_))) => Received::Closed,
 		Some(Ok(Accepted::Text(text))) => Received::Text(text.as_str().to_owned()),
+		Some(Ok(Accepted::Binary(bytes))) => Received::Binary(bytes),
 		Some(Ok(Accepted::Pong(payload))) => Received::Pong(payload),
 		Some(Ok(_)) => Received::Other,
 		Some(Err(error)) => return Err(failed(error)),
@@ -119,6 +130,7 @@ fn dialed(
 	Ok(match next {
 		None | Some(Ok(Dialed::Close(_))) => Received::Closed,
 		Some(Ok(Dialed::Text(text))) => Received::Text(text.as_str().to_owned()),
+		Some(Ok(Dialed::Binary(bytes))) => Received::Binary(bytes),
 		Some(Ok(Dialed::Pong(payload))) => Received::Pong(payload),
 		Some(Ok(_)) => Received::Other,
 		Some(Err(error)) => return Err(failed(error)),
@@ -129,6 +141,7 @@ impl From<Frame> for Accepted {
 	fn from(frame: Frame) -> Self {
 		match frame {
 			Frame::Text(text) => Self::Text(text.into()),
+			Frame::Binary(bytes) => Self::Binary(bytes),
 			Frame::Ping(payload) => Self::Ping(payload),
 		}
 	}
@@ -138,6 +151,7 @@ impl From<Frame> for Dialed {
 	fn from(frame: Frame) -> Self {
 		match frame {
 			Frame::Text(text) => Self::Text(text.into()),
+			Frame::Binary(bytes) => Self::Binary(bytes),
 			Frame::Ping(payload) => Self::Ping(payload),
 		}
 	}

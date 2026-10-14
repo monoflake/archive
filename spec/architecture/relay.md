@@ -249,8 +249,15 @@ relay's disk" -- into the same file, and answered from it. Decided with the auth
   `spec/json.md`. The console asks it for a span longer than a day, the mirror's runs drawing the
   rest.
 - **`/state`, `/runs` and `/history` are compressed**, gzip or brotli as the reader accepts, since
-  `/runs` is hundreds of kilobytes, more than a far node sends plain inside the console's wait. The
-  sockets are not.
+  `/runs` is hundreds of kilobytes, more than a far node sends plain inside the console's wait.
+- **The mesh is compressed too, a zstd stream per connection each way**: level 3, a 128 KiB window,
+  and each frame flushed as it is written, so it decodes the moment it arrives against everything
+  its stream carried before. A relay sends compressed frames only to a neighbor whose first message
+  says `zstd`, and the first message itself always goes plain. A frame that does not decompress
+  drops the socket, and the redial starts both streams fresh. A connection's two streams hold under
+  2 MB, about 1.2 for the one written and 0.6 for the one read. On recorded rounds the mesh
+  compresses fourteen-fold, the comparison twenty-fold -- RFC grmtb. A browser's socket is not
+  compressed here; see `/live`.
 
 ## The round trip to each neighbor
 
@@ -279,8 +286,8 @@ console's row of each node's round trip to the database's primary.
   it is only the fallback; it also keeps a socket known to be alive.
 - **Every three seconds, on every socket, the first as the socket opens** -- the same `own::EVERY`
   the snapshot is taken at, since a faster ping times a figure no snapshot carries and a slower one
-  leaves the figure a round behind. A ping and its pong are two frames of a few bytes, beside the
-  kilobytes of snapshot each socket carries every round. Both sockets between two relays time it,
+  leaves the figure a round behind. A ping and its pong are two frames of a few bytes,
+  control frames, never compressed. Both sockets between two relays time it,
   and the latest of either stands.
 - **A neighbor not timed within three pings is absent**, never `null` or a last figure held on --
   the workspace's `spec/json.md`, "Absent, not null" -- and with none timed the key itself is
