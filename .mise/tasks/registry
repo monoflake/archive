@@ -65,13 +65,14 @@ GITHUB = "GITHUB_ACTIONS_TOKEN"
 CORES = "REGISTRY"
 SOURCES = "DEPLOY_SOURCES"
 
-# The writers that read each run's artifacts from the bucket CI uploads them to -- RFC q28g5 --
-# each told where it is in its config.env and given the read key, from secrets.json, in secret.env.
+# The writers that read each run's artifacts from the bucket CI uploads them to, Cloudflare R2's --
+# RFC q28g5 and 7cwmp -- each told where it is in its config.env and given the read key, from
+# secrets.json, in secret.env.
 ARTIFACT_READERS = ("deployer",)
 ARTIFACTS = {
 	"ARTIFACTS_ENDPOINT": EXTERNAL_ARTIFACTS,
-	"ARTIFACTS_REGION": "us-west-004",
-	"ARTIFACTS_BUCKET": "build-artifact",
+	"ARTIFACTS_REGION": "auto",
+	"ARTIFACTS_BUCKET": "artifact",
 }
 ARTIFACTS_KEY = ("ARTIFACTS_READ_KEY_ID", "ARTIFACTS_READ_SECRET")
 

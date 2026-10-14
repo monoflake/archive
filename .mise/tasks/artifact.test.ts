@@ -348,6 +348,23 @@ describe('erasing', () => {
 		expect(fake.asked.map((one) => one.method)).toEqual(['DELETE', 'GET']);
 	});
 
+	test('takes a store answering the versions listing with its objects as keeping none', async () => {
+		// A store that passes over `versions` lists the key itself, a version of nothing.
+		const key = 'o/r/1/deploy-a.zip';
+		const fake = await store((one) =>
+			one.method === 'DELETE'
+				? { status: 204 }
+				: {
+						status: 200,
+						body:
+							`<ListBucketResult><Contents><Key>${key}</Key></Contents>` +
+							'<IsTruncated>false</IsTruncated></ListBucketResult>',
+					},
+		);
+		closing.push(fake.close);
+		expect(await versions(fake.bucket, key)).toEqual([]);
+	});
+
 	test('never touches a sibling the key is a prefix of', async () => {
 		const fake = await store((one) =>
 			one.method === 'DELETE'

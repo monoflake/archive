@@ -69,5 +69,5 @@ EXTERNAL_TURNSTILE_SITEVERIFY = "https://challenges.cloudflare.com/turnstile/v0/
 EXTERNAL_DOH_CLOUDFLARE = "https://1.1.1.1/dns-query"
 EXTERNAL_DOH_GOOGLE = "https://8.8.8.8/resolve"
 EXTERNAL_CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
-EXTERNAL_ARTIFACTS = "https://s3.us-west-004.backblazeb2.com"
+EXTERNAL_ARTIFACTS = "https://62163885eb1943e6561e004ac10a5f22.r2.cloudflarestorage.com"
 EXTERNAL_GEOLITE_MAXMIND = "https://www.maxmind.com"

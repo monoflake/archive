@@ -73,5 +73,6 @@ pub const EXTERNAL_TURNSTILE_SITEVERIFY: &str =
 pub const EXTERNAL_DOH_CLOUDFLARE: &str = "https://1.1.1.1/dns-query";
 pub const EXTERNAL_DOH_GOOGLE: &str = "https://8.8.8.8/resolve";
 pub const EXTERNAL_CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
-pub const EXTERNAL_ARTIFACTS: &str = "https://s3.us-west-004.backblazeb2.com";
+pub const EXTERNAL_ARTIFACTS: &str =
+	"https://62163885eb1943e6561e004ac10a5f22.r2.cloudflarestorage.com";
 pub const EXTERNAL_GEOLITE_MAXMIND: &str = "https://www.maxmind.com";

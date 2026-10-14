@@ -561,8 +561,8 @@ class Token(unittest.TestCase):
 			{name: config[0][name] for name in registry.ARTIFACTS},
 			{
 				"ARTIFACTS_ENDPOINT": registry.ARTIFACTS["ARTIFACTS_ENDPOINT"],
-				"ARTIFACTS_REGION": "us-west-004",
-				"ARTIFACTS_BUCKET": "build-artifact",
+				"ARTIFACTS_REGION": "auto",
+				"ARTIFACTS_BUCKET": "artifact",
 			},
 		)
 		self.assertTrue(registry.ARTIFACTS["ARTIFACTS_ENDPOINT"].startswith("https://"))

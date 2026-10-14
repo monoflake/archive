@@ -192,9 +192,9 @@ export const URLS = {
 		// Cloudflare's API, pinned for the wrangler the deployer runs so a file it reads cannot point
 		// it elsewhere. See spec/architecture/deployer.md, "Credentials".
 		cloudflare: { api: 'https://api.cloudflare.com/client/v4' },
-		// The bucket CI leaves each run's artifacts in, which the registry task tells the deployer. See
-		// RFC q28g5.
-		artifacts: 'https://s3.us-west-004.backblazeb2.com',
+		// The bucket CI leaves each run's artifacts in, Cloudflare R2's, which the registry task tells
+		// the deployer. See RFC q28g5 and 7cwmp.
+		artifacts: 'https://62163885eb1943e6561e004ac10a5f22.r2.cloudflarestorage.com',
 		// Whose GeoLite2 is, which `geo` credits in every answer. The files themselves are fetched by
 		// geo's Dockerfile; see spec/architecture/geo.md, "GeoLite2 is fetched as the image is built".
 		geolite: {
