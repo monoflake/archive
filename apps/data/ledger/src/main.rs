@@ -42,11 +42,16 @@ async fn main() -> anyhow::Result<()> {
 	let listen = std::env::var("LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{PORT}"));
 	let shared: Shared = Arc::new(store);
 	// The scheduler leases runs only where this node's Patroni says it leads; without the address it
-	// does not run, as on a copy that is not one of the cores. See spec/architecture/ledger.md.
+	// does not run, as on a copy that is not one of the cores. It pushes a turn only to an executor
+	// on `NODE`, which host sets on every container. See spec/architecture/ledger.md.
 	match std::env::var("PATRONI_PRIMARY_URL") {
 		Ok(gate) => {
+			let own = std::env::var("NODE").ok().filter(|node| !node.is_empty());
+			if own.is_none() {
+				eprintln!("ledger: NODE is not set; no turn is pushed, every executor polls");
+			}
 			eprintln!("ledger: scheduling where {gate} answers 200");
-			tokio::spawn(ledger_service::scheduler::run(shared.clone(), gate));
+			tokio::spawn(ledger_service::scheduler::run(shared.clone(), gate, own));
 		}
 		Err(_) => eprintln!("ledger: PATRONI_PRIMARY_URL is not set; no run is scheduled from here"),
 	}

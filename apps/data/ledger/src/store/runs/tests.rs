@@ -4,11 +4,13 @@
 use super::*;
 use crate::api::routes;
 use crate::harness::{Executor, Halt, StepError, Workflow, call, workflow};
+use crate::store::nanos;
 use crate::store::testing::store;
 use axum::Router;
 use axum::http::StatusCode;
-use serde_json::json;
-use std::collections::HashMap;
+use ledger::State;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -111,7 +113,7 @@ async fn a_run_is_a_task_and_a_replay_runs_a_done_step_once() {
 		}),
 	)]);
 	world.open("a", "issue").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["issue"]);
 	node.poll(4).await;
 	assert_eq!(world.store.tick().await.unwrap().len(), 1);
 
@@ -184,8 +186,8 @@ async fn a_node_lost_mid_step_loses_nothing_and_its_late_report_is_refused() {
 		}),
 	)]);
 	world.open("a", "issue").await;
-	let lost = Executor::new(&world.router, "tyo").dying_at("order");
-	let survivor = Executor::new(&world.router, "sin");
+	let lost = Executor::new(&world.router, "tyo", &["issue"]).dying_at("order");
+	let survivor = Executor::new(&world.router, "sin", &["issue"]);
 	lost.poll(1).await;
 	world.store.tick().await.unwrap();
 	let turn = lost.poll(1).await.remove(0);
@@ -240,7 +242,7 @@ async fn a_failed_step_is_retried_after_its_backoff_and_stops_at_its_limit() {
 		}),
 	)]);
 	world.open("a", "flaky").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["flaky", "capped"]);
 	node.poll(4).await;
 	for expected in ["sleeping", "sleeping", "done"] {
 		world.due().await;
@@ -286,7 +288,7 @@ async fn a_fatal_error_is_not_retried() {
 		}),
 	)]);
 	world.open("a", "w").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["w"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	let ended = node.work(&code).await;
@@ -299,7 +301,7 @@ async fn a_fatal_error_is_not_retried() {
 async fn a_step_that_keeps_losing_its_holder_fails_at_twenty_starts() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["w"]);
 	let config = StepConfig::default();
 	let mut last = None;
 	for start in 1..=21 {
@@ -321,7 +323,7 @@ async fn a_step_that_keeps_losing_its_holder_fails_at_twenty_starts() {
 async fn a_step_past_its_deadline_is_a_failed_attempt() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["w"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	let turn = node.poll(1).await.remove(0);
@@ -339,7 +341,7 @@ async fn a_step_past_its_deadline_is_a_failed_attempt() {
 async fn a_result_past_one_mebibyte_fails_the_step() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["w"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	let turn = node.poll(1).await.remove(0);
@@ -366,7 +368,7 @@ async fn a_result_past_one_mebibyte_fails_the_step() {
 async fn a_result_reported_twice_is_one_result() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["w"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	let turn = node.poll(1).await.remove(0);
@@ -388,7 +390,7 @@ async fn a_result_reported_twice_is_one_result() {
 async fn a_replay_that_disagrees_with_the_record_is_refused() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["w"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	let turn = node.poll(1).await.remove(0);
@@ -414,7 +416,7 @@ async fn an_event_is_waited_for_with_nothing_held_and_taken_once() {
 		}),
 	)]);
 	world.open("a", "approve").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["approve"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	assert_eq!(node.work(&code).await[0].1, Err(Halt::EndTurn));
@@ -460,7 +462,7 @@ async fn a_wait_that_times_out_fails_its_step() {
 		}),
 	)]);
 	world.open("a", "approve").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["approve"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	node.work(&code).await;
@@ -474,7 +476,8 @@ async fn a_wait_that_times_out_fails_its_step() {
 async fn two_schedulers_ticking_at_once_lease_a_run_once() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let (one, other) = (Executor::new(&world.router, "tyo"), Executor::new(&world.router, "sin"));
+	let (one, other) =
+		(Executor::new(&world.router, "tyo", &["w"]), Executor::new(&world.router, "sin", &["w"]));
 	one.poll(4).await;
 	other.poll(4).await;
 	let (left, right) = tokio::join!(world.store.tick(), world.store.tick());
@@ -490,7 +493,8 @@ async fn runs_go_to_the_least_loaded_node_and_never_past_its_capacity() {
 	for id in ["a", "b", "c"] {
 		world.open(id, "w").await;
 	}
-	let (one, other) = (Executor::new(&world.router, "sin"), Executor::new(&world.router, "tyo"));
+	let (one, other) =
+		(Executor::new(&world.router, "sin", &["w"]), Executor::new(&world.router, "tyo", &["w"]));
 	one.poll(1).await;
 	other.poll(2).await;
 	let granted = world.store.tick().await.unwrap();
@@ -506,7 +510,7 @@ async fn runs_go_to_the_least_loaded_node_and_never_past_its_capacity() {
 async fn an_executor_not_heard_from_is_given_nothing() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	Executor::new(&world.router, "tyo").poll(1).await;
+	Executor::new(&world.router, "tyo", &["w"]).poll(1).await;
 	world.store.exec("UPDATE executors SET seen_at = 0").await;
 	assert!(world.store.tick().await.unwrap().is_empty());
 }
@@ -515,28 +519,129 @@ async fn an_executor_not_heard_from_is_given_nothing() {
 async fn a_turn_is_pushed_and_found_by_polling_alike() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let pushed = Executor::pushed(&world.router, "tyo").await;
+	let pushed = Executor::pushed(&world.router, "tyo", &["w"]).await;
 	pushed.poll(1).await;
 	let http = crate::scheduler::client();
-	assert_eq!(crate::scheduler::round(&world.store, &http).await.unwrap(), 1);
+	assert_eq!(crate::scheduler::round(&world.store, &http, Some("tyo")).await.unwrap(), 1);
 	let turn = pushed.pushed_turn().await.expect("the ledger pushed the turn");
 	assert_eq!((turn.run.as_str(), turn.fence), ("a", 1));
 	assert_eq!(pushed.poll(1).await, vec![turn], "polling finds the same turn");
 
 	// A push to nobody costs a log line, never the lease.
 	world.open("b", "w").await;
-	let mut gone = Executor::new(&world.router, "sin");
+	let mut gone = Executor::new(&world.router, "sin", &["w"]);
 	gone.push_url = Some("http://push.invalid/turns".into());
 	gone.poll(1).await;
-	assert_eq!(crate::scheduler::round(&world.store, &http).await.unwrap(), 1);
+	assert_eq!(crate::scheduler::round(&world.store, &http, Some("sin")).await.unwrap(), 1);
 	assert_eq!(gone.poll(1).await.len(), 1);
+}
+
+#[test]
+fn a_grant_rings_only_an_executor_on_the_ledgers_own_node() {
+	let turn = Turn {
+		service: "certs".into(),
+		run: "a".into(),
+		workflow: "w".into(),
+		params: json!({}),
+		asked_at: Timestamp::UNIX_EPOCH,
+		fence: 1,
+		expires_at: Timestamp::UNIX_EPOCH,
+		done: BTreeMap::new(),
+		partial: false,
+	};
+	let grant = |push_url: Option<&str>| Granted {
+		node: "tyo".into(),
+		push_url: push_url.map(str::to_owned),
+		turn: turn.clone(),
+	};
+	let url = "http://executor.invalid/turns";
+	let doorbell = crate::scheduler::doorbell;
+	assert_eq!(doorbell(&grant(Some(url)), Some("tyo")), Some(url));
+	assert_eq!(doorbell(&grant(Some(url)), Some("sin")), None, "another node's executor polls");
+	assert_eq!(doorbell(&grant(Some(url)), None), None, "a ledger without NODE pushes nothing");
+	assert_eq!(doorbell(&grant(None), Some("tyo")), None, "an executor that gave no address polls");
+}
+
+#[tokio::test]
+async fn a_turn_for_another_node_is_not_pushed_and_is_found_by_polling() {
+	let Some(world) = world().await else { return };
+	world.open("a", "w").await;
+	let elsewhere = Executor::pushed(&world.router, "sin", &["w"]).await;
+	elsewhere.poll(1).await;
+	let http = crate::scheduler::client();
+	assert_eq!(crate::scheduler::round(&world.store, &http, Some("tyo")).await.unwrap(), 1);
+	assert!(elsewhere.pushed_turn().await.is_none(), "only the ledger's own node is pushed to");
+	assert_eq!(elsewhere.poll(1).await.len(), 1, "the turn is found by polling");
+}
+
+#[tokio::test]
+async fn a_run_goes_only_to_an_executor_naming_its_workflow() {
+	let Some(world) = world().await else { return };
+	world.open("a", "mirror").await;
+	let other = Executor::new(&world.router, "tyo", &["w"]);
+	other.poll(1).await;
+	assert!(world.store.tick().await.unwrap().is_empty(), "nobody names mirror");
+	assert_eq!(world.state_of("a").await, "ready");
+
+	let named = Executor::new(&world.router, "sin", &["w", "mirror"]);
+	named.poll(1).await;
+	let granted = world.store.tick().await.unwrap();
+	assert_eq!(granted.iter().map(|grant| grant.node.as_str()).collect::<Vec<_>>(), ["sin"]);
+
+	// A run nobody names holds no place in a round: with room for one, the run behind it is taken.
+	world.open("b", "unknown").await;
+	world.open("c", "w").await;
+	let granted = world.store.tick().await.unwrap();
+	let taken: Vec<_> =
+		granted.iter().map(|grant| (grant.turn.run.as_str(), grant.node.as_str())).collect();
+	assert_eq!(taken, [("c", "tyo")]);
+
+	// What an executor names is what its last poll named.
+	let (status, answer) = call(
+		&world.router,
+		"POST",
+		"/v1/executors/buf/polls",
+		&json!({ "capacity": 1, "workflows": ["unknown"] }),
+	)
+	.await;
+	assert_eq!(status, StatusCode::OK, "{answer}");
+	let granted = world.store.tick().await.unwrap();
+	let taken: Vec<_> =
+		granted.iter().map(|grant| (grant.turn.run.as_str(), grant.node.as_str())).collect();
+	assert_eq!(taken, [("b", "buf")]);
+}
+
+#[tokio::test]
+async fn a_poll_names_its_workflows_or_is_refused() {
+	let Some(world) = world().await else { return };
+	for body in [json!({ "capacity": 1 }), json!({ "capacity": 1, "workflows": [""] })] {
+		let (status, answer) = call(&world.router, "POST", "/v1/executors/tyo/polls", &body).await;
+		assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {answer}");
+	}
+}
+
+#[tokio::test]
+async fn every_turn_carries_when_the_run_was_asked() {
+	let Some(world) = world().await else { return };
+	world.open("a", "w").await;
+	let node = Executor::new(&world.router, "tyo", &["w"]);
+	node.poll(1).await;
+	world.store.tick().await.unwrap();
+	let first = node.poll(1).await.remove(0);
+	assert_eq!(json!(first.asked_at), world.view("a").await["run"]["created_at"]);
+
+	world.lapse().await;
+	world.store.tick().await.unwrap();
+	let second = node.poll(1).await.remove(0);
+	assert!(second.fence > first.fence, "a turn granted again");
+	assert_eq!(second.asked_at, first.asked_at, "the same instant in every turn");
 }
 
 #[tokio::test]
 async fn a_renewal_extends_a_lease_only_for_its_holder() {
 	let Some(world) = world().await else { return };
 	world.open("a", "w").await;
-	let node = Executor::new(&world.router, "tyo");
+	let node = Executor::new(&world.router, "tyo", &["w"]);
 	node.poll(1).await;
 	world.store.tick().await.unwrap();
 	let turn = node.poll(1).await.remove(0);

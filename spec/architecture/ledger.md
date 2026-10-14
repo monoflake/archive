@@ -103,7 +103,7 @@ lease, for a `step.do` that declares where it runs, is not built; `steps` carrie
 
 ### The tables
 
-Migrations 2 to 4, all expands, in the ledger's own style:
+Migrations 2 to 5, all expands, in the ledger's own style:
 
 - **`runs`**, keyed `(service, id)` with a foreign key to `tasks`: `workflow`, `class`, `status`
   (`ready`, `running`, `sleeping`, `waiting`, `done`, `failed`), `params`, `output`, `error`,
@@ -117,7 +117,8 @@ Migrations 2 to 4, all expands, in the ledger's own style:
   key, with `taken_by`, the wait step that consumed it.
 - **`leases`**, keyed `(service, run)`: `holder` (a node), `fence`, `expires_at`. A row exists only
   while a lease is held.
-- **`executors`**, keyed `node`: `seen_at`, `capacity` and a nullable `push_url`.
+- **`executors`**, keyed `node`: `seen_at`, `capacity`, a nullable `push_url`, and `workflows`, the
+  names of the workflows its last poll said it can run (migration 5).
 
 A step's attempts are the task's events (`step.<name>`), so the console's timeline of a task already
 draws them. Times are nanoseconds on the primary's own clock -- `clock_timestamp()` -- never a
@@ -133,8 +134,9 @@ not one of the cores. A round, every second, is one transaction:
 1. leases past `expires_at` are deleted and their runs made `ready`;
 2. sleeping and waiting runs whose `run_at` has come are made `ready`;
 3. `ready` runs are granted, oldest first, to the executors heard from in the last 60 seconds that
-   have room (`capacity` less the leases they hold), the one with the most room first: the run's
-   `fence` rises by one and a lease is written, all in one statement per step. Two rounds at once
+   have room (`capacity` less the leases they hold) and name the run's workflow, the one with the
+   most room first; a run no executor with room names stays `ready` and takes no place in the
+   round. The run's `fence` rises by one and a lease is written, all in one statement per step. Two rounds at once
    grant a run once, as `FOR UPDATE SKIP LOCKED` and the status test decide, so a second scheduler
    acting for a moment is harmless.
 
@@ -153,11 +155,16 @@ own.
 ### How a node gets a turn
 
 **A grant is pushed and found by poll.** The round that grants a turn posts it to the executor's
-`push_url`, if it gave one, with a two second timeout; a failure is logged and nothing more. Every
-executor also polls, every 15 to 30 seconds -- `POST /v1/executors/{node}/polls` with its
-`capacity` and `push_url` -- which is its heartbeat and answers the turns it holds, so a push lost,
-or a node behind NAT, still finds its work. A turn is `{service, run, workflow, params, fence,
-expires_at, done, partial}`: `done` maps each done step's name to what it returned (a sleep's is
+`push_url` only when that executor is on the ledger's own node, `NODE`, which host sets on every
+container: the private side reaches no other node's executor, since a scope placed on several nodes
+goes to any of them, and a ledger without `NODE` pushes nothing. The post has a two second timeout,
+and a failure is logged and nothing more. **A push is a doorbell**: the executor polls for the turn
+it rings for, so a forged push can steer nothing -- RFC 23wgz. Every executor polls every 15 to 30
+seconds -- `POST /v1/executors/{node}/polls` with its `capacity`, `push_url` and `workflows` -- which
+is its heartbeat and answers the turns it holds, so a push lost, a node elsewhere, or one behind
+NAT, still finds its work; a poll naming no workflow is refused `400 invalid_body`. A turn is
+`{service, run, workflow, params, asked_at, fence, expires_at, done, partial}`, `asked_at` when
+the run was opened, which never moves, so Workflows' `event.timestamp` is the same on every replay: `done` maps each done step's name to what it returned (a sleep's is
 `null`, a wait's the event), up to 8 MiB, past which `partial` is true and the node reads the rest
 with `GET /v1/runs/{service}/{id}`.
 
@@ -169,7 +176,7 @@ All under `/v1`, in the envelope, on the private side as the rest of the ledger.
 | ------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `PUT /runs/{service}/{id}`                        | `{workflow, class?, params?, caller?}`                      | the run view; `201` new, `200` same                                                                 |
 | `GET /runs/{service}/{id}`                        | -                                                           | `{run, steps, lease}`                                                                               |
-| `POST /executors/{node}/polls`                    | `{capacity, push_url?}`                                     | `{turns}`                                                                                           |
+| `POST /executors/{node}/polls`                    | `{capacity, push_url?, workflows}`                          | `{turns}`                                                                                           |
 | `PUT /runs/{service}/{id}/lease`                  | `{node, fence}`                                             | `{expires_at}`                                                                                      |
 | `POST /runs/{service}/{id}/steps/{name}/attempts` | `{node, fence, config?}`                                    | `{status: "done", result}`, `{status: "failed", error}` or `{status: "started", attempt, deadline}` |
 | `PUT /runs/{service}/{id}/steps/{name}`           | `{node, fence, attempt, outcome, result?, error?}`          | `{next: "continue"}`, `{next: "retry", run_at}` or `{next: "fail", error}`                          |

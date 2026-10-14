@@ -150,6 +150,14 @@ pub const MIGRATIONS: &[Migration] = &[
 		);
 	"#,
 	},
+	Migration {
+		version: 5,
+		name: "the workflows an executor runs",
+		kind: Kind::Expand,
+		sql: r#"
+		ALTER TABLE executors ADD COLUMN workflows text[] NOT NULL DEFAULT '{}';
+	"#,
+	},
 ];
 
 /// The advisory lock every ledger takes before migrating: "ledger" in ASCII.

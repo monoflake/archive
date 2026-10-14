@@ -27,20 +27,35 @@ pub fn client() -> reqwest::Client {
 	reqwest::Client::builder().timeout(PUSH).build().unwrap_or_default()
 }
 
-/// One round: lease what is ready and push each turn to the node that was given it, without
-/// waiting for any to answer. Answers how many were leased.
-pub async fn round(store: &Store, http: &reqwest::Client) -> anyhow::Result<usize> {
+/// One round: lease what is ready and push each turn granted to an executor on `own`, this
+/// ledger's node, without waiting for any to answer. Answers how many were leased.
+pub async fn round(
+	store: &Store,
+	http: &reqwest::Client,
+	own: Option<&str>,
+) -> anyhow::Result<usize> {
 	let granted = store.tick().await?;
 	let count = granted.len();
 	for grant in granted {
-		push(http.clone(), grant);
+		if let Some(url) = doorbell(&grant, own) {
+			push(http.clone(), url.to_owned(), grant);
+		}
 	}
 	Ok(count)
 }
 
-/// The turn posted to the node's `push_url`, if it gave one. A failure is logged and nothing more.
-fn push(http: reqwest::Client, grant: Granted) {
-	let Some(url) = grant.push_url else { return };
+/// Where a grant is pushed: the `push_url` its executor gave, and only when that executor is on
+/// `own`, the node this ledger runs on. The private side reaches no other node's executor -- a
+/// scope placed on several nodes goes to any of them -- so every other executor finds its turn by
+/// polling, and a ledger that does not know its node pushes nothing. See RFC 23wgz, "The second
+/// slice".
+pub fn doorbell<'a>(grant: &'a Granted, own: Option<&str>) -> Option<&'a str> {
+	let url = grant.push_url.as_deref()?;
+	(own == Some(grant.node.as_str())).then_some(url)
+}
+
+/// The turn posted to `url`. A failure is logged and nothing more.
+fn push(http: reqwest::Client, url: String, grant: Granted) {
 	tokio::spawn(async move {
 		let turn = &grant.turn;
 		match http.post(&url).json(turn).send().await {
@@ -62,8 +77,8 @@ fn push(http: reqwest::Client, grant: Granted) {
 	});
 }
 
-/// Rounds for ever, each only while `gate` answers that this node leads.
-pub async fn run(store: Arc<Store>, gate: String) {
+/// Rounds for ever, each only while `gate` answers that this node, `own`, leads.
+pub async fn run(store: Arc<Store>, gate: String, own: Option<String>) {
 	let http = client();
 	let mut leading = false;
 	loop {
@@ -73,7 +88,7 @@ pub async fn run(store: Arc<Store>, gate: String) {
 			eprintln!("ledger: scheduler {}", if now { "started: this node leads" } else { "stopped" });
 			leading = now;
 		}
-		if leading && let Err(error) = round(&store, &http).await {
+		if leading && let Err(error) = round(&store, &http, own.as_deref()).await {
 			eprintln!("ledger: a scheduler round failed: {error}");
 		}
 	}

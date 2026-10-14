@@ -61,6 +61,8 @@ where
 pub struct Executor {
 	pub node: String,
 	router: Router,
+	/// The workflows it names in each poll, the only ones it is granted.
+	workflows: Vec<String>,
 	/// The step at which this node is lost, after it began and before it reported.
 	die_at: Option<String>,
 	/// Where a pushed turn arrives, when this node gave a `push_url`.
@@ -82,10 +84,11 @@ pub async fn call(router: &Router, method: &str, path: &str, body: &Value) -> (S
 }
 
 impl Executor {
-	pub fn new(router: &Router, node: &str) -> Self {
+	pub fn new(router: &Router, node: &str, workflows: &[&str]) -> Self {
 		Self {
 			node: node.to_owned(),
 			router: router.clone(),
+			workflows: workflows.iter().map(|name| (*name).to_owned()).collect(),
 			die_at: None,
 			pushed: None,
 			push_url: None,
@@ -93,7 +96,7 @@ impl Executor {
 	}
 
 	/// A node that tells the ledger where to push a turn: a server of its own on 127.0.0.1.
-	pub async fn pushed(router: &Router, node: &str) -> Self {
+	pub async fn pushed(router: &Router, node: &str, workflows: &[&str]) -> Self {
 		let (send, receive) = mpsc::unbounded_channel::<Turn>();
 		let app = Router::new().route(
 			"/turns",
@@ -108,7 +111,7 @@ impl Executor {
 		Self {
 			pushed: Some(Arc::new(tokio::sync::Mutex::new(receive))),
 			push_url: Some(url),
-			..Self::new(router, node)
+			..Self::new(router, node, workflows)
 		}
 	}
 
@@ -119,7 +122,8 @@ impl Executor {
 
 	/// The heartbeat, and the turns this node holds.
 	pub async fn poll(&self, capacity: i32) -> Vec<Turn> {
-		let body = json!({ "capacity": capacity, "push_url": self.push_url });
+		let body =
+			json!({ "capacity": capacity, "push_url": self.push_url, "workflows": self.workflows });
 		let (status, answer) =
 			call(&self.router, "POST", &format!("/v1/executors/{}/polls", self.node), &body).await;
 		assert_eq!(status, StatusCode::OK, "{answer}");

@@ -115,10 +115,13 @@ async fn view(
 	}
 }
 
+/// An executor's poll: how many leases it may hold, where to push to, and the workflows it can
+/// run, so a run is granted only to one that has its code.
 #[derive(Deserialize)]
 struct Polled {
 	capacity: i32,
 	push_url: Option<String>,
+	workflows: Vec<String>,
 }
 
 async fn poll(
@@ -127,10 +130,10 @@ async fn poll(
 	body: Body<Polled>,
 ) -> Response {
 	let Ok(axum::Json(polled)) = body else { return invalid() };
-	if node.is_empty() || polled.capacity < 0 {
+	if node.is_empty() || polled.capacity < 0 || polled.workflows.iter().any(String::is_empty) {
 		return invalid();
 	}
-	match store.poll(&node, polled.capacity, polled.push_url.as_deref()).await {
+	match store.poll(&node, polled.capacity, polled.push_url.as_deref(), &polled.workflows).await {
 		Ok(turns) => response::success(StatusCode::OK, json!({ "turns": turns })),
 		Err(error) => unavailable(error),
 	}
