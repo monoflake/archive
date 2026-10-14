@@ -13,13 +13,15 @@ pub fn name_is_valid(name: &str) -> bool {
 }
 
 /// Every key an app's spec may hold.
-const FIELDS: &[&str] = &["placements", "release"];
+const FIELDS: &[&str] = &["placements", "release", "display_name", "repository"];
 
 /// Every key a `release` holds, each required.
 const RELEASE: &[&str] = &["repository", "run", "commit"];
 
 /// The spec as stored: `placements`, the nodes it runs on, each named once and in the order given,
-/// and `release`, what it runs there, absent until one is recorded -- RFC jln34.
+/// none for a Worker; `release`, what it runs there, absent until one is recorded -- RFC jln34; and
+/// from its declaration, `display_name`, what a person reads it as, and `repository`, the
+/// `owner/repo` it is declared in, which the console reads its scope from -- RFC 17b3o.
 pub fn spec(spec: Value) -> Result<Map<String, Value>, Refusal> {
 	let Value::Object(spec) = spec else {
 		return Err(Refusal::Invalid("an app's spec is a JSON object".into()));
@@ -29,6 +31,15 @@ pub fn spec(spec: Value) -> Result<Map<String, Value>, Refusal> {
 	}
 	if let Some(message) = spec.get("release").and_then(release_refusal) {
 		return Err(Refusal::Invalid(message));
+	}
+	if spec.get("display_name").is_some_and(|name| !name.as_str().is_some_and(display_is_valid)) {
+		return Err(Refusal::Invalid("`display_name` is a name of 1 to 64 characters".into()));
+	}
+	if spec
+		.get("repository")
+		.is_some_and(|repository| !repository.as_str().is_some_and(repository_is_valid))
+	{
+		return Err(Refusal::Invalid("`repository` is a GitHub repository, as `owner/repo`".into()));
 	}
 	let Some(placements) = spec.get("placements") else {
 		return Err(Refusal::Invalid("`placements` is required".into()));
@@ -69,6 +80,11 @@ fn release_refusal(release: &Value) -> Option<String> {
 		return Some("`release.commit` is a commit's 40 lowercase hexadecimal digits".into());
 	}
 	None
+}
+
+/// A display name: not empty, not padded, at most 64 characters, as a `service.toml`'s is.
+fn display_is_valid(name: &str) -> bool {
+	!name.is_empty() && name.trim() == name && name.chars().count() <= 64
 }
 
 /// `owner/repo`, each as GitHub allows: letters, digits, `-`, `_` and `.`.
@@ -113,6 +129,27 @@ mod tests {
 		let given = json!({ "placements": ["tyo", "sin", "rdu"] });
 		assert_eq!(spec(given.clone()).map(Value::Object), Ok(given));
 		assert!(spec(json!({ "placements": [] })).is_ok());
+	}
+
+	#[test]
+	fn a_display_name_and_a_repository_are_kept_and_held_to_their_shape() {
+		let given = json!({
+			"placements": [],
+			"display_name": "API Gateway",
+			"repository": "monoflake/platform",
+		});
+		assert_eq!(spec(given.clone()).map(Value::Object), Ok(given));
+		for (key, value) in [
+			("display_name", json!("")),
+			("display_name", json!(" Relay")),
+			("display_name", json!("x".repeat(65))),
+			("display_name", json!(1)),
+			("repository", json!("platform")),
+			("repository", json!(null)),
+		] {
+			let given = json!({ "placements": ["tyo"], key: value });
+			assert!(matches!(spec(given.clone()), Err(Refusal::Invalid(_))), "{given}");
+		}
 	}
 
 	#[test]

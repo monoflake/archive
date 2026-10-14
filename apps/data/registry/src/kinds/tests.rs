@@ -35,6 +35,8 @@ fn example(kind: &Description) -> Value {
 				"run": 7,
 				"commit": "0123456789abcdef0123456789abcdef01234567",
 			},
+			"display_name": "Task Ledger",
+			"repository": "monoflake/platform",
 		}),
 		Kind::Account => json!({
 			"provider": "oracle",
@@ -251,9 +253,11 @@ fn a_kind_is_answered_in_the_shape_the_console_reads() {
 			"fields": [
 				{ "name": "placements", "type": "list", "editable": true, "required": true },
 				{ "name": "release", "type": "object", "editable": true, "required": false },
+				{ "name": "display_name", "type": "string", "editable": true, "required": false },
+				{ "name": "repository", "type": "string", "editable": true, "required": false },
 			],
 			"actions": [],
-			"columns": ["placements"],
+			"columns": ["display_name", "placements"],
 		})
 	);
 	let tier = serde_json::to_value(&NODE.fields[1]).unwrap();

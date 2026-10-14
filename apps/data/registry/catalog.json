@@ -102,10 +102,23 @@
 				"type": "object",
 				"editable": true,
 				"required": false
+			},
+			{
+				"name": "display_name",
+				"type": "string",
+				"editable": true,
+				"required": false
+			},
+			{
+				"name": "repository",
+				"type": "string",
+				"editable": true,
+				"required": false
 			}
 		],
 		"actions": [],
 		"columns": [
+			"display_name",
 			"placements"
 		]
 	},

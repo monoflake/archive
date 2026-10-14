@@ -39,8 +39,9 @@ by notice or by catching up, records each app it has an artifact of -- an image 
 writes each as `release: {repository, run, commit}` by `PATCH /v1/apps/{name}`, held to the revision
 it read, as `deployer`, with `REGISTRY_TOKEN`. A release only moves forward: one the registry records
 from the same repository at the same or a newer run is left as it is, and a write refused `409` is
-read again and tried once more. An app the registry does not hold, a Worker among them, is logged and
-left. It asks the cores in `REGISTRY`, the one that answered last first, three seconds each. The
+read again and tried once more. An app the registry does not hold is logged and
+left. A Worker is held, placed on no node -- RFC 17b3o -- so its release is written as any other's,
+and host, wanting only what is placed on its own node, never runs it. It asks the cores in `REGISTRY`, the one that answered last first, three seconds each. The
 registry unreachable stops no deploy: a release not written stays in `deployer.db` and is written by
 the next deploy or the next catch-up pass, oldest run first. An app declared `rollout = "manual"` -- the database, the
 quorum -- is given no release by a run: the deployer reads the run's `declarations` artifact, each

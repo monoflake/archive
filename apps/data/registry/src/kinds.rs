@@ -213,9 +213,14 @@ pub const APP: Description = Description {
 	kind: Kind::App,
 	plural: Kind::App.plural(),
 	named: Kind::App.named(),
-	fields: &[field("placements", Type::List, true), field("release", Type::Object, false)],
+	fields: &[
+		field("placements", Type::List, true),
+		field("release", Type::Object, false),
+		field("display_name", Type::String, false),
+		field("repository", Type::String, false),
+	],
 	actions: &[],
-	columns: &["placements"],
+	columns: &["display_name", "placements"],
 };
 
 /// An account's identity: its kind, and its value, kept and answered, drawn hidden until asked for.

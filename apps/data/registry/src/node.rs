@@ -61,7 +61,35 @@ pub fn record(node: Value) -> Result<Map<String, Value>, String> {
 	if record.get("roles").is_some_and(|roles| !roles_are_valid(roles)) {
 		return Err(format!("`roles` is a list of one or more of {}, each once", ROLES.join(", ")));
 	}
+	// Where the place its IATA code names is, which the console draws and orders nodes by.
+	if record.get("coordinates").is_some_and(|coordinates| !coordinates_are_valid(coordinates)) {
+		return Err("`coordinates` is [latitude, longitude] in degrees".into());
+	}
+	// What the console calls it: its city first, its country last, and between them what tells it
+	// from another node in that city, if anything does.
+	if record.get("place").is_some_and(|place| !place.as_str().is_some_and(place_is_valid)) {
+		return Err("`place` is \"City, Country\", or \"City, Part, Country\"".into());
+	}
 	Ok(record)
+}
+
+/// Two parts or more, each one written and unpadded, joined by `, `, 100 characters at most.
+fn place_is_valid(place: &str) -> bool {
+	let parts: Vec<&str> = place.split(", ").collect();
+	place.chars().count() <= 100
+		&& parts.len() >= 2
+		&& parts.iter().all(|part| !part.is_empty() && part.trim() == *part && !part.contains(','))
+}
+
+/// `[latitude, longitude]`, each a number in degrees within its range.
+fn coordinates_are_valid(coordinates: &Value) -> bool {
+	let Value::Array(pair) = coordinates else { return false };
+	let [Some(latitude), Some(longitude)] =
+		[pair.first(), pair.get(1)].map(|n| n.and_then(Value::as_f64))
+	else {
+		return false;
+	};
+	pair.len() == 2 && (-90.0..=90.0).contains(&latitude) && (-180.0..=180.0).contains(&longitude)
 }
 
 fn roles_are_valid(roles: &Value) -> bool {
@@ -92,6 +120,8 @@ mod tests {
 			"hosting": "datacenter",
 			"account": "0123456789abcdef",
 			"roles": ["compute", "core"],
+			"coordinates": [1.3644, 103.9915],
+			"place": "Singapore, Singapore",
 			"canary": true,
 			"grants": ["database"],
 		})
@@ -129,7 +159,7 @@ mod tests {
 	fn the_optional_keys_may_be_left_out() {
 		let mut node = without("core");
 		node.as_object_mut().unwrap().remove("expiry");
-		for optional in ["retired", "hosting", "account", "roles"] {
+		for optional in ["retired", "hosting", "account", "roles", "coordinates", "place"] {
 			node.as_object_mut().unwrap().remove(optional);
 		}
 		assert!(record(node).is_ok());
@@ -183,9 +213,32 @@ mod tests {
 			("roles", json!(["compute", "edge"])),
 			("roles", json!([1])),
 			("roles", json!(null)),
+			("coordinates", json!([1.3644])),
+			("coordinates", json!([1.3644, 103.9915, 0])),
+			("coordinates", json!([91, 0])),
+			("coordinates", json!([0, -181])),
+			("coordinates", json!(["1.36", "103.99"])),
+			("coordinates", json!({ "latitude": 1.3644, "longitude": 103.9915 })),
+			("coordinates", json!(null)),
+			("place", json!("")),
+			("place", json!("Singapore")),
+			("place", json!("Tokyo,Japan")),
+			("place", json!("Tokyo, , Japan")),
+			("place", json!(" Tokyo, Japan")),
+			("place", json!("Tokyo, Japan ")),
+			("place", json!(format!("{}, Japan", "x".repeat(100)))),
+			("place", json!(["Tokyo", "Japan"])),
+			("place", json!(null)),
 		];
 		for (key, value) in wrong {
 			assert!(record(with(key, value.clone())).is_err(), "{key}: {value}");
+		}
+	}
+
+	#[test]
+	fn takes_a_place_of_a_city_and_a_country_with_a_part_between_them_or_none() {
+		for place in ["Tokyo, Japan", "Tokyo, Narita, Japan", "Gävle, Sweden"] {
+			assert!(record(with("place", json!(place))).is_ok(), "{place}");
 		}
 	}
 

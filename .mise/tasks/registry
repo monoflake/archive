@@ -6,8 +6,9 @@
 the first time, and gives each writer the token, the cores, every source host deploys from, the
 GitHub token it reads their runs with and, where it reads artifacts, the bucket and its read key,
 and the console Worker the token as a secret, once it has found that Worker; `import` puts each
-node of infra's nodes.toml into the registry, then where each app runs, from every repository host
-deploys from, held to the revision it read, which is safe to run again. Values move over SSH or to
+node of infra's nodes.toml into the registry, then each app's placements, display name and
+repository, from every repository of the workspace that declares apps -- a Worker placed on none --
+held to the revision it read, which is safe to run again. Values move over SSH or to
 wrangler on stdin, never on a command line, and `--dry-run` touches no machine and prints no secret.
 It borrows the database task's helpers rather than copying them.
 """
@@ -248,20 +249,24 @@ def is_node_name(name):
 
 
 def placed(declaration):
-	"""The nodes a service.toml places its app on, or None where the registry keeps none: a Worker's
-	`["workers"]`, an empty list, or anything not a list of node names."""
+	"""The nodes a service.toml places its app on: none for a Worker's `["workers"]` or an empty
+	list, which the registry holds placed nowhere, so host never finds it wanted -- RFC 17b3o; None
+	where its placements are neither, which the import passes over."""
 	placements = declaration.get("placements")
-	if not isinstance(placements, list) or not placements:
+	if not isinstance(placements, list):
 		return None
+	if placements in ([], ["workers"]):
+		return []
 	return placements if all(is_node_name(node) for node in placements) else None
 
 
 def apps_placed(declarations):
-	"""Each app's name and where it is placed, None where it is not for the registry, from
-	(path, declaration) pairs in order; one name declared twice fails, naming both."""
+	"""Each app's name, where it is placed -- None where the import passes it over -- its display
+	name, None where it declares none, and the repository it is declared in, from (repository, path,
+	declaration) triples in order; one name declared twice fails, naming both."""
 	seen = {}
 	apps = []
-	for path, declaration in declarations:
+	for repository, path, declaration in declarations:
 		name = declaration.get("name")
 		if not isinstance(name, str) or not name:
 			fail(f"{path} names no app")
@@ -270,7 +275,8 @@ def apps_placed(declarations):
 		if name in seen:
 			fail(f"{name} is declared twice, in {seen[name]} and {path}")
 		seen[name] = path
-		apps.append((name, placed(declaration)))
+		display = declaration.get("display_name")
+		apps.append((name, placed(declaration), display if isinstance(display, str) else None, repository))
 	return apps
 
 
@@ -345,21 +351,48 @@ def source_roots(workspace=None):
 	return checkouts(sources, repos, workspace / "repos")
 
 
+def declared_roots(workspace=None):
+	"""The checkout of every repository whose apps the registry holds, as (`owner/repo`, path):
+	each host deploys from first, in DEPLOY_SOURCES' order and failing where one is missing, then
+	every other repository repos.toml names, in its order, one not cloned passed over and said -- its
+	apps are Workers no node runs, and the next import takes them. See RFC 17b3o."""
+	workspace = workspace or WORKSPACE
+	sources = host_sources(workspace)
+	roots = list(zip(sources, source_roots(workspace)))
+	repos = tomllib.loads((workspace / "repos.toml").read_text())["repos"]
+	for directory, spec in repos.items():
+		repository = spec.replace(":", "/", 1)
+		if repository in sources:
+			continue
+		path = workspace / "repos" / directory
+		if path.is_dir():
+			roots.append((repository, path))
+		else:
+			print(f"{APP}: {repository} is not cloned at {path}; its apps are left for the next import")
+	return roots
+
+
 def declarations(roots):
 	"""Every service.toml under each root's apps/ on its `main`, at any depth, since cue keeps its
-	one level up. What is committed, never the working tree: an app another session has not
-	committed is not yet anybody's to place."""
-	for root in roots:
+	one level up, with the repository it is declared in. What is committed, never the working tree:
+	an app another session has not committed is not yet anybody's to place."""
+	for repository, root in roots:
 		listed = jj(root, "file", "list", "-r", MAIN, 'root-glob:"apps/**/service.toml"')
 		for path in sorted(listed.splitlines()):
 			if {"node_modules", "target"}.isdisjoint(Path(path).parts):
-				yield root / path, tomllib.loads(committed(root, path))
+				yield repository, root / path, tomllib.loads(committed(root, path))
 
 
-def app_body(revision, placements, by=BY):
-	"""The body of `PUT` or `PATCH /v1/apps/<name>`: who, the revision read, and the placements.
-	See RFC cpc2b."""
-	return {"by": by, "revision": revision, "spec": {"placements": placements}}
+def app_body(revision, placements, display=None, repository=None, by=BY):
+	"""The body of `PUT` or `PATCH /v1/apps/<name>`: who, the revision read, the placements, and
+	from the declaration its display name and repository, each only where there is one. See RFC
+	cpc2b and RFC 17b3o."""
+	spec = {"placements": placements}
+	if display is not None:
+		spec["display_name"] = display
+	if repository is not None:
+		spec["repository"] = repository
+	return {"by": by, "revision": revision, "spec": spec}
 
 
 def call(address, method, path, body=None, secret=None):
@@ -432,7 +465,7 @@ def importing(dry):
 	secret = os.environ.get(TOKEN)
 	if not secret and not dry:
 		fail(f"secrets.json has no {TOKEN}; `registry token` makes it")
-	apps = apps_placed(declarations(source_roots()))
+	apps = apps_placed(declarations(declared_roots()))
 	addresses = {node: database.tailnet_ipv4(node) for node in {*nodes, *cores}}
 	registries = [addresses[core] for core in cores]
 	if dry:
@@ -446,14 +479,14 @@ def importing(dry):
 			body = request_body(table, addresses[name], "<read>")
 			print(f"  PATCH /v1/nodes/{name} {json.dumps(body)}")
 		print(
-			f"{APP}: then each app placed on nodes, at the revision GET /v1/apps/<name> answers,"
-			" by PATCH, or by PUT where the registry does not hold it:"
+			f"{APP}: then each app, a Worker placed on none, at the revision GET /v1/apps/<name>"
+			" answers, by PATCH, or by PUT where the registry does not hold it:"
 		)
-		for name, where in apps:
+		for name, where, display, repository in apps:
 			if where is None:
 				print(f"  skip {name}")
 			else:
-				body = app_body("<read>", where)
+				body = app_body("<read>", where, display, repository)
 				print(f"  PATCH /v1/apps/{name} {json.dumps(body)}")
 		return
 	for name, table in nodes.items():
@@ -465,12 +498,12 @@ def importing(dry):
 			fail(f"{name}: {answer}")
 		made = answer["data"].get("revision")
 		print(f"{APP}: {name}: " + ("unchanged" if made is None else f"changed, revision {made}"))
-	for name, where in apps:
+	for name, where, display, repository in apps:
 		if where is None:
-			print(f"{APP}: app {name}: skipped, not placed on nodes")
+			print(f"{APP}: app {name}: skipped, its placements are neither nodes nor workers")
 			continue
 		revision = revision_of(answered(registries, "GET", f"/v1/apps/{name}"), name)
-		body = app_body(revision, where)
+		body = app_body(revision, where, display, repository)
 		answer = answered(registries, method_at(revision), f"/v1/apps/{name}", body, secret)
 		if answer.get("status") != "success":
 			fail(f"app {name}: {answer}")

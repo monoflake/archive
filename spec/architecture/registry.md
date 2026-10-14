@@ -18,18 +18,27 @@ URL. Its port, 12013, is published to the tailnet alone, a peer every relay reac
 when, what was and what is. A write that changes nothing writes nothing, so writing the same record
 again is safe. The record is the node's table from infra's `nodes.toml` with its tailnet IPv4 added:
 the axes infra's `spec/architecture/nodes.md` declares are checked, every other key kept as given,
-so the node task can come to read it rather than the file.
+so the node task can come to read it rather than the file. A node's `coordinates`, `[latitude,
+longitude]` in degrees, are checked to be two numbers in range, and its `place` to be two or more
+parts joined by `, `, its city first and its country last; the console draws, names and orders the
+nodes by them.
 
-**An app is a record too: where it runs, and what it runs there.** Its spec is `placements`, the
-nodes it runs on, which a person sets, and `release`, the run of a repository that built what runs
-and the commit it built (`{"repository": "owner/repo", "run": n, "commit": "<40 hex>"}`), which the
-deployer on `tyo` writes after each run it takes -- RFC jln34. Absent, no release is recorded yet.
-`PUT /v1/apps/<name>` sets the whole spec; `PATCH` sets only the keys it is given, takes out a key
-given `null` -- RFC 7386's merge patch -- and keeps the others, held to the revision read as `PUT`
-is, so a release written and an app moved never erase each other. A node takes the same `PATCH`, so
-an operator's `retired` and an import never erase each other either. `mise run registry import`
-writes placements by `PATCH` and creates an app it does not find by `PUT`, so running it again keeps
-every release.
+**An app is a record too: where it runs, what it runs there, and what it is called.** Its spec is
+`placements`, the nodes it runs on, which a person sets -- none for a Worker, which the registry
+holds all the same, so it holds every app the console shows, and host, wanting only what is placed
+on its own node, never runs one; `display_name` and `repository`, `owner/repo`, from the app's
+`service.toml` and the repository declaring it, which the console reads rather than copies -- RFC
+17b3o; and `release`, the run of a repository that built what runs and the commit it built
+(`{"repository": "owner/repo", "run": n, "commit": "<40 hex>"}`), which the deployer on `tyo` writes
+after each run it takes -- RFC jln34. Absent, no release is recorded yet. `PUT /v1/apps/<name>`
+sets the whole spec; `PATCH` sets only the keys it is given, takes out a key given `null` -- RFC
+7386's merge patch -- and keeps the others, held to the revision read as `PUT` is, so a release
+written and an app moved never erase each other. A node takes the same `PATCH`, so an operator's
+`retired` and an import never erase each other either. `mise run registry import` writes
+placements, display name and repository by `PATCH` at the revision it read, and creates an app it
+does not find by `PUT`, so running it again keeps every release. It reads the declarations of every
+repository in the workspace's `repos.toml`: those host deploys from first, which must be cloned,
+then every other one, a repository not cloned passed over and named.
 
 **Reading is open to the tailnet and writing takes a token**, `REGISTRY_TOKEN`, made once in the
 repository's secrets and written to the registry's nodes by `mise run registry token`; without one a

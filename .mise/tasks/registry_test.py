@@ -82,11 +82,13 @@ class Placements(unittest.TestCase):
 	def test_a_list_of_node_names_is_kept_in_order(self):
 		self.assertEqual(registry.placed({"placements": ["tyo", "sin", "rdu"]}), ["tyo", "sin", "rdu"])
 
-	def test_what_the_registry_keeps_nothing_of_is_skipped(self):
+	def test_a_worker_is_placed_on_no_node(self):
+		for declaration in [{"placements": []}, {"placements": ["workers"]}]:
+			self.assertEqual(registry.placed(declaration), [], declaration)
+
+	def test_what_is_neither_nodes_nor_workers_is_skipped(self):
 		for declaration in [
 			{},
-			{"placements": []},
-			{"placements": ["workers"]},
 			{"placements": ["tyo", "workers"]},
 			{"placements": ["TYO"]},
 			{"placements": ["tyo1"]},
@@ -98,13 +100,25 @@ class Placements(unittest.TestCase):
 
 	def test_every_app_is_named_once_in_order(self):
 		declarations = [
-			("a/service.toml", {"name": "web", "placements": ["tyo"]}),
-			("b/service.toml", {"name": "aka", "placements": ["workers"]}),
+			("canmi21/web", "a/service.toml", {"name": "web", "placements": ["tyo"]}),
+			(
+				"monoflake/platform",
+				"b/service.toml",
+				{"name": "aka", "display_name": "Short Links", "placements": ["workers"]},
+			),
+			("canmi21/web", "c/service.toml", {"name": "odd", "placements": "tyo"}),
 		]
-		self.assertEqual(registry.apps_placed(declarations), [("web", ["tyo"]), ("aka", None)])
+		self.assertEqual(
+			registry.apps_placed(declarations),
+			[
+				("web", ["tyo"], None, "canmi21/web"),
+				("aka", [], "Short Links", "monoflake/platform"),
+				("odd", None, None, "canmi21/web"),
+			],
+		)
 
 	def test_a_name_of_an_id_s_shape_fails(self):
-		declarations = [("a", {"name": "0123456789abcdef", "placements": ["tyo"]})]
+		declarations = [("o/r", "a", {"name": "0123456789abcdef", "placements": ["tyo"]})]
 		with self.assertRaises(SystemExit):
 			registry.apps_placed(declarations)
 		self.assertTrue(registry.is_id("0123456789abcdef"))
@@ -112,8 +126,8 @@ class Placements(unittest.TestCase):
 			self.assertFalse(registry.is_id(name), name)
 
 	def test_a_name_declared_twice_or_not_at_all_fails(self):
-		twice = [("a", {"name": "web", "placements": ["tyo"]}), ("b", {"name": "web"})]
-		for declarations in [twice, [("a", {"placements": ["tyo"]})]]:
+		twice = [("o/r", "a", {"name": "web", "placements": ["tyo"]}), ("o/r", "b", {"name": "web"})]
+		for declarations in [twice, [("o/r", "a", {"placements": ["tyo"]})]]:
 			with self.assertRaises(SystemExit):
 				registry.apps_placed(declarations)
 
@@ -121,6 +135,12 @@ class Placements(unittest.TestCase):
 		self.assertEqual(
 			registry.app_body(7, ["tyo", "sin"]),
 			{"by": "import", "revision": 7, "spec": {"placements": ["tyo", "sin"]}},
+		)
+
+	def test_the_body_carries_a_display_name_and_a_repository_where_there_are_some(self):
+		self.assertEqual(
+			registry.app_body(7, [], "API Gateway", "monoflake/platform")["spec"],
+			{"placements": [], "display_name": "API Gateway", "repository": "monoflake/platform"},
 		)
 
 	def test_an_app_the_registry_does_not_hold_is_at_revision_zero(self):
@@ -250,7 +270,7 @@ class Importing(unittest.TestCase):
 			'web = "canmi21:web"\n',
 		)
 		# Each checkout's `main`, by its directory: path to what the bookmark holds there.
-		self.main = {"infra": {}, "platform": {}, "cue": {}}
+		self.main = {"infra": {}, "platform": {}, "cue": {}, "web": {}}
 		for checkout in self.main:
 			(self.workspace / "repos" / checkout).mkdir(parents=True)
 		self.main["infra"][".mise/tasks/host_env.py"] = (
@@ -261,11 +281,14 @@ class Importing(unittest.TestCase):
 		self.declare("platform", "apps/edge/aka", "aka", ["workers"])
 		self.declare("platform", "apps/site/web/node_modules/x", "x", ["tyo"])
 		self.declare("cue", "apps/hub", "hub", ["tyo"])
+		self.declare("web", "apps/console", "console", ["workers"], display="Console")
 
-	def declare(self, checkout, directory, name, placements, committed=True):
+	def declare(self, checkout, directory, name, placements, committed=True, display=None):
 		"""A service.toml on `checkout`'s main, or in its working tree alone where not committed."""
 		listed = ", ".join(f'"{node}"' for node in placements)
 		text = f'name = "{name}"\nplacements = [{listed}]\n'
+		if display is not None:
+			text += f'display_name = "{display}"\n'
 		path = f"{directory}/service.toml"
 		if committed:
 			self.main[checkout][path] = text
@@ -314,10 +337,12 @@ class Importing(unittest.TestCase):
 		lines = self.run_import(True, fake)
 		self.assertEqual(fake.written, [], "a dry run reads, and writes nothing")
 		puts = [line.split()[1] for line in lines if line.startswith("  PATCH /v1/apps/")]
-		self.assertEqual(puts, ["/v1/apps/caddy", "/v1/apps/web", "/v1/apps/hub"])
-		web = registry.app_body("<read>", ["tyo", "sin"])
+		apps = ["caddy", "aka", "web", "hub", "console"]
+		self.assertEqual(puts, [f"/v1/apps/{app}" for app in apps])
+		web = registry.app_body("<read>", ["tyo", "sin"], None, "monoflake/platform")
 		self.assertIn(f"  PATCH /v1/apps/web {registry.json.dumps(web)}", lines)
-		self.assertIn("  skip aka", lines)
+		console = registry.app_body("<read>", [], "Console", "canmi21/web")
+		self.assertIn(f"  PATCH /v1/apps/console {registry.json.dumps(console)}", lines)
 		self.assertEqual(sum(line.startswith("  PATCH /v1/nodes/") for line in lines), 3)
 		tyo = registry.request_body(self.NODES["tyo"], "100.64.0.1", "<read>")
 		self.assertIn(f"  PATCH /v1/nodes/tyo {registry.json.dumps(tyo)}", lines)
@@ -342,9 +367,9 @@ class Importing(unittest.TestCase):
 			self.assertNotIn("domain", spec, node)
 			self.assertNotIn("account", spec, node)
 		self.assertEqual(fake.spec_of("nodes", "rdu")["hosting"], "selfhost")
-		self.assertIn("registry: app aka: skipped, not placed on nodes", lines)
 		web = fake.bodies[("PUT", "apps", "web")]
-		self.assertEqual(web, registry.app_body(0, ["tyo", "sin"]))
+		self.assertEqual(web, registry.app_body(0, ["tyo", "sin"], None, "monoflake/platform"))
+		self.assertEqual(fake.spec_of("apps", "aka"), {"placements": [], "repository": "monoflake/platform"})
 
 	def test_a_rerun_keeps_the_account_the_author_wrote(self):
 		fake = Fake()
@@ -359,10 +384,13 @@ class Importing(unittest.TestCase):
 		fake.hold("apps", "web", {"placements": ["tyo"], "release": release}, 4)
 		self.run_import(False, fake)
 		web = fake.spec_of("apps", "web")
-		self.assertEqual(web, {"placements": ["tyo", "sin"], "release": release})
+		self.assertEqual(
+			web,
+			{"placements": ["tyo", "sin"], "release": release, "repository": "monoflake/platform"},
+		)
 		apps = [entry for entry in fake.written if entry[1] == "apps"]
-		puts = [("PUT", "apps", "caddy"), ("PATCH", "apps", "web"), ("PUT", "apps", "hub")]
-		self.assertEqual(apps, puts)
+		puts = [("PUT", "apps", "caddy"), ("PUT", "apps", "aka"), ("PATCH", "apps", "web")]
+		self.assertEqual(apps, [*puts, ("PUT", "apps", "hub"), ("PUT", "apps", "console")])
 
 	def test_a_rerun_keeps_a_node_retired_in_the_registry(self):
 		"""An operator retired tyo in the registry, and nodes.toml says nothing of it; the import
@@ -396,8 +424,14 @@ class Importing(unittest.TestCase):
 		self.declare("cue", "apps/hub", "hub", ["sin"], committed=False)
 		lines = self.run_import(True)
 		self.assertNotIn("secrets", "\n".join(lines))
-		hub = registry.app_body("<read>", ["tyo"])
+		hub = registry.app_body("<read>", ["tyo"], None, "canmi21/cue")
 		self.assertIn(f"  PATCH /v1/apps/hub {registry.json.dumps(hub)}", lines)
+
+	def test_a_repository_host_does_not_deploy_from_is_read_where_cloned_and_passed_over_where_not(self):
+		(self.workspace / "repos/web").rename(self.workspace / "away")
+		lines = self.run_import(True)
+		self.assertNotIn("console", "\n".join(line for line in lines if line.startswith("  PATCH")))
+		self.assertTrue(any("canmi21/web is not cloned" in line for line in lines), lines)
 
 	def test_a_checkout_without_main_fails_naming_it(self):
 		del self.main["cue"]
