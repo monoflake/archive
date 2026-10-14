@@ -161,3 +161,23 @@ describe('fingerprints', () => {
 		expect(rebuilt('apps/system/deployer/src/extra.ts')).toEqual(['deployer']);
 	});
 });
+
+describe('a Node image', () => {
+	test('is rebuilt when a package it imports changes, as it bundles that package', () => {
+		// The executor imports the workflow runner; the deployer does not.
+		expect(rebuilt('libs/replay/src/cloudflare.ts')).toEqual(['executor']);
+		// Both import the sdk.
+		expect(rebuilt('libs/sdk/symlink/src/index.ts')).toEqual(['deployer', 'executor']);
+	});
+
+	test("is not rebuilt for a package's prose, or for a package no image imports", () => {
+		expect(rebuilt('libs/replay/README.md')).toEqual([]);
+		expect(rebuilt('libs/probe/package.json')).toEqual([]);
+	});
+
+	test("is chosen only where it is built from its package, never a crate's binary", () => {
+		// geo has no package, and the probe's binary is a crate's whatever it imports.
+		expect(rebuilt('libs/sdk/symlink/src/index.ts')).not.toContain('geo');
+		expect(rebuilt('libs/sdk/symlink/src/index.ts')).not.toContain('probe');
+	});
+});

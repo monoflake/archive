@@ -21,6 +21,7 @@ export const CONFIG: Verify.Config = {
 		'check-scopes',
 		'check-receivers',
 		'check-catalog',
+		'check-names',
 	],
 	// tsc reads three programs, vitest one suite, oxlint the tree.
 	node: ['check', 'lint', 'test'],
