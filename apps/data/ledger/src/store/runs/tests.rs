@@ -150,7 +150,7 @@ async fn opening_a_run_again_is_the_same_run_and_another_with_its_id_is_refused(
 	let other = json!({ "workflow": "issue", "params": { "domain": "other.app" } });
 	let (status, answer) = call(&world.router, "PUT", "/v1/runs/certs/a", &other).await;
 	assert_eq!(status, StatusCode::CONFLICT);
-	assert!(answer["message"].as_str().unwrap().starts_with("run_exists_differently"));
+	assert_eq!(answer["code"], "run_exists_differently");
 	let local = json!({ "workflow": "issue", "class": "local" });
 	assert_eq!(
 		call(&world.router, "PUT", "/v1/runs/certs/b", &local).await.0,
@@ -203,7 +203,7 @@ async fn a_node_lost_mid_step_loses_nothing_and_its_late_report_is_refused() {
 	let late = json!({ "node": "tyo", "fence": 1, "attempt": 1, "outcome": "success", "result": 1 });
 	let (status, answer) = call(&world.router, "PUT", "/v1/runs/certs/a/steps/order", &late).await;
 	assert_eq!(status, StatusCode::CONFLICT);
-	assert!(answer["message"].as_str().unwrap().starts_with("stale_lease"));
+	assert_eq!(answer["code"], "stale_lease");
 	assert_eq!(lost.run_turn(&code["issue"], turn).await, Err(Halt::Stale));
 
 	assert_eq!(survivor.run_turn(&code["issue"], again).await, Ok(json!(7)));

@@ -178,11 +178,9 @@ All under `/v1`, in the envelope, on the private side as the rest of the ledger.
 | `POST /runs/{service}/{id}/events`                | `{key, type, payload?}`                                     | `{new}`                                                                                             |
 | `PUT /runs/{service}/{id}/outcome`                | `{node, fence, outcome: "done"\|"failed", output?, error?}` | `{}`; the same end said twice is the same                                                           |
 
-`outcome` of a step is `success`, `error` or `fatal`. The response catalogue has no code of its own
-for a lease that is not the run's, a replay that disagrees, a run that exists differently or a
-result past its size, so each is answered under the nearest code -- `invalid_revision` `409`,
-`invalid_size` `413`, `no_such_task` `404` -- with its own word, `stale_lease`, `replay_diverged`,
-`run_exists_differently`, `result_too_large`, `no_such_run`, first in the message.
+`outcome` of a step is `success`, `error` or `fatal`. **The ledger's own codes are declared in
+its `codes.json`**, never in lib's -- RFC v7g2p: `stale_lease`, `replay_diverged` and
+`run_exists_differently` `409`, `result_too_large` `413`, `no_such_run` `404`.
 
 ### Workflows' API on these routes
 

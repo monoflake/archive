@@ -1,11 +1,8 @@
 //! What the executors and the services that open a run reach, under `/v1`. See
 //! spec/architecture/ledger.md, "A run, and the node that replays it".
-//!
-//! The response catalogue has no code yet for a stale lease, a replay that disagrees, a run that
-//! exists differently or a result past its size; each is answered under the nearest code, with its
-//! own word first in the message.
 
 use crate::api::Shared;
+use crate::codes;
 use crate::store::nanos;
 use crate::store::runs::{
 	Begun, Created, Finished, Lease, NewRun, Outcome, Refused, Slept, StepConfig, Waited,
@@ -45,20 +42,11 @@ fn unavailable(error: anyhow::Error) -> Response {
 
 fn refused(refusal: Refused) -> Response {
 	match refusal {
-		Refused::NoSuchRun => response::failure_with(
-			StatusCode::NOT_FOUND,
-			"no_such_task",
-			"no_such_run: no run is kept under this id",
-		),
-		Refused::Stale => response::failure_with(
-			StatusCode::CONFLICT,
-			"invalid_revision",
-			"stale_lease: the run is not leased to this node at this fence",
-		),
-		Refused::Diverged(why) => response::failure_with(
-			StatusCode::CONFLICT,
-			"invalid_revision",
-			format!("replay_diverged: {why}"),
+		Refused::NoSuchRun => codes::failure("no_such_run"),
+		Refused::Stale => codes::failure("stale_lease"),
+		Refused::Diverged(why) => codes::failure_with(
+			"replay_diverged",
+			format!("This replay disagrees with the steps already recorded: {why}"),
 		),
 	}
 }
@@ -105,11 +93,7 @@ async fn create(
 		Created::New => StatusCode::CREATED,
 		Created::Same => StatusCode::OK,
 		Created::Differs => {
-			return response::failure_with(
-				StatusCode::CONFLICT,
-				"invalid_revision",
-				"run_exists_differently: this id is a run of another workflow, class or params",
-			);
+			return codes::failure("run_exists_differently");
 		}
 		Created::Unsupported => return invalid(),
 	};
@@ -229,11 +213,9 @@ async fn finish(
 		Finished::Fail { error } => {
 			response::success(StatusCode::OK, json!({ "next": "fail", "error": error }))
 		}
-		Finished::TooLarge => response::failure_with(
-			StatusCode::PAYLOAD_TOO_LARGE,
-			"invalid_size",
-			"result_too_large: a step's result is at most 1 MiB",
-		),
+		Finished::TooLarge => {
+			codes::failure_with("result_too_large", "A step's result is at most 1 MiB")
+		}
 	})
 }
 
@@ -357,6 +339,8 @@ async fn outcome(
 
 #[cfg(test)]
 mod tests {
+	use crate::codes;
+
 	#[test]
 	fn every_code_it_answers_with_is_in_the_catalogue() {
 		for code in response::codes_named(include_str!("runs_api.rs")) {
@@ -364,6 +348,19 @@ mod tests {
 				response::message_of(code).is_some(),
 				"`{code}` is not in the response crate's codes.json"
 			);
+		}
+	}
+
+	#[test]
+	fn every_code_of_its_own_is_declared_and_each_declared_is_answered() {
+		let named = codes::named(include_str!("runs_api.rs"));
+		let declared: serde_json::Map<String, serde_json::Value> =
+			serde_json::from_str(include_str!("../codes.json")).unwrap();
+		for code in &named {
+			assert!(declared.contains_key(*code), "`{code}` is not in the ledger's codes.json");
+		}
+		for code in declared.keys() {
+			assert!(named.contains(&code.as_str()), "`{code}` is declared and never answered");
 		}
 	}
 }

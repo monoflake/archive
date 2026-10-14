@@ -1,0 +1,22 @@
+{
+	"no_such_run": {
+		"status": 404,
+		"message": "No run has this id"
+	},
+	"replay_diverged": {
+		"status": 409,
+		"message": "This replay disagrees with the steps already recorded"
+	},
+	"result_too_large": {
+		"status": 413,
+		"message": "The step's result is past its size limit"
+	},
+	"run_exists_differently": {
+		"status": 409,
+		"message": "This id is already a run of another workflow, class or params"
+	},
+	"stale_lease": {
+		"status": 409,
+		"message": "The run is not leased to this caller at this fence"
+	}
+}
