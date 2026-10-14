@@ -60,6 +60,10 @@ pub struct Entry {
 	#[serde(flatten)]
 	pub held: Option<Held>,
 	pub state: Presence,
+	/// The version of its runs this relay holds, absent where it holds none: a page reads the runs
+	/// again when it moves, as the snapshot no longer carries the events -- RFC grmtb.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub runs: Option<u64>,
 }
 
 /// The state of a node held as `held`, or of a peer not yet heard, at `now`, `uptime` into this
@@ -153,12 +157,13 @@ mod tests {
 
 	#[test]
 	fn an_entry_carries_what_is_held_and_a_peer_not_heard_its_state_alone() {
-		let entry = Entry { held: Some(held(0, json!({ "apps": [] }))), state: Presence::Live };
+		let held = Some(held(0, json!({ "apps": [] })));
+		let entry = Entry { held, state: Presence::Live, runs: Some(7) };
 		let written = serde_json::to_value(&entry).unwrap();
 		assert_eq!(written["state"], "live");
 		assert_eq!(written["version"], 1);
-		assert_eq!(written["snapshot"], json!({ "apps": [] }));
-		let waiting = Entry { held: None, state: Presence::Waiting };
+		assert_eq!((&written["snapshot"], &written["runs"]), (&json!({ "apps": [] }), &json!(7)));
+		let waiting = Entry { held: None, state: Presence::Waiting, runs: None };
 		assert_eq!(serde_json::to_value(&waiting).unwrap(), json!({ "state": "waiting" }));
 	}
 }

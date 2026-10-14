@@ -1,7 +1,8 @@
 //! This node's own snapshot, of which this relay is the one source: read from host every round,
-//! and given a new version every round, so a node is heard because it spoke.
+//! and given a new version every round, so a node is heard because it spoke. Its events are read
+//! into the runs and never carried here -- RFC grmtb.
 
-use crate::host::{App, Event, ReadError, Reading};
+use crate::host::{App, ReadError, Reading};
 use crate::presence::Leaving;
 use jiff::Timestamp;
 use serde::Serialize;
@@ -31,7 +32,6 @@ impl std::fmt::Display for Part {
 /// What a snapshot says.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Content {
-	pub events: Vec<Event>,
 	pub apps: Vec<App>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub machine: Option<serde_json::Value>,
@@ -85,7 +85,9 @@ impl Own {
 		let mut next = self.content.clone();
 		next.round_trip = round_trips;
 		let mut failed = Vec::new();
-		kept(Part::Events, events, &mut next.events, &mut failed);
+		if let Err(error) = events {
+			failed.push((Part::Events, error));
+		}
 		kept(Part::Apps, apps, &mut next.apps, &mut failed);
 		kept(Part::Machine, machine.map(Some), &mut next.machine, &mut failed);
 		next.stale = failed.iter().map(|(part, _)| *part).collect();
@@ -179,6 +181,20 @@ mod tests {
 		// A round already under way as the relay stops does not say the node is back.
 		let ((_, after), _) = own.observe(reading("geo:1"), RoundTrips::new(), at(1000));
 		assert_eq!(after.content.leaving, Some(leaving));
+	}
+
+	#[test]
+	fn a_snapshot_carries_no_events_and_a_failed_read_of_them_is_stale() {
+		let mut own = Own::default();
+		let ((_, snapshot), _) = own.observe(reading("geo:1"), RoundTrips::new(), at(0));
+		assert!(serde_json::to_value(&snapshot).unwrap().get("events").is_none());
+		let failing = Reading {
+			events: Err(ReadError::Slow(std::time::Duration::from_secs(5))),
+			apps: Ok(vec![app("geo:1")]),
+			machine: Ok(json!({ "sample": 1 })),
+		};
+		let ((_, snapshot), failed) = own.observe(failing, RoundTrips::new(), at(3000));
+		assert_eq!((snapshot.content.stale, failed.len()), (BTreeSet::from([Part::Events]), 1));
 	}
 
 	#[test]

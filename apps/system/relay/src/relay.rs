@@ -71,6 +71,8 @@ struct Holding {
 	/// The neighbors dialed, shown as waiting until they are heard; changed as the registry is, see
 	/// `registry::follow`.
 	peers: BTreeSet<String>,
+	/// The version of each node's runs as last shown, so a page reads the runs again when one moves.
+	runs: Versions,
 }
 
 impl Holding {
@@ -82,7 +84,8 @@ impl Holding {
 			.chain(unheard.map(|peer| (peer, None)))
 			.map(|(node, held)| {
 				let state = presence(held, now, uptime);
-				(node.clone(), Entry { held: held.cloned(), state })
+				let runs = self.runs.get(node).copied();
+				(node.clone(), Entry { held: held.cloned(), state, runs })
 			})
 			.collect()
 	}
@@ -130,13 +133,15 @@ impl Relay {
 	) -> Result<Arc<Self>, StoreError> {
 		let shown = peers.iter().map(|peer| (peer.clone(), Presence::Waiting)).collect();
 		let store = shared(store);
+		let runs = Mirror::open(node.clone(), store.clone())?;
+		let holding = Holding { cluster: Cluster::default(), shown, peers, runs: runs.versions() };
 		Ok(Arc::new(Self {
-			runs: Mirror::open(node.clone(), store.clone())?,
+			runs,
 			history: Book::open(node.clone(), store)?,
 			minutes: broadcast::channel(BACKLOG).0,
 			node,
 			secret,
-			holding: Mutex::new(Holding { cluster: Cluster::default(), shown, peers }),
+			holding: Mutex::new(holding),
 			own: Mutex::default(),
 			updates: broadcast::channel(BACKLOG).0,
 			changes: broadcast::channel(BACKLOG).0,
@@ -183,7 +188,8 @@ impl Relay {
 		let held = holding.cluster.nodes()[node].clone();
 		let state = presence(Some(&held), now, self.started.elapsed());
 		holding.shown.insert(node.to_owned(), state);
-		let entry = Entry { held: Some(held.clone()), state };
+		let runs = holding.runs.get(node).copied();
+		let entry = Entry { held: Some(held.clone()), state, runs };
 		let _ = self.updates.send(Update { node: node.to_owned(), held });
 		let _ = self.changes.send(Change { node: node.to_owned(), entry });
 		true
@@ -238,7 +244,30 @@ impl Relay {
 	fn events_read(&self, events: &[crate::host::Event], now: Timestamp) {
 		if let Some(batch) = self.runs.observe(events, now) {
 			let _ = self.batches.send(batch);
+			self.runs_moved(&self.node);
 		}
+	}
+
+	/// `node`'s runs moved here: its entry sent again carrying their version, so a page reading them
+	/// reads again. An older version than shown, from a second socket, sends nothing.
+	fn runs_moved(&self, node: &str) {
+		let Some(version) = self.runs.versions().get(node).copied() else {
+			return;
+		};
+		let now = Timestamp::now();
+		let mut holding = lock(&self.holding);
+		if holding.runs.get(node).is_some_and(|shown| *shown >= version) {
+			return;
+		}
+		holding.runs.insert(node.to_owned(), version);
+		let held = holding.cluster.nodes().get(node).cloned();
+		if held.is_none() && !holding.peers.contains(node) {
+			return;
+		}
+		let state = presence(held.as_ref(), now, self.started.elapsed());
+		holding.shown.insert(node.to_owned(), state);
+		let entry = Entry { held, state, runs: Some(version) };
+		let _ = self.changes.send(Change { node: node.to_owned(), entry });
 	}
 
 	pub fn versions(&self) -> Versions {
@@ -247,7 +276,12 @@ impl Relay {
 
 	/// Takes a neighbor's batch of runs; whether it did. Never this node's own, as `take`.
 	pub fn take_runs(&self, batch: Batch) -> bool {
-		self.runs.merge(batch)
+		let node = batch.node.clone();
+		let taken = self.runs.merge(batch);
+		if taken {
+			self.runs_moved(&node);
+		}
+		taken
 	}
 
 	pub fn run_versions(&self) -> Versions {
@@ -350,7 +384,7 @@ impl Relay {
 	pub fn set_peers(&self, peers: BTreeSet<String>) {
 		{
 			let mut holding = lock(&self.holding);
-			let Holding { cluster, shown, peers: held } = &mut *holding;
+			let Holding { cluster, shown, peers: held, .. } = &mut *holding;
 			for gone in held.difference(&peers) {
 				if !cluster.nodes().contains_key(gone) {
 					shown.remove(gone);
@@ -579,12 +613,50 @@ mod tests {
 		assert_eq!(relay.versions(), Versions::from([("tyo".into(), 9)]));
 	}
 
+	/// A row of `node`'s runs at `version`, as a neighbor's batch carries it.
+	fn ran(node: &str, version: u64) -> Batch {
+		let event = crate::host::Event {
+			id: 1,
+			app: "geo".into(),
+			action: "deploy".into(),
+			source: crate::host::Source { kind: "panel".into(), run: None, commit: None },
+			image: None,
+			outcome: "running".into(),
+			stage: None,
+			detail: None,
+			started_at: Timestamp::now().to_string(),
+			finished_at: None,
+		};
+		let rows = vec![crate::runs::Row { version, event }];
+		Batch { node: node.into(), above: 0, version, rows }
+	}
+
+	#[test]
+	fn a_nodes_runs_moving_sends_its_entry_again_with_their_version() {
+		let relay = relay("rdu");
+		let version = u64::try_from(Timestamp::now().as_millisecond()).unwrap();
+		relay.take("tyo", Carried { version, snapshot: Arc::new(serde_json::json!({})) }, None);
+		assert_eq!(relay.state().nodes["tyo"].runs, None);
+		let mut changes = relay.subscribe_changes();
+		assert!(relay.take_runs(ran("tyo", 7)));
+		let change = changes.try_recv().unwrap();
+		assert_eq!((change.node.as_str(), change.entry.runs), ("tyo", Some(7)));
+		assert_eq!(change.entry.held.map(|held| held.version), Some(version));
+		assert_eq!(relay.state().nodes["tyo"].runs, Some(7));
+		// What is already held moves nothing, and sends nothing.
+		assert!(!relay.take_runs(ran("tyo", 7)));
+		assert!(changes.try_recv().is_err());
+		// A node neither held nor dialed is not shown for its runs alone.
+		assert!(relay.take_runs(ran("buf", 3)));
+		assert!(changes.try_recv().is_err() && !relay.state().nodes.contains_key("buf"));
+	}
+
 	#[test]
 	fn a_peer_not_heard_is_shown_waiting_with_nothing_held() {
 		let peers = BTreeSet::from(["tyo".to_owned()]);
 		let relay = Relay::new("rdu".into(), "s3cret".into(), peers, Store::memory().unwrap()).unwrap();
 		let state = relay.state();
-		assert_eq!(state.nodes["tyo"], Entry { held: None, state: Presence::Waiting });
+		assert_eq!(state.nodes["tyo"], Entry { held: None, state: Presence::Waiting, runs: None });
 	}
 
 	#[test]
@@ -620,7 +692,7 @@ mod tests {
 		let sent: Vec<_> = std::iter::from_fn(|| changes.try_recv().ok()).map(|c| c.node).collect();
 		assert_eq!(sent, ["sin"]);
 		let nodes = relay.state().nodes;
-		assert_eq!(nodes["sin"], Entry { held: None, state: Presence::Waiting });
+		assert_eq!(nodes["sin"], Entry { held: None, state: Presence::Waiting, runs: None });
 		// tyo, heard, is held until it ages; buf, never heard, is no longer listed.
 		assert!(nodes.contains_key("tyo") && !nodes.contains_key("buf"));
 	}

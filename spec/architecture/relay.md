@@ -34,8 +34,9 @@ bytes from a neighbor and check them, and a node without IPv4 then needs nothing
 **`apps/system/relay` runs on every node, as a peer** -- infra's `spec/architecture/host.md`, "A role
 is asked for by the app and granted by the node" -- on port 12012, its port open to the other
 nodes over the tailnet and host's own network open to it. Every three seconds it reads its node's
-host with the read token: the events, the apps, the machine's readings. That is the node's
-snapshot, and the node is the only authority on it: a neighbor's word on a node's own snapshot is
+host with the read token: the events, the apps, the machine's readings. The apps and the
+readings are the node's snapshot; the events go into the runs -- "The runs, mirrored on every
+relay's disk" -- and are never carried in a snapshot, RFC grmtb. The node is the only authority on it: a neighbor's word on a node's own snapshot is
 never taken.
 
 **A snapshot's version is its origin's clock, in milliseconds**, or one past the last where the
@@ -71,10 +72,13 @@ every change; `/state` answers the same once, for the console's polling. **`/liv
 WebSocket, so without the check any site the reader visits could open it as them. A request with no
 `Origin` comes from no browser and carries no reader's cookie, and passes; the private mirror's
 pages are refused, since the console is served on `.app`. Each node's entry carries `heard_at`, when
-its origin took the version held, never later than this relay's clock, and `state`; a peer
-never heard is an entry carrying `state` alone. A state that time alone changes is
-sent again on `/live` at the same version, so a reader keeps dropping an older version but takes the
-same one with another `state`.
+its origin took the version held, never later than this relay's clock, `state`, and `runs`, the
+version of the node's runs this relay holds, absent where it holds none; a peer never heard is an
+entry carrying `state` alone, and `runs` where it is held. A state that time alone changes is sent
+again on `/live` at the same version, so a reader keeps dropping an older version but takes the
+same one with another `state`. **A node's runs moving sends its entry again at the same version**,
+with another `runs`, so a page reads `/runs?since=` again rather than being sent the rows -- RFC
+grmtb.
 
 ## The console asks, and the relay answers from memory
 
@@ -163,6 +167,9 @@ backed up. Decided with the author on 2026-10-09.
   verdict, the month's figures lean. A relay before these ignores them and answers every row whole,
   which the console, filtering by its own moment, reads the same. Decided with the author on
   2026-10-10, over counting in the relay, which would have kept the console's grouping twice.
+- **The console's live views read the runs, not the snapshot**: the overview's verdict and
+  timeline ask the last day's steps again each time a node's `runs` moves on `/live`, and
+  Deployments reads again while one has moved in the last ten seconds.
 - **The file is `/data/runs.db`**, `[data]` in `service.toml`, so the relay is rolled out as an app
   with state on its node is -- infra's `spec/architecture/host.md`, "An app chooses how it is rolled
   out, and keeping nothing earns a gapless one".
