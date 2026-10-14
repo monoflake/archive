@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-#MISE description="The images, or with --workers the Workers, a change needs rebuilt, as JSON: `deployable [--workers] [--all] [--since REV | --git BASE [--head REV]] [--files ...]`"
+#MISE description="The images, or with --workers the Workers, a change needs rebuilt, as JSON: `deployable [--workers | --declared] [--all] [--since REV | --git BASE [--head REV]] [--files ...]`"
 """An app is deployable when its directory holds a `service.toml` and a `Dockerfile`, and needs a
-new image when what goes into it changed, each input read as a build reads it (see fingerprint.py):
-a crate it is built from, a file its binary includes, a package Cargo.lock resolves it to, its
-declaration, its Dockerfile, or the build; an app whose Dockerfile copies more than the workspace
-takes every file in its directory. A comment or a reformat rebuilds nothing, so a panic's line and
-`line!()` may lag the source. With `--workers`, the apps placed on `workers` with a `wrangler.jsonc`
-instead, each needing a new `worker-` artifact when it, a package it imports, or the packaging
-changed. CI reads the list to decide what to build; see infra's spec/architecture/host.md, "The
-machine pulls; nothing pushes into it", and spec/architecture/deployer.md, "What a Worker artifact
-is"."""
+new image when what goes into it changed, each read as a build reads it (see fingerprint.py): a
+crate it is built from, a file its binary includes, a package Cargo.lock resolves it to, its
+Dockerfile, or the build. A declaration changed alone needs none: `--declared` lists those, which
+CI uploads unbuilt. A comment or a reformat rebuilds nothing, so `line!()` may lag the source. With
+`--workers`, the apps placed on `workers` with a `wrangler.jsonc`, each needing a `worker-` artifact
+when it, a package it imports, or the packaging changed. See infra's spec/architecture/host.md,
+"The machine pulls; nothing pushes into it", and spec/architecture/deployer.md, "What a Worker
+artifact is"."""
 
 import atexit
 import json
@@ -186,6 +185,12 @@ def changes(files, crate_dirs, revisions):
 	return [f for f in kept if not normalized(f) or not same(f, base.read(f), head.read(f))]
 
 
+def declaration(path):
+	"""Whether `path` is an app's own `service.toml`, directly in its directory."""
+	app = app_of(path)
+	return app is not None and path.endswith(f"/{app}/service.toml")
+
+
 def needed(files, declared, revisions=None):
 	"""The apps `files` need rebuilt; `revisions` reads a file before and after, as (base, head)."""
 	crate_dirs, crate_edges, _included = rust_graph()
@@ -193,19 +198,17 @@ def needed(files, declared, revisions=None):
 	if any(f in EVERY_IMAGE for f in moving):
 		return sorted(declared)
 	built = build_inputs(crate_dirs)
-	# A file a binary includes outside its tests is that crate's source, and is in the binary byte
-	# for byte, as is what a build script reads.
+	# A file a binary includes outside its tests is that crate's source, a declaration among them,
+	# and is in the binary byte for byte, as is what a build script reads.
 	carried = embedded(crate_dirs)
 	crates, chosen = set(), set()
 	for f in files:
 		crates |= built.get(owner(f, built) or f, set())
 		crates |= carried.get(f, set())
 	binary = cargo_built(declared, crate_dirs)
-	# A binary's declaration is read by host, not built into it, and still takes a new image here.
-	inputs = ("/Dockerfile", "/service.toml")
 	for f in moving:
 		app = app_of(f)
-		if app in declared and (app not in binary or f.endswith(inputs)):
+		if app in declared and not declaration(f) and (app not in binary or f.endswith("/Dockerfile")):
 			chosen.add(app)
 		crate = crate_dirs.get(owner(f, crate_dirs) or "")
 		if crate and (f.endswith(".rs") or f.endswith("/Cargo.toml")):
@@ -216,6 +219,15 @@ def needed(files, declared, revisions=None):
 	reached = dependents(crates | moved, crate_edges)
 	chosen |= {app for app, crate in declared.items() if crate in reached}
 	return sorted(chosen)
+
+
+def redeclared(files, declared, rebuilt, revisions=None):
+	"""The apps whose `service.toml` is among `files`, its value changed where `revisions` can tell,
+	and whose image is not among `rebuilt`: a declaration to apply over the image the node already
+	runs."""
+	moving = files if revisions is None else changes(files, (), revisions)
+	touched = {app_of(f) for f in moving if declaration(f) and app_of(f) in declared}
+	return sorted(touched - set(rebuilt))
 
 
 def needed_workers(files, declared, revisions=None):
@@ -234,30 +246,47 @@ def needed_workers(files, declared, revisions=None):
 	return sorted(chosen)
 
 
-def main():
-	arguments = sys.argv[1:]
-	worker = "--workers" in arguments
-	declared = workers() if worker else apps()
-	pick = needed_workers if worker else needed
-	if "--all" in arguments:
-		result = sorted(declared)
-	elif "--files" in arguments:
-		result = pick(arguments[arguments.index("--files") + 1 :], declared)
-	elif "--git" in arguments:
+def inputs(arguments):
+	"""The files a change touched and the revisions to read them at, as the arguments name them:
+	`--files` alone has no revisions, `--git` compares two commits, and neither compares the working
+	copy with `--since` or its parent."""
+	if "--files" in arguments:
+		return arguments[arguments.index("--files") + 1 :], None
+	if "--git" in arguments:
 		base = arguments[arguments.index("--git") + 1]
 		head = arguments[arguments.index("--head") + 1] if "--head" in arguments else "HEAD"
 		# HEAD is what CI checked out, so its tree is the one on disk.
 		after = Revision(None if head == "HEAD" else head)
-		result = pick(git_changed(base, head), declared, (Revision(base), after))
-	else:
-		since = arguments[arguments.index("--since") + 1] if "--since" in arguments else None
-		files = changed(since)
-		try:
-			before = Revision(jj_commit(since or "@-"))
-		except subprocess.CalledProcessError:
-			before = None
-		result = pick(files, declared, before and (before, Revision()))
-	print(json.dumps(result))
+		return git_changed(base, head), (Revision(base), after)
+	since = arguments[arguments.index("--since") + 1] if "--since" in arguments else None
+	files = changed(since)
+	try:
+		before = Revision(jj_commit(since or "@-"))
+	except subprocess.CalledProcessError:
+		before = None
+	return files, before and (before, Revision())
+
+
+def main():
+	arguments = sys.argv[1:]
+	if "--declared" in arguments:
+		# Everything rebuilt leaves no declaration to apply alone.
+		if "--all" in arguments:
+			print(json.dumps([]))
+			return 0
+		declared = apps()
+		files, revisions = inputs(arguments)
+		rebuilt = needed(files, declared, revisions)
+		print(json.dumps(redeclared(files, declared, rebuilt, revisions)))
+		return 0
+	worker = "--workers" in arguments
+	declared = workers() if worker else apps()
+	pick = needed_workers if worker else needed
+	if "--all" in arguments:
+		print(json.dumps(sorted(declared)))
+		return 0
+	files, revisions = inputs(arguments)
+	print(json.dumps(pick(files, declared, revisions)))
 	return 0
 
 

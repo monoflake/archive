@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     outputs:
       apps: ${{ steps.plan.outputs.apps }}
+      declared: ${{ steps.plan.outputs.declared }}
       workers: ${{ steps.plan.outputs.workers }}
     steps:
       - uses: actions/checkout@v7
@@ -64,6 +65,7 @@ jobs:
           ASKED: ${{ inputs.apps }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          declared='[]'
           if [ "$EVENT" = schedule ]; then
             apps='["geo"]'
             workers='[]'
@@ -84,28 +86,33 @@ jobs:
               workers="$(.mise/tasks/deployable --workers --all)"
             else
               apps="$(.mise/tasks/deployable --git "$base")"
+              declared="$(.mise/tasks/deployable --declared --git "$base")"
               workers="$(.mise/tasks/deployable --workers --git "$base")"
             fi
           fi
           echo "apps=$apps" >> "$GITHUB_OUTPUT"
+          echo "declared=$declared" >> "$GITHUB_OUTPUT"
           echo "workers=$workers" >> "$GITHUB_OUTPUT"
           echo "building: $apps"
+          echo "declaring alone: $declared"
           echo "packaging: $workers"
 
   # Every declaration the run builds an image for, apart and small, so a node reads where an app
-  # is placed, and in which architecture, before it downloads any image. See infra's
+  # is placed, and in which architecture, before it downloads any image; and every declaration
+  # changed alone, which a node applies over the image it already runs. See infra's
   # spec/architecture/host.md, "The machine pulls; nothing pushes into it".
   declare:
     needs: plan
-    if: needs.plan.outputs.apps != '[]'
+    if: needs.plan.outputs.apps != '[]' || needs.plan.outputs.declared != '[]'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - env:
           APPS: ${{ needs.plan.outputs.apps }}
+          DECLARED: ${{ needs.plan.outputs.declared }}
         run: |
           mkdir -p "$RUNNER_TEMP/declarations"
-          for app in $(printf '%s' "$APPS" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))'); do
+          for app in $(printf '%s\n%s' "$APPS" "$DECLARED" | python3 -c 'import json,sys; print(" ".join(a for line in sys.stdin for a in json.loads(line)))'); do
             cp apps/*/"$app"/service.toml "$RUNNER_TEMP/declarations/$app.toml"
           done
       # The workspace's mise.toml alone, for the Node it pins, which runs the artifact script.

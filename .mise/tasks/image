@@ -8,11 +8,13 @@ name="${1:?usage: image <name> <path>}"
 archive="${2:?usage: image <name> <path>}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-# The release an image compiles with. The toolchain file above names the `stable` channel and no
-# release, and a rust image is tagged by release, so it is pinned here and moved by hand, as infra's
-# image task pins its own. See the workspace's spec/toolchain.md, "`rust-toolchain.toml` is
-# generated too".
+# The release an image compiles with, and the rust image of it by digest, so a tag pushed again
+# cannot change what a build compiles with. The toolchain file above names the `stable` channel and
+# no release, so the release is pinned here and moved by hand, its digest with it, as infra's image
+# task pins its own. See the workspace's spec/toolchain.md, "`rust-toolchain.toml` is generated
+# too".
 version="1.99.0"
+rust_image="rust:1.99.0-slim-trixie@sha256:24e632c09342c20abf8312cf4f61430a911c01ed3a5e4c02b87292b1c39c5273"
 
 # Node's major, for an image that builds a page, from the `[tools]` the workspace pins it in.
 dir="$ROOT"
@@ -37,7 +39,12 @@ done
 secret=()
 [ -z "$forward" ] || secret=(--secret id=sccache,env=SCCACHE_FORWARD)
 
+# The same source builds the same image: every time in it, file and image alike, is the epoch, a
+# fixed one so an app rebuilt unchanged by a later commit is unchanged too. host deploys nothing
+# for an image it already runs. See infra's spec/architecture/host.md, "An image is built for
+# speed, and for any node of its architecture".
 SCCACHE_FORWARD="$forward" docker buildx build --platform "${PLATFORM:-linux/arm64}" \
 	--file "$app/Dockerfile" ${secret[@]+"${secret[@]}"} \
-	--build-arg "RUST_VERSION=$version" --build-arg "NODE_VERSION=$node" \
-	--tag "$name:local" --output "type=docker,dest=$archive" "$ROOT"
+	--build-arg "RUST_VERSION=$version" --build-arg "RUST_IMAGE=$rust_image" \
+	--build-arg "NODE_VERSION=$node" --build-arg SOURCE_DATE_EPOCH=0 \
+	--tag "$name:local" --output "type=docker,dest=$archive,rewrite-timestamp=true" "$ROOT"

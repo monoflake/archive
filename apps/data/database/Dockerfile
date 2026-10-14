@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # check=skip=InvalidDefaultArgInFrom,SecretsUsedInArgOrEnv
-# Built from the repository root by `mise run host`. RUST_VERSION has no default on purpose, which
-# is the check skipped above: the task reads it from the workspace's rust-toolchain.toml.
+# Built from the repository root by `mise run host`. RUST_IMAGE has no default on purpose, which
+# is the check skipped above: the task names the rust image of the workspace's toolchain, by digest.
 # The second skip is WALG_LIBSODIUM_KEY_TRANSFORM, named like a secret and not one.
-ARG RUST_VERSION
+ARG RUST_IMAGE
 
 # sccache, the compiler cache the build runs rustc through: the static binary from its release,
 # checked against the sum the release publishes, in a stage for each architecture.
@@ -26,8 +26,11 @@ ADD --checksum=sha256:444ce216230c254edef803e098a59a1746806da3e0d55671d7b0f0082d
 FROM walg-${TARGETARCH} AS walg
 
 # The keeper, static, against musl, as meter and geo are.
-FROM rust:${RUST_VERSION}-slim-trixie AS build
+FROM ${RUST_IMAGE} AS build
 ARG TARGETARCH
+# What `__DATE__` and the like read, so the same source builds the same image. See infra's
+# spec/architecture/host.md, "An image is built for speed, and for any node of its architecture".
+ARG SOURCE_DATE_EPOCH
 RUN apt-get update \
 	&& apt-get install --yes --no-install-recommends musl-tools \
 	&& rm -rf /var/lib/apt/lists/*
@@ -42,6 +45,8 @@ COPY libs libs
 # spec/architecture/host.md, "An image is built for speed, and for any node of its architecture".
 # sccache's backend comes in as the secret `sccache` from .mise/tasks/image, else it is the cache
 # mount, and rustc runs alone when its server cannot start; the same section covers sccache.
+# rustc reaches it as `rustc-cached`, a name the `cc` crate takes for no C wrapper: a C compile
+# through sccache ignores SOURCE_DATE_EPOCH, and mimalloc's C carries its build time.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
 	--mount=type=cache,target=/src/target \
 	--mount=type=cache,target=/var/cache/sccache,sharing=locked \
@@ -53,7 +58,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 	&& export "CFLAGS_${arch}_unknown_linux_musl=-DMI_DEFAULT_ALLOW_THP=0" \
 	&& export SCCACHE_DIR=/var/cache/sccache SCCACHE_IDLE_TIMEOUT=0 \
 	&& if [ -f /run/secrets/sccache ]; then . /run/secrets/sccache; fi \
-	&& if sccache --start-server; then export RUSTC_WRAPPER=sccache; fi \
+	&& if sccache --start-server; then \
+		printf '#!/bin/sh\nexec sccache "$@"\n' > /usr/local/bin/rustc-cached \
+		&& chmod +x /usr/local/bin/rustc-cached && export RUSTC_WRAPPER=rustc-cached; fi \
 	&& cargo build --profile container --locked --target "$target" -p database \
 	&& cp "target/$target/container/database" /database \
 	&& if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats || true; fi

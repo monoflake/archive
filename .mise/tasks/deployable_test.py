@@ -1,5 +1,5 @@
-"""deployable's choice of images, against this repository's own apps:
-`python3 .mise/tasks/deployable_test.py`."""
+"""deployable's choice of images, and its split between images to build and declarations to apply
+alone, against this repository's own apps: `python3 .mise/tasks/deployable_test.py`."""
 
 import importlib.machinery
 import importlib.util
@@ -41,6 +41,39 @@ def rebuilt(path, change=None):
 	return deployable.needed([path], DECLARED, revisions)
 
 
+def split(path, change=None):
+	"""The images a change to `path` needs rebuilt, and the declarations it leaves to apply alone."""
+	if change is None:
+		revisions = None
+	else:
+		before = (deployable.ROOT / path).read_text()
+		revisions = (Revision({path: before}), Revision({path: change(before)}))
+	images = deployable.needed([path], DECLARED, revisions)
+	return images, deployable.redeclared([path], DECLARED, images, revisions)
+
+
+class Declarations(unittest.TestCase):
+	def test_a_changed_declaration_alone_is_applied_without_an_image(self):
+		self.assertEqual(split("apps/compute/geo/service.toml"), ([], ["geo"]))
+
+	def test_a_declaration_beside_anything_else_of_its_app_is_built(self):
+		files = ["apps/compute/geo/service.toml", "apps/compute/geo/Dockerfile"]
+		images = deployable.needed(files, DECLARED)
+		self.assertEqual((images, deployable.redeclared(files, DECLARED, images)), (["geo"], []))
+
+	def test_a_declaration_of_an_app_built_whole_is_applied_alone_too(self):
+		# deployer's Dockerfile copies its whole directory; its declaration is still host's to read.
+		self.assertEqual(split("apps/system/deployer/service.toml"), ([], ["deployer"]))
+
+	def test_only_the_apps_own_declaration_is_one(self):
+		self.assertTrue(deployable.declaration("apps/compute/geo/service.toml"))
+		self.assertFalse(deployable.declaration("apps/compute/geo/src/service.toml"))
+		self.assertFalse(deployable.declaration("apps/compute/geo/Dockerfile"))
+
+	def test_a_comment_in_a_declaration_is_neither(self):
+		self.assertEqual(split("apps/compute/geo/service.toml", lambda text: "# Why.\n" + text), ([], []))
+
+
 class Fingerprints(unittest.TestCase):
 	def test_a_comment_in_rust_is_no_change(self):
 		self.assertEqual(rebuilt(GEO, lambda text: "// A note.\n" + text.replace("\n", "\n/* and */\n", 3)), [])
@@ -56,11 +89,12 @@ class Fingerprints(unittest.TestCase):
 		for path in ("apps/compute/geo/README.md", "apps/data/primary/tests/proxy.rs", "LICENSE"):
 			self.assertEqual(rebuilt(path), [], path)
 
-	def test_a_comment_in_a_declaration_is_no_change_and_a_value_is_a_rebuild(self):
+	def test_a_value_in_a_declaration_is_applied_without_a_rebuild(self):
 		declaration = "apps/compute/geo/service.toml"
-		self.assertEqual(rebuilt(declaration, lambda text: "# Why.\n" + text), [])
-		changed = rebuilt(declaration, lambda text: text.replace('name = "geo"', 'name = "geo"\nhealth_timeout = 9'))
-		self.assertEqual(changed, ["geo"])
+		self.assertEqual(
+			split(declaration, lambda text: text.replace('name = "geo"', 'name = "geo"\nhealth_timeout = 9')),
+			([], ["geo"]),
+		)
 
 	def test_a_comment_in_a_dockerfile_is_no_change(self):
 		dockerfile = "apps/compute/geo/Dockerfile"
