@@ -87,11 +87,19 @@ pub async fn placed_apps(
 		};
 		let Some(listed) = data(response).await else { continue };
 		let Some(items) = listed["items"].as_array() else { continue };
-		return Some(
-			items.iter().filter_map(|item| item["name"].as_str().map(str::to_owned)).collect(),
-		);
+		return Some(placed(items, node));
 	}
 	None
+}
+
+/// The names among `items` whose placements name `node`, as host's `registry::placed` keeps them: a
+/// registry that ignored `?node=` must not open every app's secrets to one node.
+fn placed(items: &[Value], node: &str) -> Vec<String> {
+	let here = |item: &&Value| {
+		let placements = item["spec"]["placements"].as_array();
+		placements.is_some_and(|placements| placements.iter().any(|placed| placed == node))
+	};
+	items.iter().filter(here).filter_map(|item| item["name"].as_str().map(str::to_owned)).collect()
 }
 
 /// This core's share from its file, or why there is none: a file absent is the ordinary state of a

@@ -12,19 +12,14 @@ use serde_json::{Value, json};
 /// The service every task of the registry is told as.
 pub const SERVICE: &str = "registry";
 
-/// How long a stopping registry waits for the ledger to take what it still holds: well inside the
-/// twenty seconds host gives every container -- infra's spec/architecture/host.md.
-pub const FLUSH: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a stopping registry waits for the ledger to take what it still holds.
+pub const FLUSH: std::time::Duration = ledger::STOPPING;
 
 /// What `ledger` still holds sent before the registry stops, within `within`; how many items were
-/// not, said once, since they go with the process.
+/// not. `Ledger::stopping` says them.
 pub async fn stopping(ledger: Option<&Ledger>, within: std::time::Duration) -> usize {
 	let Some(ledger) = ledger else { return 0 };
-	let unsent = ledger.flush(within).await;
-	if unsent > 0 {
-		eprintln!("registry: {unsent} ledger items not sent before stopping");
-	}
-	unsent
+	ledger.stopping("registry", within).await
 }
 
 /// The task a write is: every instant its own, since it was asked, started and finished at once.

@@ -91,7 +91,9 @@ rather than used.
 ## Who reads what
 
 **Writing and listing take `SECRETS_TOKEN`; a node reads only the secrets of the apps the registry
-places on it**, `GET /v1/nodes/{node}/secrets`, with its own token. That token is derived and never
+places on it**, `GET /v1/nodes/{node}/secrets`, with its own token. The service asks the registry with `?node=`
+and still keeps only the apps whose placements name the node, as host does, so a registry that
+ignored the query opens nothing it should not. That token is derived and never
 stored: HMAC-SHA256 of `platform secrets read` under the node's `HOST_TOKEN`, which is already root
 on that node. The service keeps only each one's SHA-256 digest, written by `mise run seal token`, so
 its environment reads nothing. host is to write them into each app's `secret.env` and keep what it

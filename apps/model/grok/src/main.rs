@@ -92,8 +92,26 @@ async fn serve() -> Result<()> {
 		.await
 		.with_context(|| format!("cannot listen on port {}", config.port))?;
 	tracing::info!(port = config.port, "listening on every interface");
-	axum::serve(listener, http::router(bridge, twitter, config.api_key)).await?;
+	let router = http::router(bridge, twitter, config.api_key);
+	axum::serve(listener, router).with_graceful_shutdown(stopped()).await?;
 	Ok(())
+}
+
+/// `docker stop` sends SIGTERM, and a process that is PID 1 in its container ignores it unless it
+/// asks; without this every deploy would wait out Docker's grace period and then be killed.
+async fn stopped() {
+	use tokio::signal::unix::{SignalKind, signal};
+	// A handler that cannot be installed waits forever, never stopping the service the moment it
+	// starts; database's `stopped` is the same.
+	let (Ok(mut term), Ok(mut int)) =
+		(signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+	else {
+		return std::future::pending().await;
+	};
+	tokio::select! {
+		_ = term.recv() => {}
+		_ = int.recv() => {}
+	}
 }
 
 /// Runs the CLI's own device-code sign-in against the environment the server uses.

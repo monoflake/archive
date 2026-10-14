@@ -178,6 +178,10 @@ impl SeqTracker {
 	}
 }
 
+/// How long a stopping service waits for the ledger to take what it still holds: well inside the
+/// twenty seconds host gives every container -- infra's spec/architecture/host.md.
+pub const STOPPING: Duration = Duration::from_secs(5);
+
 /// The handle a service keeps: cheap to clone, and never waits but to flush.
 #[derive(Clone)]
 pub struct Ledger {
@@ -230,6 +234,17 @@ impl Ledger {
 			Ok(Ok(held)) => held,
 			_ => self.held.load(Ordering::Relaxed),
 		}
+	}
+
+	/// `flush` for a service that is stopping, within host's twenty seconds: how many items were
+	/// not sent, said once as `service`'s, since they go with the process. See
+	/// spec/architecture/ledger.md, "Pushed to, never asking".
+	pub async fn stopping(&self, service: &str, within: Duration) -> usize {
+		let unsent = self.flush(within).await;
+		if unsent > 0 {
+			eprintln!("{service}: {unsent} ledger items not sent before stopping");
+		}
+		unsent
 	}
 
 	/// Shorthand for `send` with a parentless task.
@@ -347,6 +362,20 @@ mod tests {
 		assert!(
 			serde_json::to_string(&item).unwrap().contains(r#""parent":{"service":"cron","id":"p"}"#)
 		);
+	}
+
+	/// A ledger nobody answers holds a stopping service no longer than its bound, and the item left
+	/// is counted; the registry's own tests hold one that answers.
+	#[tokio::test]
+	async fn a_stopping_service_waits_no_longer_than_its_bound_and_counts_what_is_left() {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		drop(listener);
+		let ledger = Ledger::logging(format!("http://{address}"), Arc::new(|_: &str| {}));
+		ledger.record(record("a"));
+		let started = std::time::Instant::now();
+		assert_eq!(ledger.stopping("shot", Duration::from_millis(300)).await, 1);
+		assert!(started.elapsed() < Duration::from_secs(2));
 	}
 
 	#[test]

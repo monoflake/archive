@@ -44,8 +44,9 @@ struct Kept<R> {
 	written: bool,
 }
 
-/// The millisecond it is, or one past the last when the clock has not moved on, as a snapshot's
-/// version is: see `own::version_after`.
+/// The millisecond it is, or one past the last when the clock has not moved on, for a snapshot's
+/// version and a window's alike: a relay restarted begins above every version it gave out before,
+/// which its neighbors still hold.
 pub fn version_after(last: u64, now: Timestamp) -> u64 {
 	let now = u64::try_from(now.as_millisecond()).unwrap_or(0);
 	now.max(last + 1)

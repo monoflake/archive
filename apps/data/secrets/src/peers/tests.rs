@@ -130,3 +130,29 @@ async fn a_share_file_that_is_not_one_is_not_held() {
 	assert!(read_share(&path).is_err());
 	assert!(read_share(&path.with_file_name("absent")).is_err());
 }
+
+/// A registry that answers every app whatever `?node=` asks, as an old one or a proxy dropping the
+/// query would.
+async fn registry_ignoring_the_node() -> String {
+	use axum::routing::get;
+	let items = serde_json::json!({ "items": [
+		{ "kind": "app", "name": "gemini", "spec": { "placements": ["tyo"] } },
+		{ "kind": "app", "name": "grok", "spec": { "placements": ["sin"] } },
+		{ "kind": "app", "name": "shot", "spec": { "placements": ["tyo", "sin"] } },
+		{ "kind": "app", "name": "nowhere", "spec": {} },
+	], "revision": 9 });
+	let answer = move || {
+		let items = items.clone();
+		async move { response::success(axum::http::StatusCode::OK, items) }
+	};
+	serve(axum::Router::new().route("/v1/apps", get(answer))).await
+}
+
+#[tokio::test]
+async fn a_node_is_given_only_the_apps_placed_on_it_whatever_the_registry_lists() {
+	let registries = [nobody(), registry_ignoring_the_node().await];
+	let placed = placed_apps(&client(), &registries, "tyo").await;
+	assert_eq!(placed, Some(vec!["gemini".to_owned(), "shot".to_owned()]));
+	let placed = placed_apps(&client(), &registries, "nrt").await;
+	assert_eq!(placed, Some(Vec::new()));
+}

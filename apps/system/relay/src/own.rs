@@ -7,6 +7,7 @@ use crate::alarm::{Alarms, Judge};
 use crate::history::Readings;
 use crate::host::{App, ReadError, Reading};
 use crate::presence::Leaving;
+use crate::window::version_after;
 use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::Value;
@@ -148,13 +149,6 @@ fn kept<T>(part: Part, read: Result<T, ReadError>, into: &mut T, failed: &mut Fa
 		Ok(value) => *into = value,
 		Err(error) => failed.push((part, error)),
 	}
-}
-
-/// The millisecond it is, or one past the last when the clock has not moved on: a relay restarted
-/// begins above every version it gave out before, which its neighbors still hold.
-fn version_after(last: u64, now: Timestamp) -> u64 {
-	let now = u64::try_from(now.as_millisecond()).unwrap_or(0);
-	now.max(last + 1)
 }
 
 #[cfg(test)]

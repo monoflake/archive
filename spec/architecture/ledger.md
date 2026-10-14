@@ -67,8 +67,9 @@ first, trying again with backoff. A ledger that is down costs records, never a c
 holds or loses is said, once a streak**, since 2026-10-13, when a write's task looked lost and
 nothing had said a word: the ledger not answering and answering again, a batch it refused with the
 status it refused with, and the oldest dropped past the bound, each a line of counts and reasons,
-never a record. **A service stopping flushes what it holds within a bound**, `Ledger::flush`, five
-seconds inside the twenty host gives a container to stop, so a redeploy no longer drops what was
+never a record. **A service stopping flushes what it holds within a bound**, `Ledger::stopping`, which
+flushes within `ledger::STOPPING`, five seconds inside the twenty host gives a container to stop,
+and says how many items were left, so a redeploy no longer drops what was
 waiting out a backoff. **The client names its TLS provider, a feature of the crate**:
 `aws-lc-rs` by default, which the author chose on 2026-10-13 as running on x86_64 and arm64 alike,
 and `ring` for a service whose own clients are built on it, so a build holds one; with both on,

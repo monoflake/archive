@@ -42,31 +42,25 @@ async fn main() -> anyhow::Result<()> {
 	let listener = tokio::net::TcpListener::bind(&listen).await?;
 	eprintln!("cron: listening on {listen}, keeping {}", directory.display());
 	axum::serve(listener, cron::api::routes(cron)).with_graceful_shutdown(stopped()).await?;
-	// What the ledger still holds goes with the process unless it is sent now, within host's twenty
-	// seconds. See spec/architecture/ledger.md, "Pushed to, never asking".
-	let unsent = ledger.flush(std::time::Duration::from_secs(5)).await;
-	if unsent > 0 {
-		eprintln!("cron: {unsent} ledger items not sent before stopping");
-	}
+	// What the ledger still holds goes with the process unless it is sent now.
+	ledger.stopping("cron", ledger::STOPPING).await;
 	Ok(())
 }
 
 /// `docker stop` sends SIGTERM, and a process that is PID 1 in its container ignores it unless it
 /// asks; without this every deploy would wait out Docker's grace period and then be killed.
 async fn stopped() {
-	let interrupted = async {
-		let _ = tokio::signal::ctrl_c().await;
-	};
-	let terminated = async {
-		if let Ok(mut signal) =
-			tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-		{
-			signal.recv().await;
-		}
+	use tokio::signal::unix::{SignalKind, signal};
+	// A handler that cannot be installed waits forever, never stopping the service the moment it
+	// starts; database's `stopped` is the same.
+	let (Ok(mut term), Ok(mut int)) =
+		(signal(SignalKind::terminate()), signal(SignalKind::interrupt()))
+	else {
+		return std::future::pending().await;
 	};
 	tokio::select! {
-		() = interrupted => {}
-		() = terminated => {}
+		_ = term.recv() => {}
+		_ = int.recv() => {}
 	}
 }
 

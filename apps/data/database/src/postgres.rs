@@ -87,10 +87,27 @@ pub async fn output(mut command: Command, stdin: Option<&str>) -> Result<String,
 	Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Write a file only its owner reads.
+/// Write a file only its owner reads, whole: made 0600 under a temporary name beside it, synced,
+/// then renamed over it, as host writes a node's `.env`. `patroni.yml` holds passwords, so it is
+/// never readable by anyone else, even for a moment, nor left half-written by a crash.
 pub async fn private(path: &Path, content: &str) -> Result<(), Error> {
-	tokio::fs::write(path, content).await.map_err(io(path))?;
-	tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await.map_err(io(path))
+	let mut name = path.file_name().unwrap_or_default().to_owned();
+	name.push(".next");
+	let temporary = path.with_file_name(name);
+	let mut file = tokio::fs::OpenOptions::new()
+		.write(true)
+		.create(true)
+		.truncate(true)
+		.mode(0o600)
+		.open(&temporary)
+		.await
+		.map_err(io(&temporary))?;
+	// One a crash left keeps the mode it was made with, so it is made private here as well.
+	let private = std::fs::Permissions::from_mode(0o600);
+	file.set_permissions(private).await.map_err(io(&temporary))?;
+	file.write_all(content.as_bytes()).await.map_err(io(&temporary))?;
+	file.sync_all().await.map_err(io(&temporary))?;
+	tokio::fs::rename(&temporary, path).await.map_err(io(path))
 }
 
 /// Remove the lock a Postgres stopped uncleanly left in the cluster. It names a process in the
@@ -178,5 +195,26 @@ mod tests {
 		std::fs::write(dir.path().join("postmaster.pid"), "29\n").unwrap();
 		assert!(clear_stale_lock(&layout).await.unwrap());
 		assert!(!dir.path().join("postmaster.pid").exists());
+	}
+
+	#[tokio::test]
+	async fn a_private_file_is_its_owners_alone_and_replaced_whole() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("patroni.yml");
+		let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+		private(&path, "superuser: s3cret\n").await.unwrap();
+		assert_eq!(mode(&path), 0o600);
+		// Over a file anyone reads, and a temporary a crash left readable: both end private.
+		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+		std::fs::write(dir.path().join("patroni.yml.next"), "half").unwrap();
+		std::fs::set_permissions(
+			dir.path().join("patroni.yml.next"),
+			std::fs::Permissions::from_mode(0o644),
+		)
+		.unwrap();
+		private(&path, "superuser: n3w\n").await.unwrap();
+		assert_eq!(mode(&path), 0o600);
+		assert_eq!(std::fs::read_to_string(&path).unwrap(), "superuser: n3w\n");
+		assert!(!dir.path().join("patroni.yml.next").exists());
 	}
 }
