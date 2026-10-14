@@ -70,7 +70,9 @@ artifact counts only with `<artifact>.json` beside its zip, and a Worker is held
 `size` it records. A run the bucket holds nothing of -- `canmi21/web`'s, which still uploads to
 GitHub -- is read from GitHub as before. A zip no longer kept, since only two runs of each are, is a
 failure for good, as an expired artifact was, and is not taken again; a bucket answering 5xx or 429,
-or not reached, is a reason of the moment, so the Worker is taken again. Some of the five set and
+or not reached, is a reason of the moment, so the Worker is taken again. A 403 is a failure for
+good, and the deployer does not wait and ask again as host does: it reads a run once per webhook,
+not every few minutes, so a cap reached is not spent further -- RFC 7cwmp. Some of the five set and
 not all is said in the log, and GitHub is read.
 
 ## What a Worker artifact is

@@ -275,7 +275,7 @@ def apps_placed(declarations):
 
 
 def deploy_sources(text):
-	"""Each `owner/repo` that DEPLOY_SOURCES in infra's node task names, read from its source rather
+	"""Each `owner/repo` that DEPLOY_SOURCES in infra's host_env.py names, read from its source rather
 	than run, since running it would load that task's own imports."""
 	for statement in ast.parse(text).body:
 		if not isinstance(statement, ast.Assign):
@@ -285,7 +285,7 @@ def deploy_sources(text):
 		is_text = isinstance(value, ast.Constant) and isinstance(value.value, str)
 		if "DEPLOY_SOURCES" in names and is_text:
 			return [entry.split("=")[0] for entry in value.value.split()]
-	fail("infra's .mise/tasks/node holds no DEPLOY_SOURCES string")
+	fail("infra's .mise/tasks/host_env.py holds no DEPLOY_SOURCES string")
 
 
 def checkouts(sources, repos, root):
@@ -330,7 +330,7 @@ def host_sources(workspace=None):
 	infra = (workspace or WORKSPACE) / "repos/infra"
 	if not infra.is_dir():
 		fail(f"{infra} is not there; clone infra beside this repository")
-	return deploy_sources(committed(infra, ".mise/tasks/node"))
+	return deploy_sources(committed(infra, ".mise/tasks/host_env.py"))
 
 
 def source_roots(workspace=None):

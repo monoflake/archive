@@ -253,7 +253,7 @@ class Importing(unittest.TestCase):
 		self.main = {"infra": {}, "platform": {}, "cue": {}}
 		for checkout in self.main:
 			(self.workspace / "repos" / checkout).mkdir(parents=True)
-		self.main["infra"][".mise/tasks/node"] = (
+		self.main["infra"][".mise/tasks/host_env.py"] = (
 			'DEPLOY_SOURCES = "monoflake/infra=infra monoflake/platform=platform canmi21/cue=canmi"\n'
 		)
 		self.declare("infra", "apps/network/caddy", "caddy", ["tyo", "sin"])
