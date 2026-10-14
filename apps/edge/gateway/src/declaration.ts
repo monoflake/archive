@@ -142,8 +142,17 @@ const LimitSchema = v.strictObject({
 export const ROUTINGS = ['any', 'ordered'] as const;
 export type Routing = (typeof ROUTINGS)[number];
 
+/**
+ * The sides of a node's Caddy a scope is carried on, both when left out: host renders them, and
+ * the table holds a private scope only where the private side carries it. See infra's
+ * spec/architecture/host.md, "Every node answers the private API, and sends on what is not its
+ * own".
+ */
+export const SIDES = ['private', 'tunnel'] as const;
+
 export const ApiSchema = v.strictObject({
 	public: v.optional(v.boolean()),
+	sides: v.optional(v.pipe(v.array(v.picklist(SIDES)), v.minLength(1))),
 	prefix: v.optional(v.string()),
 	routing: v.optional(v.picklist(ROUTINGS)),
 	limits: v.optional(v.array(LimitSchema)),

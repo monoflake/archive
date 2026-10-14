@@ -92,6 +92,29 @@ export const SCOPES: Readonly<Record<string, Scope>> = {
 			},
 		],
 	},
+	executor: {
+		placement: 'tyo',
+		private: true,
+		binding: 'TYO',
+		nodes: ['TYO', 'SIN', 'RDU', 'BUF'],
+		routing: 'any',
+		routes: [
+			{
+				path: '/*',
+				cache: {
+					fulfilled: 0,
+					accepted: 0,
+					redirected: 0,
+					rejected: 0,
+					faulted: 0,
+				},
+				crawlable: false,
+				exposed: true,
+				forbidden: [],
+				auth: 'none',
+			},
+		],
+	},
 	geo: {
 		placement: 'rdu',
 		binding: 'RDU',

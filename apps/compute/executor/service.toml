@@ -1,0 +1,31 @@
+# What host needs to run this service. The record is read by host on the machine, a program
+# deployed apart from this file, so it carries a version. See infra's spec/architecture/host.md.
+version = 1
+name = "executor"
+display_name = "Workflow Executor"
+# The cores take turns; rdu and buf take the steps placed on them, once mirror is built. See
+# spec/architecture/executor.md.
+placements = ["tyo", "sin", "rdu", "buf"]
+# `replace`, the default, and never `beside`: two executors under one NODE would both take the
+# node's turns under the same fence. The old one is given its 15 seconds to stop first.
+
+[container]
+# One ten past the deployer's 12020. See spec/architecture/services.md, "A service keeps one port".
+port = 12030
+health = "/health"
+# Node, the driver and a few turns' threads, each a ceiling of 128 MB and rarely near it.
+memory_mb = 256
+
+# `/turns`, the doorbell the ledger on this node rings, as `executor` on the private side alone,
+# never the tunnel's. See spec/architecture/executor.md, "Polls, and a push that is a doorbell".
+[api]
+public = false
+sides = ["private"]
+
+[api.defaults.cache.success]
+fulfilled = "none"
+redirected = "none"
+
+[api.defaults.cache.failure]
+rejected = "none"
+faulted = "none"

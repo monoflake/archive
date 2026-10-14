@@ -20,6 +20,21 @@ describe('a lifetime as written', () => {
 	});
 });
 
+describe("a service's sides", () => {
+	it('takes the sides host renders, as a declaration names them', () => {
+		for (const sides of [['private'], ['tunnel'], ['private', 'tunnel']]) {
+			expect(routesOf('svc', { public: false, sides })).toEqual([
+				{ path: '/*', ...GATEWAY_DEFAULTS },
+			]);
+		}
+	});
+
+	it('refuses a side host does not have, and a scope on none', () => {
+		expect(() => routesOf('svc', { sides: ['lan'] })).toThrow('svc: [api].sides.0');
+		expect(() => routesOf('svc', { sides: [] })).toThrow('svc: [api].sides');
+	});
+});
+
 describe("a service's routes", () => {
 	it('falls to the gateway for everything nobody declares, as /*', () => {
 		expect(routesOf('bare', {})).toEqual([{ path: '/*', ...GATEWAY_DEFAULTS }]);

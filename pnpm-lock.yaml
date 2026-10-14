@@ -205,6 +205,9 @@ importers:
       '@monoflake/sdk':
         specifier: workspace:*
         version: link:../../../libs/sdk
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       postgres:
         specifier: ^3.4.9
         version: 3.4.9

@@ -7,6 +7,7 @@ import { Worker } from 'node:worker_threads';
 import type { Ended, Turn } from '@monoflake/replay';
 import type { Workflow } from '../workflows/index.ts';
 import type { Start } from './driver.ts';
+import { THREAD } from './files.ts';
 
 /** A turn's heap, in megabytes. See RFC l4s6a. */
 export const HEAP_MB = 128;
@@ -48,7 +49,7 @@ export function threads(options: Threads): Start {
 			bindings: options.bindings,
 			workflow,
 		};
-		const worker = new Worker(new URL('./thread.ts', import.meta.url), {
+		const worker = new Worker(THREAD, {
 			workerData: data,
 			resourceLimits: { maxOldGenerationSizeMb: options.heapMb ?? HEAP_MB },
 		});
