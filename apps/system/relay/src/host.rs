@@ -92,6 +92,10 @@ pub struct App {
 	/// spec/architecture/host.md, "One name inside, and a domain label outside".
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub label: Option<String>,
+	/// A driver, run by host for every app declaring one and with no container of its own, so not
+	/// running is not stopped. Left out where false, so another app's bytes are unchanged.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub driver: bool,
 }
 
 /// An app as host's `/api/apps` lists it.
@@ -107,6 +111,9 @@ struct Shown {
 	/// Absent from a host older than the field, whose every app is replaced.
 	#[serde(default = "replaced")]
 	rollout: String,
+	/// Absent from a host older than the field, which ran no driver.
+	#[serde(default)]
+	driver: bool,
 }
 
 fn replaced() -> String {
@@ -128,10 +135,10 @@ struct Interface {
 
 impl From<Shown> for App {
 	fn from(shown: Shown) -> Self {
-		let Shown { manifest, image, deployed_at, running, held, rollout } = shown;
+		let Shown { manifest, image, deployed_at, running, held, rollout, driver } = shown;
 		let label =
 			manifest.interface.map(|interface| interface.domain.unwrap_or(manifest.name.clone()));
-		Self { name: manifest.name, image, deployed_at, running, held, rollout, label }
+		Self { name: manifest.name, image, deployed_at, running, held, rollout, label, driver }
 	}
 }
 
@@ -349,6 +356,7 @@ mod tests {
 					held: false,
 					rollout: "beside".into(),
 					label: Some("where".into()),
+					driver: false,
 				},
 				App {
 					name: "apt".into(),
@@ -358,6 +366,7 @@ mod tests {
 					held: true,
 					rollout: "replace".into(),
 					label: None,
+					driver: false,
 				},
 			]
 		);
@@ -370,6 +379,34 @@ mod tests {
 			"interface": { "lan": false } }, "image": "qq:1", "deployed_at": "2026-10-08T00:00:00Z" }] }"#;
 		let apps: Vec<App> = opened(named.as_bytes()).unwrap();
 		assert_eq!(apps[0].label.as_deref(), Some("qq"));
+	}
+
+	/// A driver, which runs no container of its own, is passed on as one, through the snapshot and
+	/// a delta of it; every other app's bytes are as they were.
+	#[test]
+	fn a_driver_is_passed_on_as_one_and_no_other_app_says_so() {
+		let answer = r#"{ "status": "success", "data": [
+			{ "manifest": { "name": "objects" }, "image": "objects:1", "deployed_at": "2026-10-05T08:00:00Z",
+				"running": false, "held": false, "driver": true },
+			{ "manifest": { "name": "geo" }, "image": "geo:1", "deployed_at": "2026-10-05T08:00:00Z",
+				"running": true, "held": false, "driver": false }
+		] }"#;
+		let apps: Vec<App> = opened(answer.as_bytes()).unwrap();
+		assert!(apps[0].driver && !apps[1].driver);
+		let (objects, geo) =
+			(serde_json::to_value(&apps[0]).unwrap(), serde_json::to_value(&apps[1]).unwrap());
+		assert_eq!(objects["driver"], true);
+		assert!(geo.get("driver").is_none());
+		// A host older than the field says nothing, and is read as running no driver.
+		let older: Vec<App> = opened(APPS.as_bytes()).unwrap();
+		assert!(older.iter().all(|app| !app.driver));
+		// Into a neighbor's delta and back, as the snapshot carries it.
+		let before = serde_json::json!({ "apps": [geo] });
+		let after = serde_json::json!({ "apps": [geo, objects] });
+		let changes = crate::delta::diff(&before, &after);
+		let set = serde_json::to_value(&changes).unwrap();
+		assert_eq!(set["apps"]["set"][0]["driver"], true);
+		assert_eq!(crate::delta::apply(&before, &changes), Some(after));
 	}
 
 	#[test]

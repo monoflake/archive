@@ -304,6 +304,7 @@ mod tests {
 			held: false,
 			rollout: "replace".into(),
 			label: None,
+			driver: false,
 		};
 		Reading { events: Ok(vec![]), apps: Ok(vec![app]), machine: Ok(serde_json::json!({})) }
 	}

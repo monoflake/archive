@@ -74,11 +74,12 @@ impl Counting {
 		Self { at, beats: 0, down: BTreeMap::new(), held: 0, timed: BTreeMap::new() }
 	}
 
-	/// An app is down in a round that read it neither running nor held.
+	/// An app is down in a round that read it neither running nor held; never a driver, which runs
+	/// no container of its own.
 	fn add(&mut self, read: bool, apps: Option<&[App]>, round_trips: &RoundTrips) {
 		self.beats += u32::from(read);
 		if let Some(apps) = apps {
-			for app in apps.iter().filter(|app| !app.running && !app.held) {
+			for app in apps.iter().filter(|app| !app.driver && !app.running && !app.held) {
 				*self.down.entry(app.name.clone()).or_default() += 1;
 			}
 			let held = apps.iter().filter(|app| app.held).count();
@@ -130,6 +131,7 @@ mod tests {
 			held,
 			rollout: "replace".into(),
 			label: None,
+			driver: false,
 		}
 	}
 
@@ -159,6 +161,17 @@ mod tests {
 			serde_json::json!({ "at": at(0).as_millisecond(), "beats": 2, "down": { "geo": 1 },
 				"held": 1, "round_trip": { "tyo": 0.16 } })
 		);
+	}
+
+	#[test]
+	fn a_driver_is_never_down_and_a_stopped_app_beside_it_is() {
+		let mut tally = Tally::default();
+		let objects = App { driver: true, ..app("objects", false, false) };
+		let apps = [objects, app("geo", false, false)];
+		tally.round(true, Some(&apps), &RoundTrips::new(), at(0));
+		let minute = tally.round(true, Some(&apps), &RoundTrips::new(), at(60)).unwrap();
+		assert_eq!(minute.down, BTreeMap::from([("geo".into(), 1)]));
+		assert_eq!(minute.held, 0);
 	}
 
 	#[test]

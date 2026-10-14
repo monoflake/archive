@@ -104,12 +104,13 @@ entry carrying `state` alone, and `runs` where it is held. A state that time alo
 again on `/live` at the same version, so a reader keeps dropping an older version but takes the
 same one with another `state`. **A node's runs moving sends its entry again at the same version**,
 with another `runs`, so a page reads `/runs?since=` again rather than being sent the rows -- RFC
-grmtb. An entry also carries `readings`, its newest minute's mean and highest of each of the
-meter's metrics, and `round_trip`, this relay's own as timed now and any other node's over its
-newest minute; between entries a browser is sent `beats`, once a round, every node heard since the last as its new
-`heard_at`, `{"type":"beats","beats":{node: heard_at}}`; nothing goes in a round that heard none,
-and, for a node a
-page on this relay watches, `readings`, its second as its origin reads it. A socket opened with
+grmtb. An app in a snapshot carries `driver: true` where host runs it as a driver, which has no
+container of its own and so is never `running`; the key is absent for every other app, whose bytes
+stay as they were. An entry also carries `readings`, its newest minute's mean and highest of each
+of the meter's metrics, and `round_trip`, this relay's own as timed now and any other node's over
+its newest minute; between entries a browser is sent `beats`, once a round, every node heard since
+the last as its new `heard_at`, `{"type":"beats","beats":{node: heard_at}}`; nothing goes in a
+round that heard none, and, for a node a page on this relay watches, `readings`, its second as its origin reads it. A socket opened with
 `deltas=true` is sent, after the whole cluster, each node's changes rather than its entry whole:
 `delta`, its keys set or gone and its snapshot's as the mesh's delta says them, with `base`, the
 version of the entry it was last sent. A browser holding another version opens the socket again.
@@ -233,7 +234,7 @@ relay's disk" -- into the same file, and answered from it. Decided with the auth
 
 - **A minute is one row of its node's**: the minute it is, as its start in the origin's clock;
   `beats`, the rounds that minute that read host, of the twenty it holds; `down`, each app that
-  should run and did not, with how many of the minute's twenty rounds it was down -- an hour or a
+  should run and did not -- never a driver, which runs no container -- with how many of the minute's twenty rounds it was down -- an hour or a
   day sums those rounds, and the console decides how short a dip counts; `held`, how many were
   stopped on purpose; `round_trip`, each neighbor's mean round trip over it, in seconds, a neighbor
   not timed absent; `readings`, the meter's mean and highest of each metric over the minute --

@@ -87,6 +87,7 @@ impl Reader for Fake {
 				held: false,
 				rollout: "beside".into(),
 				label: None,
+				driver: false,
 			};
 			// The meter's second moves every round; nothing a snapshot says does.
 			let second = jiff::Timestamp::now().as_second();

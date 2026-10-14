@@ -166,6 +166,7 @@ mod tests {
 			held: false,
 			rollout: "replace".into(),
 			label: None,
+			driver: false,
 		}
 	}
 
