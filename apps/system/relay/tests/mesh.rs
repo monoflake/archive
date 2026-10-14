@@ -382,16 +382,29 @@ async fn a_browser_that_asks_for_an_event_stream_is_sent_the_cluster_then_each_c
 	assert_eq!((&first["type"], &first["node"]), (&"cluster".into(), &"rdu".into()));
 	let before = first["nodes"]["tyo"]["version"].as_u64().unwrap();
 	tyo.host.deploy("geo:8");
-	loop {
-		let next = events.next().await;
-		let rows = &next["snapshot"]["apps"]["set"];
-		if next["type"] == "delta" && next["node"] == "tyo" && rows[0]["image"] == "geo:8" {
-			assert_eq!(next["base"].as_u64(), Some(before));
-			break;
+	let changed = async {
+		loop {
+			let next = events.next().await;
+			let rows = &next["snapshot"]["apps"]["set"];
+			if next["type"] == "delta" && next["node"] == "tyo" && rows[0]["image"] == "geo:8" {
+				assert_eq!(next["base"].as_u64(), Some(before));
+				return;
+			}
 		}
-	}
-	// Beats come on the same stream, between the changes.
-	while events.next().await["type"] != "beat" {}
+	};
+	tokio::time::timeout(PATIENCE, changed).await.expect("tyo's change in time");
+	// A round's beats come on the same stream as one message, between the changes.
+	let beats = async {
+		loop {
+			let next = events.next().await;
+			assert_ne!(next["type"], "beat", "a page is sent a round's beats, never one a node");
+			if next["type"] == "beats" {
+				return next;
+			}
+		}
+	};
+	let beats = tokio::time::timeout(PATIENCE, beats).await.expect("a round's beats in time");
+	assert!(beats["beats"].as_object().is_some_and(|beats| !beats.is_empty()));
 }
 
 /// The outcome the relay at `address` holds of `node`'s run `id`, as `/runs` answers it.

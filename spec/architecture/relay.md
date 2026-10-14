@@ -90,7 +90,10 @@ is a `data:` line carrying the message a socket is sent, the whole cluster first
 after fifteen seconds of nothing else. A stream that ends is opened again whole, never resumed,
 since its reader may land on another relay. Caddy compresses it as it does any answer, flushed per
 event, and decides on the first write, which the cluster always clears at 512 bytes; its gzip
-does not carry matches across flushes, so a lone beat shrinks only under zstd. **`/live` admits a page on
+does not carry matches across flushes, so a round's beats go as one event rather than one a node:
+nine small events each paid gzip's per-flush cost, about 7.3 KB a minute for one page, and one event
+a round is about 1.5 KB, measured through Caddy on 2026-10-14. A page is sent `beats` on the event
+stream and the WebSocket alike; the mesh keeps its own beat in the sync. **`/live` admits a page on
 `.app` alone**, by its `Origin`: Access lets a reader in by a cookie the browser sends on any page's
 WebSocket, so without the check any site the reader visits could open it as them. A request with no
 `Origin` comes from no browser and carries no reader's cookie, and passes; the private mirror's
@@ -103,7 +106,9 @@ same one with another `state`. **A node's runs moving sends its entry again at t
 with another `runs`, so a page reads `/runs?since=` again rather than being sent the rows -- RFC
 grmtb. An entry also carries `readings`, its newest minute's mean and highest of each of the
 meter's metrics, and `round_trip`, this relay's own as timed now and any other node's over its
-newest minute; between entries a browser is sent `beat`, a node's new `heard_at`, and, for a node a
+newest minute; between entries a browser is sent `beats`, once a round, every node heard since the last as its new
+`heard_at`, `{"type":"beats","beats":{node: heard_at}}`; nothing goes in a round that heard none,
+and, for a node a
 page on this relay watches, `readings`, its second as its origin reads it. A socket opened with
 `deltas=true` is sent, after the whole cluster, each node's changes rather than its entry whole:
 `delta`, its keys set or gone and its snapshot's as the mesh's delta says them, with `base`, the
