@@ -113,6 +113,13 @@ async fn history(
 	}
 }
 
+/// `/live`'s query: whether the socket is sent each node's changes rather than its entry whole.
+#[derive(Deserialize)]
+struct Streamed {
+	#[serde(default)]
+	deltas: bool,
+}
+
 /// `/watch`'s query: the node a page asks the fine readings of.
 #[derive(Deserialize)]
 struct Watched {
@@ -145,8 +152,10 @@ async fn watch(
 async fn watched(
 	State(relay): State<Arc<Relay>>,
 	headers: HeaderMap,
+	query: Result<Query<Streamed>, QueryRejection>,
 	upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
+	let deltas = query.is_ok_and(|Query(streamed)| streamed.deltas);
 	let origin = headers.get(ORIGIN).map(|value| value.to_str().unwrap_or_default());
 	if !live::admitted(origin) {
 		return response::failure(StatusCode::FORBIDDEN, "invalid_address");
@@ -154,8 +163,8 @@ async fn watched(
 	let Ok(upgrade) = upgrade else {
 		return response::failure(StatusCode::UPGRADE_REQUIRED, "invalid_method");
 	};
-	upgrade.on_upgrade(|socket| async move {
-		if let Err(error) = live::watch(relay, Heard::new(socket)).await {
+	upgrade.on_upgrade(move |socket| async move {
+		if let Err(error) = live::watch(relay, Heard::new(socket), deltas).await {
 			eprintln!("relay: a browser's socket: {error}");
 		}
 	})

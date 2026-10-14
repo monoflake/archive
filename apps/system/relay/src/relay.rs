@@ -2,6 +2,7 @@
 //! minutes, and the stream every socket -- a neighbor's or a browser's -- is fed from.
 
 use crate::cluster::{Carried, Cluster, Held, Versions};
+use crate::delta::Changes;
 use crate::history::answer::{Asked, History};
 use crate::history::{Book, DAY, Minute, Readings, minute_of};
 use crate::host::{PAGE, Reader, Reading};
@@ -47,6 +48,14 @@ pub struct Update {
 pub struct Change {
 	pub node: String,
 	pub entry: Entry,
+}
+
+/// What came of a delta taken: applied, already held, or to be asked for whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applied {
+	Taken,
+	Held,
+	Wanted,
 }
 
 /// What a browser is sent between a node's entries: that it was heard, or its fine readings while a
@@ -154,6 +163,8 @@ pub struct Relay {
 	met: Mutex<BTreeMap<u64, bool>>,
 	/// Whether this relay says it reads compressed frames, and sends them to a neighbor that says so.
 	compressing: std::sync::atomic::AtomicBool,
+	/// Whether this relay says it syncs by digest, and syncs with a neighbor that says so.
+	syncing: std::sync::atomic::AtomicBool,
 	runs: Mirror,
 	/// This node's own rows as each round finds them new or changed, for the mesh to push.
 	batches: broadcast::Sender<Batch>,
@@ -214,6 +225,7 @@ impl Relay {
 			leases: Mutex::default(),
 			met: Mutex::default(),
 			compressing: std::sync::atomic::AtomicBool::new(true),
+			syncing: std::sync::atomic::AtomicBool::new(true),
 			batches: broadcast::channel(BACKLOG).0,
 			started: Instant::now(),
 			speakers: Mutex::default(),
@@ -351,6 +363,64 @@ impl Relay {
 		lock(&self.holding).cluster.beats()
 	}
 
+	/// Each node held, with its version, the digest of it, and its newest beat: what a sync says.
+	pub fn lines(&self) -> BTreeMap<String, (u64, u64, u64)> {
+		let holding = lock(&self.holding);
+		let (cluster, beats) = (&holding.cluster, holding.cluster.beats());
+		let digest = |node: &str| cluster.digest(node).unwrap_or_default();
+		let beat = |node: &str| beats.get(node).copied().unwrap_or_default();
+		let nodes = cluster.nodes().iter();
+		nodes.map(|(node, held)| (node.clone(), (held.version, digest(node), beat(node)))).collect()
+	}
+
+	/// `node` as held, whole.
+	pub fn whole(&self, node: &str) -> Option<Carried> {
+		let holding = lock(&self.holding);
+		let held = holding.cluster.nodes().get(node)?;
+		Some(Carried { version: held.version, snapshot: held.snapshot.clone() })
+	}
+
+	/// What takes `node` from `base` to the version held: that version, its digest, and the
+	/// changes; none where `base` is no longer kept.
+	pub fn delta_from(&self, node: &str, base: u64) -> Option<(u64, u64, Changes)> {
+		let holding = lock(&self.holding);
+		let (cluster, held) = (&holding.cluster, holding.cluster.nodes().get(node)?);
+		let from = cluster.at(node, base)?;
+		Some((held.version, cluster.digest(node)?, crate::delta::diff(&from, &held.snapshot)))
+	}
+
+	/// A neighbor's delta of `node`, from `base` to `version`, taken where this relay holds `base`
+	/// and the result reads `digest`. A neighbor's word on this node is never taken.
+	pub fn take_delta(
+		&self,
+		node: &str,
+		(base, version): (u64, u64),
+		digest: &str,
+		changes: &Changes,
+		via: &str,
+	) -> Applied {
+		if node == self.node {
+			return Applied::Held;
+		}
+		let held = {
+			let holding = lock(&self.holding);
+			holding.cluster.nodes().get(node).map(|held| (held.version, held.snapshot.clone()))
+		};
+		let snapshot = match held {
+			Some((held, _)) if held >= version => return Applied::Held,
+			Some((held, snapshot)) if held == base => snapshot,
+			_ => return Applied::Wanted,
+		};
+		let Some(next) = crate::delta::apply(&snapshot, changes) else {
+			return Applied::Wanted;
+		};
+		if crate::delta::hex(crate::delta::digest(&next)) != digest {
+			return Applied::Wanted;
+		}
+		self.take(node, Carried { version, snapshot: Arc::new(next) }, Some(via));
+		Applied::Taken
+	}
+
 	/// Whether a neighbor older than the beat is met, which hears a node by its versions alone: so
 	/// long as one is, this node's own is given a new version every round.
 	fn every_round(&self) -> bool {
@@ -376,6 +446,16 @@ impl Relay {
 	/// older than them, as a test does.
 	pub fn set_compression(&self, on: bool) {
 		self.compressing.store(on, Ordering::Relaxed);
+	}
+
+	/// Whether this relay syncs by digest; see `mesh::Message::Sync`.
+	pub fn syncs(&self) -> bool {
+		self.syncing.load(Ordering::Relaxed)
+	}
+
+	/// Turns the sync off from the next conversation on, as `set_compression` turns compression.
+	pub fn set_sync(&self, on: bool) {
+		self.syncing.store(on, Ordering::Relaxed);
 	}
 
 	/// A page here asks for `node`'s fine readings: this node's own lent at once, any other's asked

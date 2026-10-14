@@ -206,6 +206,57 @@ async fn a_relay_that_compresses_and_one_that_does_not_still_hear_each_other() {
 }
 
 #[tokio::test]
+async fn a_relay_that_syncs_and_one_that_compares_still_hear_each_other() {
+	let rdu = start("rdu", "geo:1").await;
+	let tyo = start("tyo", "geo:7").await;
+	let buf = start("buf", "geo:3").await;
+	// tyo stands in for a relay older than the sync, and buf reaches rdu only through it.
+	tyo.relay.set_sync(false);
+	hold(&rdu, &tyo);
+	hold(&tyo, &rdu);
+	hold(&buf, &tyo);
+	until("rdu hears tyo and buf", || {
+		image(&rdu.relay, "tyo").as_deref() == Some("geo:7")
+			&& image(&rdu.relay, "buf").as_deref() == Some("geo:3")
+	})
+	.await;
+	rdu.host.deploy("geo:2");
+	tyo.host.deploy("geo:8");
+	buf.host.deploy("geo:4");
+	until("each hears the others' changes", || {
+		image(&rdu.relay, "tyo").as_deref() == Some("geo:8")
+			&& image(&rdu.relay, "buf").as_deref() == Some("geo:4")
+			&& image(&tyo.relay, "rdu").as_deref() == Some("geo:2")
+			&& image(&buf.relay, "rdu").as_deref() == Some("geo:2")
+	})
+	.await;
+}
+
+#[tokio::test]
+async fn a_browser_that_asks_for_deltas_is_sent_what_changed_of_a_node() {
+	let rdu = start("rdu", "geo:1").await;
+	let tyo = start("tyo", "geo:7").await;
+	hold(&rdu, &tyo);
+	hold(&tyo, &rdu);
+	until("rdu holds tyo", || image(&rdu.relay, "tyo").as_deref() == Some("geo:7")).await;
+	let url = format!("ws://{}/live?deltas=true", rdu.address);
+	let (mut browser, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+	let first = text(&mut browser).await;
+	let before = first["nodes"]["tyo"]["version"].as_u64().unwrap();
+	tyo.host.deploy("geo:8");
+	loop {
+		let next = text(&mut browser).await;
+		assert_ne!(next["type"], "node", "an entry whole, to a socket that asked for deltas: {next}");
+		let rows = &next["snapshot"]["apps"]["set"];
+		if next["type"] == "delta" && next["node"] == "tyo" && rows[0]["image"] == "geo:8" {
+			assert_eq!(next["base"].as_u64(), Some(before));
+			assert!(next["set"]["version"].as_u64().unwrap() > before);
+			break;
+		}
+	}
+}
+
+#[tokio::test]
 async fn a_node_reaches_a_third_through_a_neighbor() {
 	// rdu and buf know tyo alone, and tyo dials nobody: it only accepts.
 	let rdu = start("rdu", "geo:1").await;

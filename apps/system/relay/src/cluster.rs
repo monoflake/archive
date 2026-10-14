@@ -5,8 +5,20 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
+
+/// How many of a node's newest versions are kept, for a delta to be taken from the one a neighbor
+/// holds.
+const KEPT: usize = 4;
+
+/// One of a node's versions kept, with its digest.
+#[derive(Debug, Clone)]
+struct Past {
+	version: u64,
+	snapshot: Arc<Value>,
+	digest: u64,
+}
 
 /// What a relay holds of one node.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -34,6 +46,8 @@ pub struct Cluster {
 	nodes: BTreeMap<String, Held>,
 	/// Each node's newest beat, its origin's clock in milliseconds, held or not yet.
 	beats: Versions,
+	/// Each node's newest versions, the one held last.
+	past: BTreeMap<String, VecDeque<Past>>,
 }
 
 impl Cluster {
@@ -45,9 +59,26 @@ impl Cluster {
 		}
 		let spoke = self.beats.get(node).map_or(carried.version, |beat| carried.version.max(*beat));
 		let heard_at = heard(spoke, now);
+		let digest = crate::delta::digest(&carried.snapshot);
+		let past = self.past.entry(node.to_owned()).or_default();
+		past.push_back(Past { version: carried.version, snapshot: carried.snapshot.clone(), digest });
+		while past.len() > KEPT {
+			past.pop_front();
+		}
 		let held = Held { version: carried.version, heard_at, snapshot: carried.snapshot };
 		self.nodes.insert(node.to_owned(), held);
 		true
+	}
+
+	/// The digest of the version held of `node`.
+	pub fn digest(&self, node: &str) -> Option<u64> {
+		self.past.get(node)?.back().map(|past| past.digest)
+	}
+
+	/// `node`'s snapshot at `version`, where it is one of those kept.
+	pub fn at(&self, node: &str, version: u64) -> Option<Arc<Value>> {
+		let past = self.past.get(node)?.iter().find(|past| past.version == version)?;
+		Some(past.snapshot.clone())
 	}
 
 	/// Takes `node`'s beat at `at`, its origin's clock; when it was heard now, where that moved
@@ -160,6 +191,19 @@ mod tests {
 		assert_eq!(cluster.beat("rdu", taken(4), at(6)), None);
 		assert_eq!(cluster.nodes()["rdu"].heard_at, at(5));
 		assert_eq!(cluster.beats(), Versions::from([("rdu".into(), taken(5))]));
+	}
+
+	#[test]
+	fn the_newest_versions_are_kept_with_their_digests() {
+		let mut cluster = Cluster::default();
+		for version in 1..=6 {
+			cluster.merge("rdu", carried(version, &format!("v{version}")), at(0));
+		}
+		assert!(cluster.at("rdu", 2).is_none());
+		assert_eq!(cluster.at("rdu", 3).unwrap()["said"], "v3");
+		let newest = crate::delta::digest(&json!({ "said": "v6" }));
+		assert_eq!(cluster.digest("rdu"), Some(newest));
+		assert_eq!(cluster.digest("tyo"), None);
 	}
 
 	#[test]

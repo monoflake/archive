@@ -52,6 +52,19 @@ it -- RFC grmtb. Flooding every snapshot on arrival would carry each about seven
 across a full mesh of seven every three seconds; comparing costs a hop up to two seconds instead. A
 node that cannot reach a third directly still hears it through a neighbor.
 
+**Between two relays whose first messages both say `sync`, the comparison is a sync and a change a
+delta** -- RFC grmtb. Every three seconds each sends, per node it holds, its version, the digest of
+it and its newest beat, so its own beat rides in every one. The digest is `xxh3-64`: 64 bits of
+xxh3 over the snapshot written compact with its keys sorted, as sixteen hex digits. The other end
+answers each node it holds newer with a delta from the version said, or whole where that version
+is no longer among the last four it keeps, and each node at the same version with another digest
+whole. A relay's own change goes to each neighbor as a delta from the version that connection
+holds: the keys changed, set whole or named gone, and `apps` as rows by name. **A delta names the
+version it applies to and carries the digest of its result**; a relay holding another version, or
+reading another digest, asks for that node with `want` and is sent it whole. There is no forward
+error correction: a frame arrives whole or the socket drops. With a neighbor that does not say
+`sync`, the two-second comparison stands.
+
 **The mesh is `/mesh`, a WebSocket each relay dials on every other**, admitted by a secret the
 relays share, `RELAY_SECRET`. The peers are every node the registry has listed and not marked `retired`, followed while the
 relay runs and kept on its disk -- [registry.md](registry.md), "Every relay follows it" -- with
@@ -84,7 +97,10 @@ with another `runs`, so a page reads `/runs?since=` again rather than being sent
 grmtb. An entry also carries `readings`, its newest minute's mean and highest of each of the
 meter's metrics, and `round_trip`, this relay's own as timed now and any other node's over its
 newest minute; between entries a browser is sent `beat`, a node's new `heard_at`, and, for a node a
-page on this relay watches, `readings`, its second as its origin reads it.
+page on this relay watches, `readings`, its second as its origin reads it. A socket opened with
+`deltas=true` is sent, after the whole cluster, each node's changes rather than its entry whole:
+`delta`, its keys set or gone and its snapshot's as the mesh's delta says them, with `base`, the
+version of the entry it was last sent. A browser holding another version opens the socket again.
 
 ## The console asks, and the relay answers from memory
 

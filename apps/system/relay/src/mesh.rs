@@ -9,7 +9,8 @@
 use crate::cluster::{Carried, Versions};
 use crate::compression::{Packer, Unpacker};
 use crate::config::Peer;
-use crate::relay::{Relay, Update, VERSION};
+use crate::delta::{Changes, DIGEST, hex};
+use crate::relay::{Applied, Relay, Update, VERSION};
 use crate::runs::Batch;
 use crate::socket::{Dial, Frame, Halves, Heard, Reader, Received, SocketError, Writer};
 use axum::http::HeaderMap;
@@ -17,6 +18,7 @@ use axum::http::header::{AUTHORIZATION, InvalidHeaderValue};
 use axum::serve::{Listener, ListenerExt};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,8 +34,16 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 pub const PATH: &str = "/mesh";
 
 /// How often a relay tells a neighbor what it holds, and so the most a snapshot or a beat waits at
-/// each hop past its own node.
+/// each hop past its own node, on a connection to one older than the sync.
 pub const COMPARISON: Duration = Duration::from_secs(2);
+
+/// How often a relay sends a synced neighbor every node's version, digest and newest beat: a round,
+/// so its own beat is in every one.
+pub const SYNC: Duration = crate::own::EVERY;
+
+/// One node in a sync: its version, the digest of it in hex, and its newest beat.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Line(pub u64, pub String, pub u64);
 
 /// Cloudflare and NATs close a socket idle for long; a ping keeps it from looking idle. A browser's
 /// socket is pinged this often; a neighbor's, every `PING`.
@@ -76,6 +86,10 @@ pub enum Message {
 		/// Whether it reads compressed frames; see `compression`.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		zstd: Option<bool>,
+		/// The digest it syncs by, `delta::DIGEST`; a neighbor naming another, or none, is compared
+		/// with as before.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		sync: Option<String>,
 	},
 	/// What it holds, every comparison; answered with what it lacks. `beats` is each node's newest
 	/// beat held, so a node heard only through a neighbor stays live.
@@ -100,6 +114,33 @@ pub enum Message {
 	Watch { lease: u64 },
 	/// The node's fine readings of a round, to a neighbor holding a lease.
 	Readings { node: String, sample: serde_json::Value },
+	/// Every three seconds on a synced connection: each node held, its version, digest and newest
+	/// beat; and the runs' and minutes' versions. Answered with what the other lacks, and a node
+	/// whose digest differs at the same version, whole.
+	Sync { nodes: BTreeMap<String, Line>, runs: Versions, minutes: Versions },
+	/// What takes `node` from `base` to `version`, whose result reads `digest`.
+	Delta {
+		node: String,
+		base: u64,
+		version: u64,
+		digest: String,
+		#[serde(flatten)]
+		changes: Changes,
+	},
+	/// A node asked for whole, by a relay that could not take a delta of it.
+	Want { node: String },
+}
+
+/// What a neighbor's hello says of it.
+struct Said {
+	peer: String,
+	versions: Versions,
+	runs: Option<Versions>,
+	minutes: Option<Versions>,
+	beats: bool,
+	watch: bool,
+	zstd: bool,
+	sync: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -274,30 +315,31 @@ pub async fn converse<S: Halves>(
 		beats: Some(true),
 		watch: Some(true),
 		zstd: relay.compresses().then_some(true),
+		sync: relay.syncs().then(|| DIGEST.to_owned()),
 	};
 	writer.send(Frame::Text(serde_json::to_string(&hello)?)).await?;
 
 	let theirs = tokio::time::timeout(INTRODUCTION, introduced(&mut reader))
 		.await
 		.map_err(|_| MeshError::Slow(INTRODUCTION))??;
-	let (peer, versions, runs, theirs_minutes, hears_beats, lends, packs) = match theirs {
+	let said = match theirs {
 		Message::Hello { version, .. } if version != VERSION => {
 			return Err(MeshError::Version(version));
 		}
-		Message::Hello { node, versions, runs, minutes, beats, watch, zstd, .. } => {
-			let packs = zstd == Some(true) && relay.compresses();
-			(node, versions, runs, minutes, beats == Some(true), watch == Some(true), packs)
-		}
-		Message::Versions { .. }
-		| Message::Node { .. }
-		| Message::Runs(_)
-		| Message::Minutes(_)
-		| Message::Beat { .. }
-		| Message::Watch { .. }
-		| Message::Readings { .. } => {
-			return Err(MeshError::Unintroduced);
-		}
+		Message::Hello { node, versions, runs, minutes, beats, watch, zstd, sync, .. } => Said {
+			peer: node,
+			versions,
+			runs,
+			minutes,
+			beats: beats == Some(true),
+			watch: watch == Some(true),
+			zstd: zstd == Some(true) && relay.compresses(),
+			sync: sync.as_deref() == Some(DIGEST) && relay.syncs(),
+		},
+		_ => return Err(MeshError::Unintroduced),
 	};
+	let Said { peer, versions, runs, minutes: theirs_minutes, .. } = said;
+	let (hears_beats, lends, packs, synced) = (said.beats, said.watch, said.zstd, said.sync);
 	if peer == relay.node() || expected.is_some_and(|expected| expected != peer) {
 		return Err(MeshError::Stranger(peer));
 	}
@@ -318,7 +360,14 @@ pub async fn converse<S: Halves>(
 	let mut writing = Writing(tokio::spawn(writes));
 	// A neighbor that said nothing of runs or minutes is older than them; see `Message`.
 	let (reads_runs, reads_minutes) = (runs.is_some(), theirs_minutes.is_some());
-	behind(&relay, &mut outbox, &versions, &peer)?;
+	// The version of each node a synced neighbor holds, as it said or as it was sent.
+	let mut holds = if synced { versions.clone() } else { Versions::new() };
+	if synced {
+		let theirs = versions.iter().map(|(node, version)| (node.clone(), (*version, None))).collect();
+		answer(&relay, &mut outbox, &theirs, &peer, &mut holds)?;
+	} else {
+		behind(&relay, &mut outbox, &versions, &peer)?;
+	}
 	if let Some(runs) = runs {
 		runs_behind(&relay, &mut outbox, &runs, &peer).await?;
 	}
@@ -326,7 +375,8 @@ pub async fn converse<S: Halves>(
 		minutes_behind(&relay, &mut outbox, &theirs, &peer).await?;
 	}
 
-	let mut comparison = tokio::time::interval_at(Instant::now() + COMPARISON, COMPARISON);
+	let every = if synced { SYNC } else { COMPARISON };
+	let mut comparison = tokio::time::interval_at(Instant::now() + every, every);
 	let mut ping = tokio::time::interval(PING);
 	let origin = Instant::now();
 	loop {
@@ -382,6 +432,30 @@ pub async fn converse<S: Halves>(
 								relay.heard_readings(&node, sample);
 							}
 						}
+						Message::Sync { nodes, runs, minutes } => {
+							let mut theirs = BTreeMap::new();
+							for (node, Line(version, digest, beat)) in nodes {
+								relay.beaten(&node, beat, Some(&peer));
+								holds.insert(node.clone(), version);
+								theirs.insert(node, (version, Some(digest)));
+							}
+							answer(&relay, &mut outbox, &theirs, &peer, &mut holds)?;
+							runs_behind(&relay, &mut outbox, &runs, &peer).await?;
+							minutes_behind(&relay, &mut outbox, &minutes, &peer).await?;
+						}
+						Message::Delta { node, base, version, digest, changes } => {
+							let taken = relay.take_delta(&node, (base, version), &digest, &changes, &peer);
+							if taken == Applied::Wanted {
+								outbox.send(&Message::Want { node }, None)?;
+							}
+						}
+						Message::Want { node } => {
+							if let Some(state) = relay.whole(&node) {
+								holds.insert(node.clone(), state.version);
+								let own = (node == relay.node()).then_some(state.version);
+								outbox.send(&Message::Node { node, state }, own)?;
+							}
+						}
 						Message::Hello { .. } => {}
 					}
 				}
@@ -389,8 +463,23 @@ pub async fn converse<S: Halves>(
 			update = updates.recv() => match update {
 				Ok(Update { node, held }) => {
 					if node == relay.node() && speaking.speaks() {
-						let state = Carried { version: held.version, snapshot: held.snapshot };
-						outbox.send(&Message::Node { node, state }, Some(held.version))?;
+						let version = held.version;
+						let delta = holds.get(&node).filter(|_| synced).and_then(|base| {
+							let (to, digest, changes) = relay.delta_from(&node, *base)?;
+							(to == version).then(|| Message::Delta {
+								node: node.clone(),
+								base: *base,
+								version,
+								digest: hex(digest),
+								changes,
+							})
+						});
+						let message = delta.unwrap_or_else(|| {
+							let state = Carried { version, snapshot: held.snapshot };
+							Message::Node { node: node.clone(), state }
+						});
+						holds.insert(node, version);
+						outbox.send(&message, Some(version))?;
 					}
 				}
 				// What it missed, the next comparison finds.
@@ -416,8 +505,9 @@ pub async fn converse<S: Halves>(
 				Err(RecvError::Closed) => return Ok(()),
 			},
 			beat = beats.recv() => match beat {
+				// A synced neighbor has this node's beat in every sync.
 				Ok(at) => {
-					if hears_beats && speaking.speaks() {
+					if hears_beats && !synced && speaking.speaks() {
 						outbox.send(&Message::Beat { node: relay.node().to_owned(), at }, None)?;
 					}
 				}
@@ -454,7 +544,12 @@ pub async fn converse<S: Halves>(
 				if dropped > 0 {
 					eprintln!("relay: {peer} behind; dropped {dropped}, the comparison sends what it lacks");
 				}
-				if speaking.speaks() {
+				if speaking.speaks() && synced {
+					let lines = relay.lines().into_iter();
+					let nodes = lines.map(|(node, (version, digest, beat))| (node, Line(version, hex(digest), beat)));
+					let (runs, minutes) = (relay.run_versions(), relay.minute_versions());
+					outbox.send(&Message::Sync { nodes: nodes.collect(), runs, minutes }, None)?;
+				} else if speaking.speaks() {
 					let (runs, minutes) = (Some(relay.run_versions()), Some(relay.minute_versions()));
 					let beats = Some(relay.beats());
 					let versions = Message::Versions { versions: relay.versions(), runs, minutes, beats };
@@ -489,6 +584,54 @@ fn round_trip(origin: Instant, payload: &[u8], now: Instant) -> Option<Duration>
 	let sent = u64::from_be_bytes(payload.try_into().ok()?);
 	let elapsed = now.duration_since(origin);
 	elapsed.checked_sub(Duration::from_micros(sent))
+}
+
+/// Queues for a synced `peer`, holding `theirs` -- each node's version, and its digest where it
+/// said one -- what it lacks: a delta from its version where this relay still keeps that one, the
+/// node whole otherwise, and whole again where the digests differ at the same version. Never
+/// `peer`'s own, of which it is the source.
+fn answer(
+	relay: &Relay,
+	outbox: &mut Outbox,
+	theirs: &BTreeMap<String, (u64, Option<String>)>,
+	peer: &str,
+	holds: &mut Versions,
+) -> Result<(), MeshError> {
+	for (node, (version, digest, _)) in relay.lines() {
+		if node == peer {
+			continue;
+		}
+		let message = match theirs.get(&node) {
+			Some((held, _)) if *held > version => continue,
+			Some((held, said)) if *held == version => {
+				if said.as_ref().is_none_or(|said| *said == hex(digest)) {
+					continue;
+				}
+				None
+			}
+			Some((held, _)) => relay.delta_from(&node, *held).and_then(|(to, digest, changes)| {
+				(to == version).then(|| Message::Delta {
+					node: node.clone(),
+					base: *held,
+					version,
+					digest: hex(digest),
+					changes,
+				})
+			}),
+			None => None,
+		};
+		let message = match message {
+			Some(delta) => delta,
+			None => match relay.whole(&node) {
+				Some(state) => Message::Node { node: node.clone(), state },
+				None => continue,
+			},
+		};
+		let own = (node == relay.node()).then_some(version);
+		holds.insert(node, version);
+		outbox.send(&message, own)?;
+	}
+	Ok(())
 }
 
 /// Queues for `peer`, holding `versions`, what it lacks.
@@ -693,6 +836,7 @@ mod tests {
 			beats: None,
 			watch: None,
 			zstd: None,
+			sync: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -726,6 +870,7 @@ mod tests {
 			beats: None,
 			watch: None,
 			zstd: None,
+			sync: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -785,6 +930,7 @@ mod tests {
 			beats: None,
 			watch: None,
 			zstd: None,
+			sync: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		drop(feed);
@@ -844,6 +990,7 @@ mod tests {
 				beats: None,
 				watch: None,
 				zstd: None,
+				sync: None,
 			};
 			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 			let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: None });
@@ -867,6 +1014,7 @@ mod tests {
 				beats: None,
 				watch: None,
 				zstd: None,
+				sync: None,
 			};
 			feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 			feed.send(Received::Closed).unwrap();
@@ -890,6 +1038,7 @@ mod tests {
 			beats: None,
 			watch: None,
 			zstd: None,
+			sync: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: Some(feed) });
@@ -941,6 +1090,7 @@ mod tests {
 			beats: Some(true),
 			watch: None,
 			zstd,
+			sync: None,
 		};
 		Received::Text(serde_json::to_string(&hello).unwrap())
 	}
@@ -1000,6 +1150,140 @@ mod tests {
 		assert_eq!(relay.beats().get("tyo"), Some(&1_791_999_000_000));
 	}
 
+	/// tyo's hello, syncing by digest, holding `versions`.
+	fn synced_hello(versions: Versions) -> Received {
+		let hello = Message::Hello {
+			version: VERSION,
+			node: "tyo".into(),
+			versions,
+			runs: None,
+			minutes: None,
+			beats: Some(true),
+			watch: None,
+			zstd: None,
+			sync: Some(DIGEST.into()),
+		};
+		Received::Text(serde_json::to_string(&hello).unwrap())
+	}
+
+	fn text(message: &Message) -> Received {
+		Received::Text(serde_json::to_string(message).unwrap())
+	}
+
+	fn carried(version: u64, image: &str) -> Carried {
+		let snapshot = serde_json::json!({ "apps": [{ "name": "geo", "image": image },
+			{ "name": "apt", "image": "apt:1" }] });
+		Carried { version, snapshot: Arc::new(snapshot) }
+	}
+
+	/// What a conversation with a synced tyo holding `versions` sends, fed `then` after the hello,
+	/// with `during` done once it is under way.
+	async fn synced(
+		relay: &Arc<Relay>,
+		versions: Versions,
+		then: Vec<Received>,
+		during: impl FnOnce(),
+		until: impl Fn(&[Message]) -> bool,
+	) -> Vec<Message> {
+		let (feed, incoming) = mpsc::unbounded_channel();
+		feed.send(synced_hello(versions)).unwrap();
+		for one in then {
+			feed.send(one).unwrap();
+		}
+		let sent = Arc::new(Mutex::new(Vec::new()));
+		let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
+		let conversing = tokio::spawn(converse(relay.clone(), Some("tyo"), fake));
+		tokio::time::sleep(Duration::from_millis(20)).await;
+		during();
+		let waited = async {
+			while !until(&sent.lock().unwrap()) {
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+		};
+		tokio::time::timeout(Duration::from_secs(5), waited).await.expect("what was waited for");
+		drop(feed);
+		conversing.await.unwrap().unwrap();
+		sent.lock().unwrap().clone()
+	}
+
+	#[tokio::test]
+	async fn a_synced_neighbor_is_sent_this_nodes_change_as_a_delta_from_what_it_holds() {
+		let relay = relay("rdu");
+		relay.take("rdu", carried(10, "geo:1"), None);
+		let sent = synced(
+			&relay,
+			Versions::from([("rdu".into(), 10)]),
+			vec![],
+			|| {
+				relay.take("rdu", carried(20, "geo:2"), None);
+			},
+			|sent| sent.iter().any(|one| matches!(one, Message::Delta { .. })),
+		)
+		.await;
+		let delta = sent.iter().find(|one| matches!(one, Message::Delta { .. })).unwrap();
+		let Message::Delta { node, base, version, digest, changes } = delta else { unreachable!() };
+		assert_eq!((node.as_str(), *base, *version), ("rdu", 10, 20));
+		let rows = changes.apps.as_ref().unwrap();
+		assert_eq!(rows.set, [serde_json::json!({ "name": "geo", "image": "geo:2" })]);
+		let applied = crate::delta::apply(&carried(10, "geo:1").snapshot, changes).unwrap();
+		assert_eq!(*digest, hex(crate::delta::digest(&applied)));
+		assert!(!sent.iter().any(|one| matches!(one, Message::Node { .. })), "nothing whole");
+	}
+
+	#[tokio::test]
+	async fn a_delta_that_does_not_apply_is_asked_for_whole_and_a_want_is_answered_whole() {
+		let relay = relay("rdu");
+		relay.take("buf", carried(3, "geo:1"), None);
+		let changes = crate::delta::diff(&carried(3, "geo:1").snapshot, &carried(4, "geo:2").snapshot);
+		let delta = |base: u64, digest: String| Message::Delta {
+			node: "buf".into(),
+			base,
+			version: 4,
+			digest,
+			changes: changes.clone(),
+		};
+		let right = hex(crate::delta::digest(&carried(4, "geo:2").snapshot));
+		let then = vec![
+			// From a base this relay does not hold, and with a digest its result does not read.
+			text(&delta(2, right.clone())),
+			text(&delta(3, "0000000000000000".into())),
+			text(&Message::Want { node: "buf".into() }),
+		];
+		let wanted = |sent: &[Message]| {
+			let wants = sent.iter().filter(|one| matches!(one, Message::Want { .. })).count();
+			let whole = sent.iter().any(|one| matches!(one, Message::Node { node, .. } if node == "buf"));
+			wants == 2 && whole
+		};
+		let versions = Versions::from([("buf".into(), 3)]);
+		synced(&relay, versions, then, || {}, wanted).await;
+		assert_eq!(relay.versions()["buf"], 3);
+		// The right one is taken, and only from the base held.
+		let sent = synced(&relay, Versions::new(), vec![text(&delta(3, right))], || {}, |_| true).await;
+		assert!(!sent.iter().any(|one| matches!(one, Message::Want { .. })));
+		tokio::time::sleep(Duration::from_millis(20)).await;
+		assert_eq!(relay.versions()["buf"], 4);
+	}
+
+	#[tokio::test]
+	async fn a_sync_saying_another_digest_at_the_same_version_is_answered_whole() {
+		let relay = relay("rdu");
+		relay.take("buf", carried(3, "geo:1"), None);
+		let held = hex(relay.lines()["buf"].1);
+		let sync = |digest: String| Message::Sync {
+			nodes: BTreeMap::from([("buf".into(), Line(3, digest, 0))]),
+			runs: Versions::new(),
+			minutes: Versions::new(),
+		};
+		let versions = Versions::from([("buf".into(), 3)]);
+		let whole = |sent: &[Message]| {
+			sent.iter().any(|one| matches!(one, Message::Node { node, .. } if node == "buf"))
+		};
+		// The same digest wants nothing; another gets the node whole.
+		let same = synced(&relay, versions.clone(), vec![text(&sync(held))], || {}, |_| true).await;
+		assert!(!whole(&same));
+		synced(&relay, versions, vec![text(&sync("ffffffffffffffff".into()))], || {}, whole).await;
+	}
+
 	/// A socket to a neighbor gone without closing: the hello goes, and every write after it waits on
 	/// a buffer nobody drains, as one does once the kernel's is full.
 	struct Stuck {
@@ -1043,6 +1327,7 @@ mod tests {
 			beats: None,
 			watch: None,
 			zstd: None,
+			sync: None,
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		let silence = Duration::from_millis(300);
@@ -1163,6 +1448,7 @@ mod tests {
 			beats: None,
 			watch: None,
 			zstd: None,
+			sync: None,
 		};
 		assert_eq!(
 			serde_json::to_value(&hello).unwrap(),
