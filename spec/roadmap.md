@@ -9,6 +9,13 @@ Where the platform is going, without the steps. What is not done is an RFC -- th
   in its registry (RFC ja5hm and qcyb3); a controller in every layer bringing what runs toward what
   the registry wants (RFC jln34); every act done from the console through one contract (RFC dk6wz and
   cpc2b); what a node runs signed by the core (RFC 8vy7x); and only then accounts.
+- **Control stands on Cloudflare's serverless primitives and schedules our nodes**, which build what
+  serverless makes costly -- RFC o7eir, in five stages: control on Workers, D1 and Durable Objects;
+  one model, the nodes the pool it schedules; one binding layer, a vendor's service or a node's
+  behind one declaration, hosted projects in an account of their own; storage replaced beneath the
+  app, encrypted, compressed and content-addressed; and a second vendor only once the platform is
+  stable. The registry moves first, then secrets, then the ledger and the scheduler, then the
+  deployer.
 - **Every API is reached through one gateway**, whose declarations are the only description of a
   service's routes, limits and lifetimes -- [architecture/gateway.md](architecture/gateway.md). The
   move is done but for its cleanup.
