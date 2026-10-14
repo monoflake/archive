@@ -48,6 +48,17 @@ so a scope that holds a resource's values -- the registry's `accounts` -- is nev
 app's environment, whatever its apps are called: the node read once matched values by app name
 alone, across every scope.
 
+**A value is deleted held to the revision read**: `DELETE /v1/secrets/{app}/{name}` with `{by,
+revision}`, by whoever may write it. Its row goes, a change marked `removed` is appended, and each
+node it was given to is told of it by name and revision. Written again, it starts from revision 0
+like any new value.
+
+**The apps the service needs before it can answer a node are given nothing from it**: `database`,
+`postgres`, `primary`, `quorum`, `registry` and `secrets` itself. A write for one of them in a scope
+a node is given is refused, `SECRETS_TOKEN`'s included. Otherwise a platform rebuilt from nothing
+could not start them, since the service answers a node only once its database and the registry
+answer it. A scope no node is given still holds their values: the registry's `accounts`, for one.
+
 ## The lock
 
 **The root key is split two of three among the cores by Shamir's scheme**, each share on its core's
@@ -96,5 +107,26 @@ and still keeps only the apps whose placements name the node, as host does, so a
 ignored the query opens nothing it should not. That token is derived and never
 stored: HMAC-SHA256 of `platform secrets read` under the node's `HOST_TOKEN`, which is already root
 on that node. The service keeps only each one's SHA-256 digest, written by `mise run seal token`, so
-its environment reads nothing. host is to write them into each app's `secret.env` and keep what it
-last read, so the service down stops a change to a secret, never a node. Not built yet.
+its environment reads nothing.
+
+host writes them into each app's files and keeps what it last wrote, so the service down stops a
+change to a value, never a node -- infra's `spec/architecture/host.md`, "An app's environment is two
+files". The node's read answers, beside each value with its class and revision:
+
+- **`removed`**: each value of those apps deleted since it was written, by scope, app, name and the
+  revision that removed it. A node takes a value away only on a removal, never because a value is
+  missing from the answer. A value can be missing because the registry no longer places the app
+  there, or because a scope left `SECRETS_NODE_SCOPES`, and taking values away for either would empty
+  every app at once.
+- **`apps`**: the apps the registry placed on the node, so an app the service did not look at is
+  not mistaken for one with nothing kept.
+
+## Writing a value
+
+**`mise run platform secret set|delete|list`** is the command line's half of the service, RFC cpc2b.
+`set <app> <NAME>` reads the value from standard input -- typed in unechoed on a terminal, one line
+from a pipe -- never from an argument, and never prints it. It is a `secret` unless `--config` is
+given, and `--scope` names another scope than `platform`. It reads the revision first and writes at
+it, so a write sent again to another core after no answer is never applied twice. `delete` removes at
+the revision read. `list` shows a `config`'s value and a `secret` by its name alone. Each takes
+`SECRETS_TOKEN` from `secrets.json`, and `set` and `delete` take `--dry-run`.

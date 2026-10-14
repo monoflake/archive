@@ -133,6 +133,14 @@ async fn every_route_that_touches_a_secret_is_unavailable_while_sealed() {
 		send(router.clone(), "GET", "/v1/secrets", Some(TOKEN), None).await,
 		send(router.clone(), "PUT", "/v1/secrets/gemini/KEY", Some(TOKEN), Some(wanted(0, "v"))).await,
 		send(router.clone(), "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await,
+		send(
+			router.clone(),
+			"DELETE",
+			"/v1/secrets/gemini/KEY",
+			Some(TOKEN),
+			Some(json!({ "by": "t", "revision": 1 })),
+		)
+		.await,
 	];
 	for answer in answers {
 		assert_eq!(code(&answer), (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable"));
@@ -745,7 +753,7 @@ async fn a_held_scope_is_never_given_to_a_node_whatever_app_it_names() {
 	revision_of(&put(&router, held, ACCOUNTS, wanted(0, "identity-s3cret")).await);
 	let canmi = "/v1/secrets/registry/CANMI_KEY?scope=canmi";
 	revision_of(&put(&router, canmi, TOKEN, wanted(0, "canmi-s3cret")).await);
-	revision_of(&put(&router, "/v1/secrets/registry/REGISTRY_TOKEN", TOKEN, wanted(0, "r")).await);
+	revision_of(&put(&router, "/v1/secrets/shot/SHOT_KEY", TOKEN, wanted(0, "shot")).await);
 
 	let tyo = send(router, "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
 	assert_eq!(tyo.0, StatusCode::OK, "{}", tyo.1);
@@ -756,5 +764,73 @@ async fn a_held_scope_is_never_given_to_a_node_whatever_app_it_names() {
 		.iter()
 		.map(|item| (item["scope"].as_str().unwrap(), item["name"].as_str().unwrap()))
 		.collect();
-	assert_eq!(given, [("platform", "REGISTRY_TOKEN")]);
+	assert_eq!(given, [("platform", "SHOT_KEY")]);
+}
+
+#[tokio::test]
+async fn what_the_service_needs_to_start_is_written_nothing_a_node_is_given() {
+	let Some((router, _)) = opened().await else { return };
+	for app in ["database", "postgres", "primary", "quorum", "registry", "secrets"] {
+		let path = format!("/v1/secrets/{app}/TOKEN");
+		let refused = put(&router, &path, TOKEN, wanted(0, "s3cret")).await;
+		assert_eq!(code(&refused), (StatusCode::BAD_REQUEST, "forbidden_field"), "{app}");
+		assert!(refused.1["message"].as_str().unwrap().contains(app), "{}", refused.1);
+		let canmi = put(&router, &format!("{path}?scope=canmi"), TOKEN, wanted(0, "s")).await;
+		assert_eq!(code(&canmi), (StatusCode::BAD_REQUEST, "forbidden_field"), "{app}");
+	}
+	// A scope no node is given holds them: the registry's own resources are kept there.
+	let held = "/v1/secrets/registry/IDENTITY?scope=accounts";
+	revision_of(&put(&router, held, ACCOUNTS, wanted(0, "identity")).await);
+	revision_of(
+		&put(&router, "/v1/secrets/registry/OTHER?scope=accounts", TOKEN, wanted(0, "o")).await,
+	);
+}
+
+#[tokio::test]
+async fn a_value_deleted_is_told_to_its_node_by_name_and_revision() {
+	let Some((router, _)) = opened().await else { return };
+	let path = "/v1/secrets/gemini/GEMINI_KEY";
+	let written = revision_of(&put(&router, path, TOKEN, wanted(0, "gemini-s3cret")).await);
+	revision_of(&put(&router, "/v1/secrets/shot/SHOT_KEY", TOKEN, wanted(0, "shot-s3cret")).await);
+	let remove = |bearer: &'static str, body: Value| {
+		send(router.clone(), "DELETE", path, Some(bearer), Some(body))
+	};
+	let by = |revision: i64| json!({ "by": "test", "revision": revision });
+	assert_eq!(
+		code(&remove(ACCOUNTS, by(written)).await),
+		(StatusCode::UNAUTHORIZED, "invalid_token")
+	);
+	assert_eq!(code(&remove(TOKEN, by(0)).await), (StatusCode::BAD_REQUEST, "invalid_body"));
+	let unknown = json!({ "by": "test", "revision": written, "value": "x" });
+	assert_eq!(code(&remove(TOKEN, unknown).await), (StatusCode::BAD_REQUEST, "forbidden_field"));
+	let stale = remove(TOKEN, by(written + 100)).await;
+	assert_eq!(code(&stale), (StatusCode::CONFLICT, "invalid_revision"));
+	let removed = revision_of(&remove(TOKEN, by(written)).await);
+	assert!(removed > written);
+	let again = remove(TOKEN, by(removed)).await;
+	assert_eq!(code(&again), (StatusCode::NOT_FOUND, "no_such_resource"));
+	let read = send(router.clone(), "GET", path, Some(TOKEN), None).await;
+	assert_eq!(code(&read), (StatusCode::NOT_FOUND, "no_such_resource"));
+
+	let tyo = send(router.clone(), "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
+	assert_eq!(tyo.0, StatusCode::OK, "{}", tyo.1);
+	let data = &tyo.1["data"];
+	let names: Vec<&str> =
+		data["items"].as_array().unwrap().iter().map(|item| item["name"].as_str().unwrap()).collect();
+	assert_eq!(names, ["SHOT_KEY"]);
+	assert_eq!(
+		data["removed"],
+		json!([{ "scope": "platform", "app": "gemini", "name": "GEMINI_KEY", "revision": removed }])
+	);
+	assert_eq!(data["apps"], json!(["gemini", "shot", "registry"]));
+	assert_eq!(data["revision"], removed);
+	// sin runs no gemini, so it is told nothing of it.
+	let sin = send(router.clone(), "GET", "/v1/nodes/sin/secrets", Some(SIN), None).await;
+	assert_eq!(sin.1["data"]["removed"], json!([]));
+	assert_eq!(sin.1["data"]["apps"], json!(["grok", "shot"]));
+
+	// Written again from nothing, it is a value and no longer a removal.
+	revision_of(&put(&router, path, TOKEN, wanted(0, "again")).await);
+	let tyo = send(router, "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
+	assert_eq!(tyo.1["data"]["removed"], json!([]));
 }

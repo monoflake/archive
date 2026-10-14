@@ -53,7 +53,7 @@ pub fn routes(secrets: Shared) -> Router {
 		.route("/v1/seal", get(seal_state).post(unseal))
 		.route("/v1/seal/share", get(share))
 		.route("/v1/secrets", get(list))
-		.route("/v1/secrets/{app}/{name}", get(read).put(write))
+		.route("/v1/secrets/{app}/{name}", get(read).put(write).delete(remove))
 		.route("/v1/secrets/{app}/{name}/compare", post(compare))
 		.route("/v1/nodes/{node}/secrets", get(node_secrets))
 		.fallback(|| async { response::failure(StatusCode::NOT_FOUND, "no_such_route") })
@@ -170,6 +170,13 @@ const STARTUP_NAMES: &[&str] = &[
 	"SSL_CERT_FILE",
 	"SSL_CERT_DIR",
 ];
+
+/// The apps the service needs running before it can answer a node -- its database and the
+/// registry it asks which apps a node runs -- and itself. None takes a value from the service, or a
+/// platform rebuilt from nothing could not start them: no token writes one in a scope a node is
+/// given. See spec/architecture/secrets.md, "Who reads what".
+const STARTS_THE_SERVICE: &[&str] =
+	&["database", "postgres", "primary", "quorum", "registry", "secrets"];
 
 /// Whether `name` is one a scope's token never writes.
 fn changes_how_a_process_starts(name: &str) -> bool {
@@ -397,6 +404,8 @@ enum Refusal {
 	Size,
 	/// A name a scope's token never writes.
 	Startup(String),
+	/// An app the service needs to start, in a scope a node is given.
+	Starts(String),
 	/// A key the route does not read.
 	Forbidden(String),
 	/// A body that is not one the route reads, and what is wrong with it if that can be said.
@@ -424,6 +433,13 @@ impl Refusal {
 				"forbidden_field",
 				format!(
 					"`{name}` changes how a process starts, which only the write token writes, never a scope's"
+				),
+			),
+			Refusal::Starts(app) => response::failure_with(
+				StatusCode::BAD_REQUEST,
+				"forbidden_field",
+				format!(
+					"`{app}` starts before this service answers a node, so it is given nothing from here"
 				),
 			),
 			Refusal::Forbidden(message) => {
@@ -517,6 +533,9 @@ async fn write(
 		Ok((Grant::Held { .. }, _)) if changes_how_a_process_starts(&name) => {
 			return Refusal::Startup(name.clone()).answer();
 		}
+		Ok((_, identity)) if starts_the_service(&secrets, &identity) => {
+			return Refusal::Starts(app.clone()).answer();
+		}
 		Ok((_, identity)) => identity,
 		Err(refusal) => return refusal.answer(),
 	};
@@ -564,6 +583,45 @@ async fn write(
 			"forbidden_field",
 			"A secret becomes config only written again with its value",
 		),
+		Err(error) => store_unavailable(error),
+	}
+}
+
+/// Whether `identity` names an app the service needs to start, in a scope a node is given.
+fn starts_the_service(secrets: &Secrets, identity: &Identity<'_>) -> bool {
+	STARTS_THE_SERVICE.contains(&identity.app)
+		&& secrets.node_scopes.iter().any(|scope| scope == identity.scope)
+}
+
+/// Deletes a value, held to the revision read, leaving a change that says it was removed: each
+/// node it was given to is told so, and takes it out of the app's environment.
+async fn remove(
+	Path((app, name)): Path<(String, String)>,
+	Query(scoped): Query<Scoped>,
+	State(secrets): State<Shared>,
+	headers: HeaderMap,
+	body: Result<axum::Json<Value>, JsonRejection>,
+) -> Response {
+	let identity = match addressed(&secrets, &headers, &scoped, &app, &name) {
+		Ok((_, identity)) => identity,
+		Err(refusal) => return refusal.answer(),
+	};
+	let (by, fields) = match fields(body, &["by", "revision"]) {
+		Ok(read) => read,
+		Err(refusal) => return refusal.answer(),
+	};
+	let Some(revision) = fields.get("revision").and_then(Value::as_i64).filter(|r| *r > 0) else {
+		return Refusal::Invalid(Some("`revision` is the one read")).answer();
+	};
+	if secrets.seal.is_sealed() {
+		return sealed();
+	}
+	match secrets.store.remove(&identity, &by, revision).await {
+		Ok(Set::Changed(revision)) => {
+			response::success(StatusCode::OK, json!({ "revision": revision }))
+		}
+		Ok(Set::Stale) => response::failure(StatusCode::CONFLICT, "invalid_revision"),
+		Ok(_) => response::failure(StatusCode::NOT_FOUND, "no_such_resource"),
 		Err(error) => store_unavailable(error),
 	}
 }
@@ -655,7 +713,9 @@ impl Drop for Opened {
 }
 
 /// The values of every app the registry places on `node`, in the scopes a node is given alone, to
-/// that node's own token alone.
+/// that node's own token alone; those removed, by name and revision, so a node takes away only
+/// what was deleted; and the apps it looked at, so a node can tell an app it was not answered for
+/// from one with nothing kept.
 async fn node_secrets(
 	Path(node): Path<String>,
 	State(secrets): State<Shared>,
@@ -681,7 +741,7 @@ async fn node_secrets(
 			"No registry answered which apps this node runs",
 		);
 	};
-	let (kept, revision) = match secrets.store.of_apps(&apps, &secrets.node_scopes).await {
+	let (kept, removed, revision) = match secrets.store.of_apps(&apps, &secrets.node_scopes).await {
 		Ok(found) => found,
 		Err(error) => return store_unavailable(error),
 	};
@@ -703,7 +763,9 @@ async fn node_secrets(
 	match opened {
 		None => sealed(),
 		Some(Ok(items)) => {
-			response::success(StatusCode::OK, json!({ "items": items, "revision": revision }))
+			let answer =
+				json!({ "items": items, "removed": removed, "apps": apps, "revision": revision });
+			response::success(StatusCode::OK, answer)
 		}
 		Some(Err(error)) => unopened(error),
 	}

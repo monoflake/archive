@@ -84,12 +84,21 @@ pub enum Set {
 	Stale,
 	/// Nothing: the value and class kept are already what was asked.
 	Unchanged,
-	/// Nothing: a class alone was asked of a value that does not exist.
+	/// Nothing: a class alone, or a removal, was asked of a value that does not exist.
 	Missing,
 	/// Nothing: a class alone would have made a `secret` readable, which takes its value written.
 	Revealing,
 	/// The change it appended.
 	Changed(i64),
+}
+
+/// A value deleted, as a node is told of it: which, and the change that removed it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Removed {
+	pub scope: String,
+	pub app: String,
+	pub name: String,
+	pub revision: i64,
 }
 
 /// Comparisons each secret answers in a window, and the window, counted across every copy. See
@@ -180,12 +189,13 @@ impl Store {
 		Ok((rows.iter().map(kept).collect(), revision))
 	}
 
-	/// Every value of `apps` in `scopes` alone, still sealed, and the newest change to anything.
+	/// Every value of `apps` in `scopes` alone, still sealed, those of them whose newest change
+	/// removed them, and the newest change to anything.
 	pub async fn of_apps(
 		&self,
 		apps: &[String],
 		scopes: &[String],
-	) -> anyhow::Result<(Vec<Kept>, i64)> {
+	) -> anyhow::Result<(Vec<Kept>, Vec<Removed>, i64)> {
 		let mut client = self.pool.get().await?;
 		let transaction = client
 			.build_transaction()
@@ -202,10 +212,28 @@ impl Store {
 				&[&apps, &scopes],
 			)
 			.await?;
+		let removed = transaction
+			.query(
+				"SELECT c.scope, c.app, c.name, c.id FROM changes c
+				WHERE c.removed AND c.app = ANY($1) AND c.scope = ANY($2)
+					AND c.id = (SELECT max(d.id) FROM changes d
+						WHERE d.scope = c.scope AND d.app = c.app AND d.name = c.name)
+				ORDER BY 1, 2, 3",
+				&[&apps, &scopes],
+			)
+			.await?
+			.iter()
+			.map(|row| Removed {
+				scope: row.get(0),
+				app: row.get(1),
+				name: row.get(2),
+				revision: row.get(3),
+			})
+			.collect();
 		let revision: i64 =
 			transaction.query_one("SELECT coalesce(max(id), 0) FROM changes", &[]).await?.get(0);
 		transaction.commit().await?;
-		Ok((rows.iter().map(kept).collect(), revision))
+		Ok((rows.iter().map(kept).collect(), removed, revision))
 	}
 
 	/// The value `identity` names, still sealed, if there is one.
@@ -307,6 +335,51 @@ impl Store {
 				"INSERT INTO changes (by, scope, app, name, class) VALUES ($1, $2, $3, $4, $5)
 				RETURNING id",
 				&[&by, &scope, &app, &name, &class.name()],
+			)
+			.await?
+			.get(0);
+		transaction.commit().await?;
+		Ok(Set::Changed(id))
+	}
+
+	/// Deletes `identity` if it is still at `revision`, appending a change that says it was removed,
+	/// with no class: its row goes, and what was written of it stays in the history.
+	pub async fn remove(
+		&self,
+		identity: &Identity<'_>,
+		by: &str,
+		revision: i64,
+	) -> anyhow::Result<Set> {
+		let Identity { scope, app, name } = *identity;
+		let mut client = self.pool.get().await?;
+		let transaction = client.transaction().await?;
+		transaction.execute("SELECT pg_advisory_xact_lock($1)", &[&WRITES]).await?;
+		let kept = transaction
+			.query_opt(
+				&format!(
+					"SELECT {COLUMNS}, {REVISION} FROM secrets s
+					WHERE s.scope = $1 AND s.app = $2 AND s.name = $3"
+				),
+				&[&scope, &app, &name],
+			)
+			.await?
+			.as_ref()
+			.map(kept);
+		let Some(kept) = kept else { return Ok(Set::Missing) };
+		if revision != kept.named.revision {
+			return Ok(Set::Stale);
+		}
+		transaction
+			.execute(
+				"DELETE FROM secrets WHERE scope = $1 AND app = $2 AND name = $3",
+				&[&scope, &app, &name],
+			)
+			.await?;
+		let id: i64 = transaction
+			.query_one(
+				"INSERT INTO changes (by, scope, app, name, removed) VALUES ($1, $2, $3, $4, true)
+				RETURNING id",
+				&[&by, &scope, &app, &name],
 			)
 			.await?
 			.get(0);

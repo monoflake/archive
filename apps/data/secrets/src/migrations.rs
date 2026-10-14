@@ -72,6 +72,17 @@ pub const MIGRATIONS: &[Migration] = &[
 			CREATE INDEX comparisons_by_secret ON comparisons (scope, app, name, id);
 		"#,
 	},
+	// A value deleted leaves its row gone and a change marked removed, which a node is told of by
+	// name and revision, so it takes away only what was removed and never what it was not answered.
+	// See spec/architecture/secrets.md.
+	Migration {
+		version: 3,
+		name: "removals",
+		kind: Kind::Expand,
+		sql: r#"
+			ALTER TABLE changes ADD COLUMN removed boolean NOT NULL DEFAULT false;
+		"#,
+	},
 ];
 
 /// The advisory lock every copy takes before migrating: "secrets" in ASCII.

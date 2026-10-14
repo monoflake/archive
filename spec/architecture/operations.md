@@ -148,7 +148,6 @@ A one-off (D11, W7, CI4) is counted as hand; it leaves the count once done.
 Each was given a draft on 2026-10-14, named in its row: gqzcx, d8orh, qcwui, qin5s, jary8, f4czw,
 nfdua, 325qu, 6uosz, 9x1kw and d1m4g; the list below is what each draft took up.
 
-
 - **Nodes**: N2 a machine's base (OS, Docker, Tailscale login, btrfs `/data`); N7 restarting dockerd
   after `daemon.json`; N19 Tailscale naming. N1 is the provider's and likely stays bootstrap.
 - **Deploy**: D3 a rolling upgrade of a manual (stateful) app as a workflow -- the most frequent
@@ -163,6 +162,10 @@ nfdua, 325qu, 6uosz, 9x1kw and d1m4g; the list below is what each draft took up.
   rollback; W6 custom domains of the non-gateway Workers.
 - **CI**: CI2 GitHub Actions secrets and variables.
 - **Observability**: O3 notifications (the roadmap names it, no RFC); O5 logs read off the node.
+
+S7 closes less than the first plan said: `RELAY_SECRET` and `INTERNAL_TOKEN` are the ground's,
+the relay's and Caddy's, so they stay with `mise run node` until the ground has a way to read values
+that does not lean on a layer above it, and `HOST_READ_TOKEN` stays in host's `.env` (N6).
 
 ## Proposed order
 

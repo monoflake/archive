@@ -1,5 +1,5 @@
 use super::testing::{bare, store};
-use super::{COMPARISONS, Class, Compared, Kept, Set, Store, WINDOW, Wanted};
+use super::{COMPARISONS, Class, Compared, Kept, Removed, Set, Store, WINDOW, Wanted};
 use crate::envelope::{self, Identity, Sealed};
 use crate::migrations;
 use crate::seal::RootKey;
@@ -79,7 +79,7 @@ async fn a_write_is_held_to_the_revision_it_read() {
 	assert_eq!(items.len(), 1);
 	assert_eq!(items[0].named.revision, changed);
 	assert_eq!(items[0].named.class, Class::Secret);
-	let (kept, revision) = store.of_apps(&["gemini".into()], &["platform".into()]).await.unwrap();
+	let (kept, _, revision) = store.of_apps(&["gemini".into()], &["platform".into()]).await.unwrap();
 	assert_eq!(revision, changed);
 	assert_eq!(
 		envelope::open(&root, &kept[0].identity(), &kept[0].sealed).unwrap().as_slice(),
@@ -168,7 +168,7 @@ async fn a_value_written_before_classes_is_a_secret() {
 		.unwrap();
 	drop(client);
 	let _ = driven.await;
-	assert_eq!(store.migrate().await.unwrap(), [2]);
+	assert_eq!(store.migrate().await.unwrap(), [2, 3]);
 	assert_eq!(store.get(&ID).await.unwrap().unwrap().named.class, Class::Secret);
 }
 
@@ -183,7 +183,8 @@ async fn a_change_row_says_who_and_which_and_never_what() {
 	let text: String = row.get(0);
 	assert!(text.contains("\"by\":\"alice\"") && text.contains("GEMINI_KEY"), "{text}");
 	assert!(!text.contains("s3cret"));
-	assert_eq!(columns(&store, "changes").await, ["app", "at", "by", "class", "id", "name", "scope"]);
+	let named = ["app", "at", "by", "class", "id", "name", "removed", "scope"];
+	assert_eq!(columns(&store, "changes").await, named);
 	let stored: Vec<u8> = client.query_one("SELECT value FROM secrets", &[]).await.unwrap().get(0);
 	assert!(!stored.windows(6).any(|window| window == b"s3cret"));
 }
@@ -302,7 +303,7 @@ async fn secrets_are_answered_by_app_by_scope_and_in_order() {
 	assert_eq!(store.list(Some(("accounts", "gemini"))).await.unwrap(), (Vec::new(), 0));
 
 	let every = ["platform".to_owned(), "canmi".to_owned()];
-	let (kept, of_apps) = store.of_apps(&["gemini".into(), "shot".into()], &every).await.unwrap();
+	let (kept, _, of_apps) = store.of_apps(&["gemini".into(), "shot".into()], &every).await.unwrap();
 	assert_eq!(of_apps, revision);
 	let names: Vec<String> = kept
 		.iter()
@@ -319,8 +320,55 @@ async fn secrets_are_answered_by_app_by_scope_and_in_order() {
 		);
 	}
 	assert!(store.of_apps(&[], &every).await.unwrap().0.is_empty());
-	let (platform, _) = store.of_apps(&["gemini".into()], &["platform".into()]).await.unwrap();
+	let (platform, _, _) = store.of_apps(&["gemini".into()], &["platform".into()]).await.unwrap();
 	assert!(platform.iter().all(|kept| kept.named.scope == "platform") && platform.len() == 2);
 	assert!(store.of_apps(&["gemini".into()], &["accounts".into()]).await.unwrap().0.is_empty());
 	assert!(store.any().await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_removal_is_held_to_its_revision_and_told_to_a_node_until_written_again() {
+	let Some(store) = store().await else { return };
+	let root = RootKey::generate();
+	let platform = ["platform".to_owned()];
+	let gemini = ["gemini".to_owned()];
+	assert_eq!(store.remove(&ID, "test", 1).await.unwrap(), Set::Missing);
+	let first = created(&store, &root, b"one", Class::Secret).await;
+	assert_eq!(store.remove(&ID, "test", first + 1).await.unwrap(), Set::Stale);
+	let Set::Changed(removed) = store.remove(&ID, "dave", first).await.unwrap() else {
+		panic!("not removed")
+	};
+	assert!(removed > first);
+	assert_eq!(store.get(&ID).await.unwrap(), None);
+	assert_eq!(store.remove(&ID, "test", removed).await.unwrap(), Set::Missing);
+	let (kept, told, revision) = store.of_apps(&gemini, &platform).await.unwrap();
+	assert!(kept.is_empty());
+	assert_eq!(revision, removed);
+	let tombstone = Removed {
+		scope: "platform".into(),
+		app: "gemini".into(),
+		name: "GEMINI_KEY".into(),
+		revision: removed,
+	};
+	assert_eq!(told, [tombstone]);
+	// Only the scopes and apps asked about are told.
+	assert!(store.of_apps(&gemini, &["canmi".into()]).await.unwrap().1.is_empty());
+	assert!(store.of_apps(&["shot".into()], &platform).await.unwrap().1.is_empty());
+	// Written again, from nothing, it is a value and no longer a removal.
+	let again = created(&store, &root, b"two", Class::Config).await;
+	let (kept, told, _) = store.of_apps(&gemini, &platform).await.unwrap();
+	assert_eq!((kept.len(), kept[0].named.revision), (1, again));
+	assert!(told.is_empty());
+	let removed_rows: Vec<bool> = store
+		.pool
+		.get()
+		.await
+		.unwrap()
+		.query("SELECT removed FROM changes ORDER BY id", &[])
+		.await
+		.unwrap()
+		.iter()
+		.map(|row| row.get(0))
+		.collect();
+	assert_eq!(removed_rows, [false, true, false]);
 }
