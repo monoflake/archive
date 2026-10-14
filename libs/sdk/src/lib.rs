@@ -7,21 +7,35 @@ pub const APPS_DEVELOPMENT_ALIAS: &str = "http://localhost:26512/v1/aka";
 pub const APPS_DEVELOPMENT_SYMLINK: &str = "http://localhost:26512/v1/aka/symlink";
 pub const APPS_DEVELOPMENT_CDN: &str = "http://localhost:26512/v3/cdn";
 pub const APPS_DEVELOPMENT_PANEL: &str = "http://localhost:26519";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const APPS_PRODUCTION_SITE: &str = "https://canmi.net";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const APPS_PRODUCTION_API: &str = "https://api.monoflake.com/v1/site";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const APPS_PRODUCTION_ALIAS: &str = "https://ill.li";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const APPS_PRODUCTION_SYMLINK: &str = "https://symlink.si";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const APPS_PRODUCTION_CDN: &str = "https://cdn.monoflake.com";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const APPS_PRODUCTION_PANEL: &str = "https://infra.internal.ixc.one";
 pub const SOURCE: &str = "https://github.com/canmi21/web";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_APP: &str = "https://canmi.app";
 pub const INTERNAL_ALIAS: &str = "https://ill.li";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_PANEL: &str = "https://infra.internal.ixc.one";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_KEEPER: &str = "https://keeper.internal.ixc.one";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_HOST: &str = "http://host:11011";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_LEDGER: &str = "http://api.internal.ixc.one/ledger";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_SHOT: &str = "https://api.monoflake.com/v1/shot";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_API_PRIVATE: &str = "http://api.internal.ixc.one";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_API_PUBLIC: &str = "https://api.monoflake.com";
 pub const INTERNAL_STATUS_CANONICAL: &str = "https://status.canmi.app";
 pub const INTERNAL_STATUS_MIRROR: &str = "https://canmi.vercel.app";
@@ -73,6 +87,7 @@ pub const EXTERNAL_TURNSTILE_SITEVERIFY: &str =
 pub const EXTERNAL_DOH_CLOUDFLARE: &str = "https://1.1.1.1/dns-query";
 pub const EXTERNAL_DOH_GOOGLE: &str = "https://8.8.8.8/resolve";
 pub const EXTERNAL_CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
+/// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const EXTERNAL_ARTIFACTS: &str =
 	"https://62163885eb1943e6561e004ac10a5f22.r2.cloudflarestorage.com";
 pub const EXTERNAL_GEOLITE_MAXMIND: &str = "https://www.maxmind.com";

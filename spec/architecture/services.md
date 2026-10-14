@@ -26,7 +26,7 @@ reads R2, which has an S3 surface, so it can be placed off Cloudflare as it is.
 ## Every node is the same node
 
 The VPS and the machine at home run the same node -- what it is made of is infra's
-`spec/architecture/host.md`, "Infra's shape is chosen by name, never by a declaration".
+`spec/architecture/keeper.md`, "Infra's shape is chosen by name, never by a declaration".
 Neither opens an inbound port; public traffic reaches each through its own tunnel, and the nodes
 reach each other on the tailnet. Each node's host deploys only what is placed on it.
 
@@ -303,6 +303,16 @@ one: `socket` is a file name in the app's own directory, so the declaration has 
 checks its health on that socket. An app on a socket keeps its own network for what it calls out to
 -- apt's tells the ledger -- and only the meter runs with no network at all, see infra's
 `spec/architecture/meter.md`.
+
+## A service declares the addresses it reads
+
+A service that dials one of our own hosts, the artifact bucket or a public host we place reads it
+from its environment, as a variable it names under `[urls]` in its `service.toml`: `LEDGER_URL =
+"internal.ledger"`, the key being the entry's dotted path in infra's map. host gives each its value
+at start and refuses a key its map lacks. The service keeps no default of its own and stops at
+start without the variable. The declaration is the whole list of what the service reaches, which is
+what the layer check reads -- RFC zlifc. A Worker is to be given the same keys as `vars` by the
+deployer -- RFC zvrk7. See infra's `spec/architecture/host.md`, "An app's environment is two files".
 
 ## One door per node
 
