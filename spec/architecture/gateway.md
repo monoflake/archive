@@ -392,7 +392,9 @@ Any other scope Caddy hands to the public gateway as `api.monoflake.com/v{n}/{sc
 `public = false` and Caddy carries on its private side -- the ledger -- is in the gateway's
 table for that reason alone: a
 request carrying the token in `x-internal` reaches it, one without is answered as a scope that does
-not exist. The gateway takes the header off before any service sees it, counts the call once where
+not exist. Its service is sent the path after the scope as the caller wrote it, its own version
+included: the version in front, `v1`, is only the address's, which a node's Caddy puts there --
+infra's `spec/architecture/host.md`. The gateway takes the header off before any service sees it, counts the call once where
 it entered, and applies CORS, lifetimes and credentials as to any call. `quota` is not one of them:
 it is the gateway's own counter, reached by binding, and no service asks it. A call across nodes
 therefore needs Cloudflare; one within a node does not.

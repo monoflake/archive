@@ -492,6 +492,19 @@ describe('a private scope', () => {
 		expect(refusing.asked).toHaveLength(0);
 	});
 
+	it('sends a version its caller named on to the node in the path, untouched', async () => {
+		// The node's Caddy hands on `/ledger/v1/runs/...` as `/v1/ledger/v1/runs/...`; the ledger
+		// routes its own `/v1`, so the node must be asked for it as the caller wrote it.
+		const { fetcher, seen } = binding();
+		const env = { RDU: fetcher, QUOTA: refusing.counters, INTERNAL_TOKEN: 'house' };
+		const request = new Request(`${HOST}/v1/ledger/v1/executors/buf/polls`, {
+			method: 'POST',
+			headers: { [INTERNAL_HEADER]: 'house' },
+		});
+		expect((await app.fetch(request, env)).status).toBe(200);
+		expect(new URL(seen[0]?.url ?? '').pathname).toBe('/ledger/v1/executors/buf/polls');
+	});
+
 	it('does not exist without the token, a wrong one, or a token unset', async () => {
 		const { fetcher, seen } = binding();
 		const env = { RDU: fetcher, INTERNAL_TOKEN: 'house' };
