@@ -352,6 +352,8 @@ importers:
         specifier: ^0.31.11
         version: 0.31.11
 
+  libs/replay: {}
+
   libs/sdk:
     dependencies:
       '@canmi/me':

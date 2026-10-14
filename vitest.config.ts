@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -23,6 +24,16 @@ export default defineConfig({
 						},
 					},
 				],
+				// The names workerd provides, which the runner's own modules stand in for under Node, as
+				// tsconfig.json maps them for the type checker. See RFC 23wgz.
+				resolve: {
+					alias: [
+						{
+							find: /^cloudflare:(workers|workflows)$/,
+							replacement: fileURLToPath(new URL('libs/replay/src/cloudflare.ts', import.meta.url)),
+						},
+					],
+				},
 				test: {
 					name: 'node',
 					include: ['{apps,libs}/**/*.test.ts', '.mise/tasks/*.test.ts'],

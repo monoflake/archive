@@ -3,7 +3,13 @@
 	// library here exports .ts straight from src and its consumers bundle it, so nothing emits.
 	"extends": "./tsconfig.base.json",
 	"compilerOptions": {
-		"lib": ["es2023", "dom"]
+		"lib": ["es2023", "dom"],
+		// What workerd provides by these names, the runner's own modules stand in for here: the
+		// executor's workflows and the runner import them. See RFC 23wgz.
+		"paths": {
+			"cloudflare:workers": ["./libs/replay/src/cloudflare.ts"],
+			"cloudflare:workflows": ["./libs/replay/src/cloudflare.ts"]
+		}
 	},
 	"include": ["apps/**/*.ts", "libs/**/*.ts", "*.ts"],
 	"exclude": [

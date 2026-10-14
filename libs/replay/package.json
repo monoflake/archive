@@ -1,0 +1,16 @@
+{
+	"name": "@monoflake/replay",
+	"version": "0.0.0",
+	"private": true,
+	"description": "A workflow's turn, replayed against the ledger.",
+	"keywords": [
+		"ledger",
+		"replay",
+		"workflows"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./cloudflare": "./src/cloudflare.ts"
+	}
+}
