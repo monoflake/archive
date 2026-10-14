@@ -9,7 +9,7 @@ use crate::cluster::{Carried, Versions};
 use crate::config::Peer;
 use crate::relay::{Relay, Update, VERSION};
 use crate::runs::Batch;
-use crate::socket::{Dial, Heard, Received, Socket, SocketError};
+use crate::socket::{Dial, Frame, Halves, Heard, Reader, Received, SocketError, Writer};
 use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, InvalidHeaderValue};
 use axum::serve::{Listener, ListenerExt};
@@ -20,6 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -136,17 +138,102 @@ impl Drop for Speaking<'_> {
 	}
 }
 
+/// How many frames a socket's writer holds waiting. Past it a frame is dropped rather than waited
+/// for, since waiting would stop the reading; what a neighbor misses so, the next comparison sends.
+const QUEUE: usize = 64;
+
+/// A frame for the writer, and the version of this node's own it carries, told once written.
+struct Outgoing {
+	frame: Frame,
+	own: Option<u64>,
+}
+
+/// The writer's queue as a conversation hands it frames: at once, or not at all.
+struct Outbox {
+	queue: mpsc::Sender<Outgoing>,
+	dropped: usize,
+}
+
+impl Outbox {
+	/// `message` queued, carrying this node's own version `own`; written out only while there is
+	/// room, and dropped otherwise.
+	fn send(&mut self, message: &Message, own: Option<u64>) -> Result<(), MeshError> {
+		let Ok(room) = self.queue.try_reserve() else {
+			self.dropped += 1;
+			return Ok(());
+		};
+		room.send(Outgoing { frame: Frame::Text(serde_json::to_string(message)?), own });
+		Ok(())
+	}
+
+	/// A ping queued; one that finds the queue full is skipped, its figure the queue's.
+	fn ping(&mut self, payload: Bytes) {
+		if let Ok(room) = self.queue.try_reserve() {
+			room.send(Outgoing { frame: Frame::Ping(payload), own: None });
+		}
+	}
+
+	/// How many messages were dropped since this was last asked.
+	fn dropped(&mut self) -> usize {
+		std::mem::take(&mut self.dropped)
+	}
+}
+
+/// The writer's task, ended with the conversation however it ends.
+struct Writing(JoinHandle<Result<(), SocketError>>);
+
+impl Writing {
+	/// Once the writer has written what it was handed and its queue is closed.
+	async fn finished(mut self) -> Result<(), MeshError> {
+		written((&mut self.0).await)
+	}
+}
+
+impl Drop for Writing {
+	fn drop(&mut self) {
+		self.0.abort();
+	}
+}
+
+/// How the writer ended, a panic in it carried on as one.
+fn written(joined: Result<Result<(), SocketError>, JoinError>) -> Result<(), MeshError> {
+	match joined {
+		Ok(written) => Ok(written?),
+		Err(failed) => std::panic::resume_unwind(failed.into_panic()),
+	}
+}
+
+/// Writes what the conversation queues, in order, until the queue closes or a write fails; this
+/// node's own version is told to `peer` once it is written.
+async fn write<W: Writer>(
+	relay: Arc<Relay>,
+	peer: String,
+	mut writer: W,
+	mut queue: mpsc::Receiver<Outgoing>,
+) -> Result<(), SocketError> {
+	while let Some(Outgoing { frame, own }) = queue.recv().await {
+		writer.send(frame).await?;
+		if let Some(version) = own {
+			relay.told(&peer, version);
+		}
+	}
+	Ok(())
+}
+
 /// One socket to a neighbor, from the introductions until it closes or falls silent, either end
-/// alike. `expected` is the neighbor dialed, and none for one that dialed here.
-pub async fn converse<S: Socket>(
+/// alike. `expected` is the neighbor dialed, and none for one that dialed here. The socket is read
+/// here and written by a task of its own, so a write waiting on the neighbor never stops the
+/// reading that the neighbor, waiting on its own write, needs to go on.
+pub async fn converse<S: Halves>(
 	relay: Arc<Relay>,
 	expected: Option<&str>,
-	mut socket: Heard<S>,
+	socket: Heard<S>,
 ) -> Result<(), MeshError> {
 	// Subscribed before saying what is held, so nothing taken meanwhile is missed.
 	let mut updates = relay.subscribe();
 	let mut batches = relay.subscribe_runs();
 	let mut minutes = relay.subscribe_minutes();
+	let (mut reader, mut writer) = socket.halves();
 	let hello = Message::Hello {
 		version: VERSION,
 		node: relay.node().to_owned(),
@@ -154,9 +241,9 @@ pub async fn converse<S: Socket>(
 		runs: Some(relay.run_versions()),
 		minutes: Some(relay.minute_versions()),
 	};
-	send(&mut socket, &hello).await?;
+	writer.send(Frame::Text(serde_json::to_string(&hello)?)).await?;
 
-	let theirs = tokio::time::timeout(INTRODUCTION, introduced(&mut socket))
+	let theirs = tokio::time::timeout(INTRODUCTION, introduced(&mut reader))
 		.await
 		.map_err(|_| MeshError::Slow(INTRODUCTION))??;
 	let (peer, versions, runs, theirs_minutes) = match theirs {
@@ -175,14 +262,18 @@ pub async fn converse<S: Socket>(
 	if relay.is_retired(&peer) {
 		return Err(MeshError::Retired(peer));
 	}
+
+	let (queue, queued) = mpsc::channel(QUEUE);
+	let mut outbox = Outbox { queue, dropped: 0 };
+	let mut writing = Writing(tokio::spawn(write(relay.clone(), peer.clone(), writer, queued)));
 	// A neighbor that said nothing of runs or minutes is older than them; see `Message`.
 	let (reads_runs, reads_minutes) = (runs.is_some(), theirs_minutes.is_some());
-	behind(&relay, &mut socket, &versions, &peer).await?;
+	behind(&relay, &mut outbox, &versions, &peer)?;
 	if let Some(runs) = runs {
-		runs_behind(&relay, &mut socket, &runs, &peer).await?;
+		runs_behind(&relay, &mut outbox, &runs, &peer).await?;
 	}
 	if let Some(theirs) = theirs_minutes {
-		minutes_behind(&relay, &mut socket, &theirs, &peer).await?;
+		minutes_behind(&relay, &mut outbox, &theirs, &peer).await?;
 	}
 
 	let speaking = Speaking { relay: &relay, peer: &peer, conversation: relay.conversation() };
@@ -191,19 +282,19 @@ pub async fn converse<S: Socket>(
 	let origin = Instant::now();
 	loop {
 		tokio::select! {
-			received = socket.receive() => {
+			received = reader.receive() => {
 				match received? {
 					Received::Text(text) => match serde_json::from_str(&text)? {
 						Message::Node { node, state } => {
 							relay.take(&node, state, Some(&peer));
 						}
 						Message::Versions { versions, runs, minutes } => {
-							behind(&relay, &mut socket, &versions, &peer).await?;
+							behind(&relay, &mut outbox, &versions, &peer)?;
 							if let Some(runs) = runs {
-								runs_behind(&relay, &mut socket, &runs, &peer).await?;
+								runs_behind(&relay, &mut outbox, &runs, &peer).await?;
 							}
 							if let Some(minutes) = minutes {
-								minutes_behind(&relay, &mut socket, &minutes, &peer).await?;
+								minutes_behind(&relay, &mut outbox, &minutes, &peer).await?;
 							}
 						}
 						Message::Runs(batch) => {
@@ -219,7 +310,7 @@ pub async fn converse<S: Socket>(
 							relay.timed(&peer, round_trip);
 						}
 					}
-					Received::Closed => return Ok(()),
+					Received::Closed => break,
 					Received::Other => {}
 				}
 			}
@@ -227,8 +318,7 @@ pub async fn converse<S: Socket>(
 				Ok(Update { node, held }) => {
 					if node == relay.node() && speaking.speaks() {
 						let state = Carried { version: held.version, snapshot: held.snapshot };
-						send(&mut socket, &Message::Node { node, state }).await?;
-						relay.told(&peer, held.version);
+						outbox.send(&Message::Node { node, state }, Some(held.version))?;
 					}
 				}
 				// What it missed, the next comparison finds.
@@ -238,7 +328,7 @@ pub async fn converse<S: Socket>(
 			batch = batches.recv() => match batch {
 				Ok(batch) => {
 					if batch.node == relay.node() && reads_runs && speaking.speaks() {
-						send(&mut socket, &Message::Runs(batch)).await?;
+						outbox.send(&Message::Runs(batch), None)?;
 					}
 				}
 				Err(RecvError::Lagged(_)) => {}
@@ -247,7 +337,7 @@ pub async fn converse<S: Socket>(
 			batch = minutes.recv() => match batch {
 				Ok(batch) => {
 					if batch.node == relay.node() && reads_minutes && speaking.speaks() {
-						send(&mut socket, &Message::Minutes(batch)).await?;
+						outbox.send(&Message::Minutes(batch), None)?;
 					}
 				}
 				Err(RecvError::Lagged(_)) => {}
@@ -258,20 +348,28 @@ pub async fn converse<S: Socket>(
 				if relay.is_retired(&peer) {
 					return Err(MeshError::Retired(peer.clone()));
 				}
+				let dropped = outbox.dropped();
+				if dropped > 0 {
+					eprintln!("relay: {peer} behind; dropped {dropped}, the comparison sends what it lacks");
+				}
 				if speaking.speaks() {
 					let (runs, minutes) = (Some(relay.run_versions()), Some(relay.minute_versions()));
 					let versions = Message::Versions { versions: relay.versions(), runs, minutes };
-					send(&mut socket, &versions).await?;
+					outbox.send(&versions, None)?;
 				}
 			}
 			_ = ping.tick() => {
-				socket.ping(stamp(origin, Instant::now())).await?;
-				if let Some(round_trip) = socket.round_trip() {
+				outbox.ping(stamp(origin, Instant::now()));
+				if let Some(round_trip) = reader.round_trip() {
 					relay.measured(&peer, round_trip);
 				}
 			}
+			joined = &mut writing.0 => return written(joined),
 		}
 	}
+	// Closed by the other end: what was queued is written, as far as it still takes it.
+	drop(outbox);
+	writing.finished().await
 }
 
 /// A ping's payload: when it was sent, in microseconds since the socket's `origin`. The pong
@@ -290,35 +388,32 @@ fn round_trip(origin: Instant, payload: &[u8], now: Instant) -> Option<Duration>
 	elapsed.checked_sub(Duration::from_micros(sent))
 }
 
-/// Sends `peer`, holding `versions`, what it lacks.
-async fn behind<S: Socket>(
+/// Queues for `peer`, holding `versions`, what it lacks.
+fn behind(
 	relay: &Relay,
-	socket: &mut S,
+	outbox: &mut Outbox,
 	versions: &Versions,
 	peer: &str,
 ) -> Result<(), MeshError> {
 	for (node, state) in relay.lacking(versions, peer) {
 		let own = (node == relay.node()).then_some(state.version);
-		send(socket, &Message::Node { node, state }).await?;
-		if let Some(version) = own {
-			relay.told(peer, version);
-		}
+		outbox.send(&Message::Node { node, state }, own)?;
 	}
 	Ok(())
 }
 
-/// Sends `peer`, holding `theirs` of the runs, what it lacks. A file that cannot be read is
+/// Queues for `peer`, holding `theirs` of the runs, what it lacks. A file that cannot be read is
 /// logged, and asked again at the next comparison; the socket stays.
-async fn runs_behind<S: Socket>(
+async fn runs_behind(
 	relay: &Relay,
-	socket: &mut S,
+	outbox: &mut Outbox,
 	theirs: &Versions,
 	peer: &str,
 ) -> Result<(), MeshError> {
 	match relay.lacking_runs(theirs, peer).await {
 		Ok(batches) => {
 			for batch in batches {
-				send(socket, &Message::Runs(batch)).await?;
+				outbox.send(&Message::Runs(batch), None)?;
 			}
 		}
 		Err(error) => eprintln!("relay: reading the runs for {peer}: {error}"),
@@ -326,18 +421,18 @@ async fn runs_behind<S: Socket>(
 	Ok(())
 }
 
-/// Sends `peer`, holding `theirs` of the minutes, what it lacks; a file that cannot be read is
+/// Queues for `peer`, holding `theirs` of the minutes, what it lacks; a file that cannot be read is
 /// logged, as the runs' is.
-async fn minutes_behind<S: Socket>(
+async fn minutes_behind(
 	relay: &Relay,
-	socket: &mut S,
+	outbox: &mut Outbox,
 	theirs: &Versions,
 	peer: &str,
 ) -> Result<(), MeshError> {
 	match relay.lacking_minutes(theirs, peer).await {
 		Ok(batches) => {
 			for batch in batches {
-				send(socket, &Message::Minutes(batch)).await?;
+				outbox.send(&Message::Minutes(batch), None)?;
 			}
 		}
 		Err(error) => eprintln!("relay: reading the minutes for {peer}: {error}"),
@@ -345,18 +440,14 @@ async fn minutes_behind<S: Socket>(
 	Ok(())
 }
 
-async fn introduced<S: Socket>(socket: &mut S) -> Result<Message, MeshError> {
+async fn introduced<R: Reader>(reader: &mut R) -> Result<Message, MeshError> {
 	loop {
-		match socket.receive().await? {
+		match reader.receive().await? {
 			Received::Text(text) => return Ok(serde_json::from_str(&text)?),
 			Received::Closed => return Err(MeshError::Closed),
 			Received::Pong(_) | Received::Other => {}
 		}
 	}
-}
-
-async fn send<S: Socket>(socket: &mut S, message: &Message) -> Result<(), MeshError> {
-	Ok(socket.send_text(serde_json::to_string(message)?).await?)
 }
 
 /// Opens a socket to `peer`'s relay, carrying the secret.
@@ -414,6 +505,7 @@ mod tests {
 	use axum::http::HeaderValue;
 	use std::sync::Mutex;
 	use tokio::sync::mpsc;
+	use tokio_tungstenite::MaybeTlsStream;
 
 	fn relay(node: &str) -> Arc<Relay> {
 		Relay::new(
@@ -433,21 +525,41 @@ mod tests {
 		echo: Option<mpsc::UnboundedSender<Received>>,
 	}
 
-	impl Socket for Fake {
-		async fn send_text(&mut self, text: String) -> Result<(), SocketError> {
-			self.sent.lock().unwrap().push(serde_json::from_str(&text).unwrap());
-			Ok(())
-		}
+	/// What a test feeds a socket, as its reading half.
+	struct Fed(mpsc::UnboundedReceiver<Received>);
 
-		async fn ping(&mut self, payload: Bytes) -> Result<(), SocketError> {
-			if let Some(echo) = &self.echo {
-				let _ = echo.send(Received::Pong(payload));
+	impl Reader for Fed {
+		async fn receive(&mut self) -> Result<Received, SocketError> {
+			Ok(self.0.recv().await.unwrap_or(Received::Closed))
+		}
+	}
+
+	/// Where a fake keeps what it is sent, as its writing half.
+	struct Kept {
+		sent: Arc<Mutex<Vec<Message>>>,
+		echo: Option<mpsc::UnboundedSender<Received>>,
+	}
+
+	impl Writer for Kept {
+		async fn send(&mut self, frame: Frame) -> Result<(), SocketError> {
+			match frame {
+				Frame::Text(text) => self.sent.lock().unwrap().push(serde_json::from_str(&text).unwrap()),
+				Frame::Ping(payload) => {
+					if let Some(echo) = &self.echo {
+						let _ = echo.send(Received::Pong(payload));
+					}
+				}
 			}
 			Ok(())
 		}
+	}
 
-		async fn receive(&mut self) -> Result<Received, SocketError> {
-			Ok(self.incoming.recv().await.unwrap_or(Received::Closed))
+	impl Halves for Fake {
+		type Reader = Fed;
+		type Writer = Kept;
+
+		fn halves(self) -> (Fed, Kept) {
+			(Fed(self.incoming), Kept { sent: self.sent, echo: self.echo })
 		}
 	}
 
@@ -669,24 +781,29 @@ mod tests {
 	/// a buffer nobody drains, as one does once the kernel's is full.
 	struct Stuck {
 		incoming: mpsc::UnboundedReceiver<Received>,
+	}
+
+	/// The writing half of `Stuck`.
+	struct Waiting {
 		written: usize,
 	}
 
-	impl Socket for Stuck {
-		async fn send_text(&mut self, _: String) -> Result<(), SocketError> {
+	impl Writer for Waiting {
+		async fn send(&mut self, _: Frame) -> Result<(), SocketError> {
 			self.written += 1;
 			if self.written > 1 {
 				std::future::pending::<()>().await;
 			}
 			Ok(())
 		}
+	}
 
-		async fn ping(&mut self, _: Bytes) -> Result<(), SocketError> {
-			std::future::pending().await
-		}
+	impl Halves for Stuck {
+		type Reader = Fed;
+		type Writer = Waiting;
 
-		async fn receive(&mut self) -> Result<Received, SocketError> {
-			Ok(self.incoming.recv().await.unwrap_or(Received::Closed))
+		fn halves(self) -> (Fed, Waiting) {
+			(Fed(self.incoming), Waiting { written: 0 })
 		}
 	}
 
@@ -703,7 +820,7 @@ mod tests {
 		};
 		feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 		let silence = Duration::from_millis(300);
-		let stuck = Heard::within(Stuck { incoming, written: 0 }, silence);
+		let stuck = Heard::within(Stuck { incoming }, silence);
 		let opened = Instant::now();
 		let conversing = tokio::spawn(converse(relay.clone(), Some("tyo"), stuck));
 		// This node's next snapshot, which the socket starts to write and never finishes.
@@ -712,9 +829,71 @@ mod tests {
 			.await
 			.expect("dropped, not left waiting on the write")
 			.unwrap();
-		assert!(matches!(ended, Err(MeshError::Socket(error)) if error.silent()));
+		// Whichever comes first: the reading silent, or the write waiting as long.
+		let given_up = |error: &SocketError| error.silent() || error.stalled();
+		assert!(matches!(ended, Err(MeshError::Socket(error)) if given_up(&error)));
 		assert!(opened.elapsed() >= silence);
 		drop(feed);
+	}
+
+	/// Smaller than one snapshot, so a write fills the other end's buffer long before it is read.
+	const NARROW: u32 = 4 * 1024;
+
+	/// Two ends of one socket on loopback, each with buffers of `NARROW`: the one dialed, and the one
+	/// accepted, which takes the listener's.
+	async fn narrow() -> (Dial, Dial) {
+		let narrowed = || {
+			let socket = tokio::net::TcpSocket::new_v4().unwrap();
+			socket.set_send_buffer_size(NARROW).unwrap();
+			socket.set_recv_buffer_size(NARROW).unwrap();
+			socket
+		};
+		let listening = narrowed();
+		listening.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+		let listener = listening.listen(1).unwrap();
+		let address = listener.local_addr().unwrap();
+		let (dialed, accepted) = tokio::join!(narrowed().connect(address), listener.accept());
+		let (dialed, (accepted, _)) = (dialed.unwrap(), accepted.unwrap());
+		let url = format!("ws://{address}{PATH}");
+		let (client, server) = tokio::join!(
+			tokio_tungstenite::client_async(url, MaybeTlsStream::Plain(dialed)),
+			tokio_tungstenite::accept_async(MaybeTlsStream::Plain(accepted)),
+		);
+		(client.unwrap().0, server.unwrap())
+	}
+
+	/// What jammed `sin` and `nrt` on 2026-10-14: both ends writing faster than the other reads, so
+	/// each waits on a write the other never reads, since it too is waiting on one. Each must still
+	/// read, and so each still hears the other's newest once the writing stops.
+	#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+	async fn two_ends_writing_faster_than_either_reads_keep_reading() {
+		let (here, there) = (relay("rdu"), relay("sin"));
+		let (dialed, accepted) = narrow().await;
+		let silence = Duration::from_secs(10);
+		let dialing = tokio::spawn(converse(here.clone(), Some("sin"), Heard::within(dialed, silence)));
+		let accepting = tokio::spawn(converse(there.clone(), None, Heard::within(accepted, silence)));
+
+		let snapshot = Arc::new(serde_json::json!({ "said": "x".repeat(1024 * 1024) }));
+		let mut last = 0;
+		let writing = Instant::now();
+		while writing.elapsed() < Duration::from_secs(1) {
+			last += 1;
+			here.take("rdu", Carried { version: last, snapshot: snapshot.clone() }, None);
+			there.take("sin", Carried { version: last, snapshot: snapshot.clone() }, None);
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+		let caught = async {
+			while here.versions().get("sin") != Some(&last) || there.versions().get("rdu") != Some(&last)
+			{
+				tokio::time::sleep(Duration::from_millis(50)).await;
+			}
+		};
+		let held = tokio::time::timeout(Duration::from_secs(20), caught).await;
+		let (finished, ended) = (dialing.is_finished(), accepting.is_finished());
+		dialing.abort();
+		accepting.abort();
+		assert!(held.is_ok(), "each holds the other's newest, {last}");
+		assert!(!finished && !ended, "both sockets still open");
 	}
 
 	#[test]

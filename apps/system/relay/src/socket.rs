@@ -1,11 +1,14 @@
 //! A WebSocket as the mesh and the browser use one, whichever end opened it: axum's for what this
 //! relay accepts, tungstenite's for what it dials. Either is held as `Heard`, which drops it once
-//! nothing has been heard on it for `SILENCE`.
+//! nothing has been heard on it for `SILENCE`. The mesh takes one apart into its `Halves`, so a
+//! write waiting on the other end never stops the reading that end is waiting on.
 
 use axum::extract::ws::{Message as Accepted, WebSocket};
 use bytes::Bytes;
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use std::future::Future;
+use std::os::fd::{AsFd, OwnedFd};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::Instant;
@@ -21,15 +24,24 @@ impl SocketError {
 	pub fn silent(&self) -> bool {
 		self.0.is::<Silent>()
 	}
+
+	/// Whether a write was given up for waiting too long, rather than failing.
+	pub fn stalled(&self) -> bool {
+		self.0.is::<Stalled>()
+	}
 }
 
 /// A socket that has carried nothing, not even a pong, for ninety seconds -- thirty pings to a
-/// neighbor, three heartbeats to a browser -- is gone.
+/// neighbor, three heartbeats to a browser -- is gone. A write that has waited as long is given up.
 pub const SILENCE: Duration = Duration::from_secs(90);
 
 #[derive(Debug, thiserror::Error)]
 #[error("nothing heard for {0:?}")]
 pub struct Silent(pub Duration);
+
+#[derive(Debug, thiserror::Error)]
+#[error("a write waited {0:?}")]
+pub struct Stalled(pub Duration);
 
 /// A frame, of what this relay reads: text, a pong, or the other end gone. Pings are answered
 /// beneath.
@@ -41,6 +53,14 @@ pub enum Received {
 	Closed,
 	/// A ping or binary: proof of life, and nothing more.
 	Other,
+}
+
+/// A frame, of what this relay writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Frame {
+	Text(String),
+	/// Carrying what the pong is to carry back.
+	Ping(Bytes),
 }
 
 pub trait Socket: Send {
@@ -55,23 +75,108 @@ pub trait Socket: Send {
 	}
 }
 
+/// The half of a socket that reads.
+pub trait Reader: Send {
+	/// Cancel-safe, so it can wait in a `select!` beside the updates.
+	fn receive(&mut self) -> impl Future<Output = Result<Received, SocketError>> + Send;
+
+	/// The kernel's round trip for the connection beneath, where it can be read; see `tcp`.
+	fn round_trip(&self) -> Option<Duration> {
+		None
+	}
+}
+
+/// The half of a socket that writes, in a task of its own.
+pub trait Writer: Send + 'static {
+	fn send(&mut self, frame: Frame) -> impl Future<Output = Result<(), SocketError>> + Send;
+}
+
+/// A socket taken apart, each half usable while the other waits.
+pub trait Halves: Send {
+	type Reader: Reader;
+	type Writer: Writer;
+
+	fn halves(self) -> (Self::Reader, Self::Writer);
+}
+
+fn failed(error: impl std::error::Error + Send + Sync + 'static) -> SocketError {
+	SocketError(Box::new(error))
+}
+
+fn accepted(next: Option<Result<Accepted, axum::Error>>) -> Result<Received, SocketError> {
+	Ok(match next {
+		None | Some(Ok(Accepted::Close(_))) => Received::Closed,
+		Some(Ok(Accepted::Text(text))) => Received::Text(text.as_str().to_owned()),
+		Some(Ok(Accepted::Pong(payload))) => Received::Pong(payload),
+		Some(Ok(_)) => Received::Other,
+		Some(Err(error)) => return Err(failed(error)),
+	})
+}
+
+fn dialed(
+	next: Option<Result<Dialed, tokio_tungstenite::tungstenite::Error>>,
+) -> Result<Received, SocketError> {
+	Ok(match next {
+		None | Some(Ok(Dialed::Close(_))) => Received::Closed,
+		Some(Ok(Dialed::Text(text))) => Received::Text(text.as_str().to_owned()),
+		Some(Ok(Dialed::Pong(payload))) => Received::Pong(payload),
+		Some(Ok(_)) => Received::Other,
+		Some(Err(error)) => return Err(failed(error)),
+	})
+}
+
+impl From<Frame> for Accepted {
+	fn from(frame: Frame) -> Self {
+		match frame {
+			Frame::Text(text) => Self::Text(text.into()),
+			Frame::Ping(payload) => Self::Ping(payload),
+		}
+	}
+}
+
+impl From<Frame> for Dialed {
+	fn from(frame: Frame) -> Self {
+		match frame {
+			Frame::Text(text) => Self::Text(text.into()),
+			Frame::Ping(payload) => Self::Ping(payload),
+		}
+	}
+}
+
 impl Socket for WebSocket {
 	async fn send_text(&mut self, text: String) -> Result<(), SocketError> {
-		self.send(Accepted::Text(text.into())).await.map_err(|error| SocketError(error.into()))
+		self.send(Frame::Text(text).into()).await.map_err(failed)
 	}
 
 	async fn ping(&mut self, payload: Bytes) -> Result<(), SocketError> {
-		self.send(Accepted::Ping(payload)).await.map_err(|error| SocketError(error.into()))
+		self.send(Frame::Ping(payload).into()).await.map_err(failed)
 	}
 
 	async fn receive(&mut self) -> Result<Received, SocketError> {
-		Ok(match self.recv().await {
-			None | Some(Ok(Accepted::Close(_))) => Received::Closed,
-			Some(Ok(Accepted::Text(text))) => Received::Text(text.as_str().to_owned()),
-			Some(Ok(Accepted::Pong(payload))) => Received::Pong(payload),
-			Some(Ok(_)) => Received::Other,
-			Some(Err(error)) => return Err(SocketError(error.into())),
-		})
+		accepted(self.recv().await)
+	}
+}
+
+impl Reader for SplitStream<WebSocket> {
+	async fn receive(&mut self) -> Result<Received, SocketError> {
+		accepted(self.next().await)
+	}
+}
+
+impl Writer for SplitSink<WebSocket, Accepted> {
+	async fn send(&mut self, frame: Frame) -> Result<(), SocketError> {
+		SinkExt::send(self, frame.into()).await.map_err(failed)
+	}
+}
+
+/// Axum hands over an accepted socket with its stream out of reach, so it has no round trip.
+impl Halves for WebSocket {
+	type Reader = SplitStream<WebSocket>;
+	type Writer = SplitSink<WebSocket, Accepted>;
+
+	fn halves(self) -> (Self::Reader, Self::Writer) {
+		let (writer, reader) = self.split();
+		(reader, writer)
 	}
 }
 
@@ -79,21 +184,15 @@ pub type Dial = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 impl Socket for Dial {
 	async fn send_text(&mut self, text: String) -> Result<(), SocketError> {
-		self.send(Dialed::Text(text.into())).await.map_err(|error| SocketError(error.into()))
+		self.send(Frame::Text(text).into()).await.map_err(failed)
 	}
 
 	async fn ping(&mut self, payload: Bytes) -> Result<(), SocketError> {
-		self.send(Dialed::Ping(payload)).await.map_err(|error| SocketError(error.into()))
+		self.send(Frame::Ping(payload).into()).await.map_err(failed)
 	}
 
 	async fn receive(&mut self) -> Result<Received, SocketError> {
-		Ok(match self.next().await {
-			None | Some(Ok(Dialed::Close(_))) => Received::Closed,
-			Some(Ok(Dialed::Text(text))) => Received::Text(text.as_str().to_owned()),
-			Some(Ok(Dialed::Pong(payload))) => Received::Pong(payload),
-			Some(Ok(_)) => Received::Other,
-			Some(Err(error)) => return Err(SocketError(error.into())),
-		})
+		dialed(self.next().await)
 	}
 
 	/// Read on the dialed socket alone: axum hands over an accepted one with its stream out of reach.
@@ -102,6 +201,43 @@ impl Socket for Dial {
 			MaybeTlsStream::Plain(stream) => crate::tcp::round_trip(stream),
 			_ => None,
 		}
+	}
+}
+
+/// The reading half of a dialed socket, with a handle of its own on the connection beneath to read
+/// the kernel's round trip from, closed with it.
+pub struct DialReader {
+	stream: SplitStream<Dial>,
+	connection: Option<OwnedFd>,
+}
+
+impl Reader for DialReader {
+	async fn receive(&mut self) -> Result<Received, SocketError> {
+		dialed(self.stream.next().await)
+	}
+
+	fn round_trip(&self) -> Option<Duration> {
+		self.connection.as_ref().and_then(crate::tcp::round_trip)
+	}
+}
+
+impl Writer for SplitSink<Dial, Dialed> {
+	async fn send(&mut self, frame: Frame) -> Result<(), SocketError> {
+		SinkExt::send(self, frame.into()).await.map_err(failed)
+	}
+}
+
+impl Halves for Dial {
+	type Reader = DialReader;
+	type Writer = SplitSink<Dial, Dialed>;
+
+	fn halves(self) -> (Self::Reader, Self::Writer) {
+		let connection = match self.get_ref() {
+			MaybeTlsStream::Plain(stream) => stream.as_fd().try_clone_to_owned().ok(),
+			_ => None,
+		};
+		let (writer, stream) = self.split();
+		(DialReader { stream, connection }, writer)
 	}
 }
 
@@ -115,7 +251,7 @@ pub struct Heard<S> {
 	heard: Instant,
 }
 
-impl<S: Socket> Heard<S> {
+impl<S> Heard<S> {
 	pub fn new(socket: S) -> Self {
 		Self::within(socket, SILENCE)
 	}
@@ -130,34 +266,71 @@ impl<S: Socket> Heard<S> {
 	}
 }
 
-/// `waiting`, or `Silent` once `deadline` passes.
-async fn by<T>(
+/// `waiting`, or `over` once `deadline` passes.
+async fn by<T, E: std::error::Error + Send + Sync + 'static>(
 	deadline: Instant,
-	silence: Duration,
+	over: E,
 	waiting: impl Future<Output = Result<T, SocketError>>,
 ) -> Result<T, SocketError> {
-	tokio::time::timeout_at(deadline, waiting)
-		.await
-		.unwrap_or_else(|_| Err(SocketError(Box::new(Silent(silence)))))
+	tokio::time::timeout_at(deadline, waiting).await.unwrap_or_else(|_| Err(failed(over)))
 }
 
 impl<S: Socket> Socket for Heard<S> {
 	async fn send_text(&mut self, text: String) -> Result<(), SocketError> {
-		by(self.deadline(), self.silence, self.socket.send_text(text)).await
+		by(self.deadline(), Silent(self.silence), self.socket.send_text(text)).await
 	}
 
 	async fn ping(&mut self, payload: Bytes) -> Result<(), SocketError> {
-		by(self.deadline(), self.silence, self.socket.ping(payload)).await
+		by(self.deadline(), Silent(self.silence), self.socket.ping(payload)).await
 	}
 
 	async fn receive(&mut self) -> Result<Received, SocketError> {
-		let received = by(self.deadline(), self.silence, self.socket.receive()).await?;
+		let received = by(self.deadline(), Silent(self.silence), self.socket.receive()).await?;
 		self.heard = Instant::now();
 		Ok(received)
 	}
 
 	fn round_trip(&self) -> Option<Duration> {
 		self.socket.round_trip()
+	}
+}
+
+/// Taken apart, the reading ends once nothing has been heard for the silence, and so does the
+/// conversation; a write still waiting then goes with it. A write that has waited the silence while
+/// the other end is still heard is given up on its own.
+impl<S: Halves> Halves for Heard<S> {
+	type Reader = Heard<S::Reader>;
+	type Writer = Bounded<S::Writer>;
+
+	fn halves(self) -> (Self::Reader, Self::Writer) {
+		let (reader, writer) = self.socket.halves();
+		let reader = Heard { socket: reader, silence: self.silence, heard: self.heard };
+		(reader, Bounded { writer, patience: self.silence })
+	}
+}
+
+impl<R: Reader> Reader for Heard<R> {
+	async fn receive(&mut self) -> Result<Received, SocketError> {
+		let received = by(self.deadline(), Silent(self.silence), self.socket.receive()).await?;
+		self.heard = Instant::now();
+		Ok(received)
+	}
+
+	fn round_trip(&self) -> Option<Duration> {
+		self.socket.round_trip()
+	}
+}
+
+/// A writer whose every write is given up once it has waited `patience`.
+pub struct Bounded<W> {
+	writer: W,
+	patience: Duration,
+}
+
+impl<W: Writer> Writer for Bounded<W> {
+	async fn send(&mut self, frame: Frame) -> Result<(), SocketError> {
+		let deadline = Instant::now() + self.patience;
+		by(deadline, Stalled(self.patience), self.writer.send(frame)).await
 	}
 }
 

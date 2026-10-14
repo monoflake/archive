@@ -54,10 +54,15 @@ relay runs and kept on its disk -- [registry.md](registry.md), "Every relay foll
 `RELAY_PEERS`, `name=address:port` by tailnet address, the seed a relay starts from; a relay skips
 its own, and refuses a neighbor it holds as retired. Each stream's first message
 carries the contract's version, and a neighbor speaking another is dropped. Both ends ping every
-three seconds -- the round trip below -- and drop a socket on which nothing has been heard for
-ninety seconds, a write still waiting on it included: a neighbor gone without closing stops taking
-what is written, and TCP alone would hold that write for a quarter of an hour, as it did on `nrt`
-and `hnd` on 2026-10-13. A dropped socket is redialed from one second, doubling to a minute. A
+three seconds -- the round trip below. **Each socket is read by its conversation and written by a
+task of its own**, from a queue of 64 frames, so a write waiting on a neighbor never stops the
+reading that the neighbor, waiting on its own write, needs: two ends each waiting on a write the
+other never read jammed until the drop, on `sin` and `nrt` on 2026-10-14 -- RFC grmtb. A frame
+that finds the queue full is dropped, never waited for, and the next comparison sends what it
+lacks. A socket on which nothing has been heard for ninety seconds is dropped, and a write that has
+waited ninety seconds is given up: a neighbor gone without closing stops taking what is written,
+and TCP alone would hold that write for a quarter of an hour, as it did on `nrt` and `hnd` on
+2026-10-13. A dropped socket is redialed from one second, doubling to a minute. A
 browser's socket is pinged every thirty and dropped by the same ninety.
 
 **A browser opens `/live` on `relay.canmi.app`**, behind Access, and is sent the whole cluster, then
