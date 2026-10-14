@@ -37,7 +37,8 @@ export default defineConfig({
 				test: {
 					name: 'node',
 					include: ['{apps,libs}/**/*.test.ts', '.mise/tasks/*.test.ts'],
-					exclude: ['**/node_modules/**', '**/*.svelte.test.ts'],
+					// The executor's end-to-end tests need a ledger; they run by its own `pnpm run e2e`.
+					exclude: ['**/node_modules/**', '**/*.svelte.test.ts', '**/*.e2e.test.ts'],
 				},
 			},
 		],

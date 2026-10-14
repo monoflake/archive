@@ -54,6 +54,11 @@ rollback handler and a delay given as a function are refused, since the ledger k
   above it is held to it, and Workflows' default of 10 minutes reads as 5. A callback past its
   timeout is a failed attempt, and a `NonRetryableError` is reported `fatal`. Work longer than that
   starts asynchronously and is waited for with `step.waitForEvent`.
+- **A turn may go 5 minutes without a step asking the ledger.** Code outside a callback that awaits
+  past that -- a fetch never answered, a promise never settled -- is a stall: the driver terminates
+  the thread and tells the ledger, which fails the run `turn_stalled` once three of its last five
+  turns have stalled, and otherwise leaves it to the next turn. A turn ended by a node lost or
+  stopped is not a stall. RFC 23wgz.
 - **A turn's heap is at most 128 MB**, l4s6a's limit for an isolate.
 - **A lease lasts 30 seconds and is renewed every 10**, by the driver, for as long as its turn runs.
 

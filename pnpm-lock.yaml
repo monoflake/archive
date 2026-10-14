@@ -205,6 +205,9 @@ importers:
       '@monoflake/sdk':
         specifier: workspace:*
         version: link:../../../libs/sdk
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
 
   apps/delivery/aka:
     dependencies:
@@ -2251,6 +2254,10 @@ packages:
     resolution: {integrity: sha512-RRuzqDtt5Y9h3quz5hWhK+TPnsmVs6WwSU6LkJMeY4HstUEDuYTG8UJSdawMRzmzAtV+KEoG8N3Qg2qLy5vM/A==}
     engines: {node: ^10 || ^12 || >=14}
 
+  postgres@3.4.9:
+    resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
+    engines: {node: '>=12'}
+
   quansync@1.0.0:
     resolution: {integrity: sha512-5xZacEEufv3HSTPQuchrvV6soaiACMFnq1H8wkVioctoH3TRha9Sz66lOxRwPK/qZj7HPiSveih9yAyh98gvqA==}
 
@@ -3765,6 +3772,8 @@ snapshots:
       nanoid: 3.3.19
       picocolors: 1.1.1
       source-map-js: 1.2.2
+
+  postgres@3.4.9: {}
 
   quansync@1.0.0: {}
 
