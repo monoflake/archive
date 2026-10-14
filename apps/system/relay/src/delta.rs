@@ -85,9 +85,9 @@ pub fn diff(base: &Value, next: &Value) -> Changes {
 fn rows(base: Option<&Value>, next: &Value) -> Option<Rows> {
 	let (base, next) = (base?.as_array()?, next.as_array()?);
 	let (before, after) = (names(base)?, names(next)?);
-	let mut rows = Rows::default();
-	rows.unset =
+	let unset =
 		before.iter().filter(|old| !after.contains(old)).map(|old| (*old).to_owned()).collect();
+	let mut rows = Rows { unset, ..Rows::default() };
 	for row in next {
 		let held = base.iter().find(|old| name(old) == name(row));
 		if held != Some(row) {

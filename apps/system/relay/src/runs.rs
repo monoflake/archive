@@ -443,7 +443,7 @@ impl Mirror {
 			.filter_map(|((node, _), row)| {
 				let started = started(&row.event).filter(|started| *started >= kept)?;
 				let shown = started >= from || row.event.outcome == "running";
-				shown.then(|| (started, Shown { node, event: row.event }))
+				shown.then_some((started, Shown { node, event: row.event }))
 			})
 			.collect();
 		listed.sort_by(|(a, x), (b, y)| (b, y.event.id, &y.node).cmp(&(a, x.event.id, &x.node)));
