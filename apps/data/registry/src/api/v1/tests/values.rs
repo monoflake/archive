@@ -40,7 +40,7 @@ async fn a_value_is_kept_and_answered_and_the_secret_service_asked_nothing() {
 	};
 	let identities = json!([
 		{ "kind": "email", "value": VALUE },
-		{ "kind": "tenancy", "value": "ocid1.tenancy.oc1..example" },
+		{ "kind": "account_id", "value": "ocid1.tenancy.oc1..example" },
 	]);
 	let (status, answer) = post(router.clone(), wanted(0, account(identities.clone()))).await;
 	assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
@@ -50,7 +50,7 @@ async fn a_value_is_kept_and_answered_and_the_secret_service_asked_nothing() {
 	assert!(secrets.lock().unwrap().asked.is_empty(), "{:?}", secrets.lock().unwrap().asked);
 
 	let at = held["data"]["revision"].as_i64().unwrap();
-	let one = json!([{ "kind": "user_id", "value": "ocid1.user.oc1..example" }]);
+	let one = json!([{ "kind": "username", "value": "ocid1.user.oc1..example" }]);
 	let (status, _) = patch(router.clone(), &path, wanted(at, json!({ "identities": one }))).await;
 	assert_eq!(status, StatusCode::ACCEPTED);
 	let (_, held) = ask(router, &path).await;

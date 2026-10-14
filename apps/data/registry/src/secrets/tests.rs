@@ -6,10 +6,10 @@ const VALUE: &str = "me@example.com";
 #[test]
 fn a_value_is_named_for_its_account_and_kind() {
 	assert_eq!(name_of("a3f8c91d7e42b650", "email"), "ACCOUNT_A3F8C91D7E42B650_EMAIL");
-	assert_eq!(name_of("a3f8c91d7e42b650", "user_id"), "ACCOUNT_A3F8C91D7E42B650_USER_ID");
+	assert_eq!(name_of("a3f8c91d7e42b650", "username"), "ACCOUNT_A3F8C91D7E42B650_USERNAME");
 	assert_eq!(
-		kept_as("a3f8c91d7e42b650", "tenancy"),
-		"accounts/registry/ACCOUNT_A3F8C91D7E42B650_TENANCY"
+		kept_as("a3f8c91d7e42b650", "account_id"),
+		"accounts/registry/ACCOUNT_A3F8C91D7E42B650_ACCOUNT_ID"
 	);
 }
 

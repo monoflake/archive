@@ -245,7 +245,8 @@ async fn put(
 		Ok(held) => held,
 		Err(refusal) => return *refusal,
 	};
-	match checked(&registry, kind, written.spec).await {
+	let own = matches!(Key::of(&held), Key::Id(_)).then_some(held.as_str());
+	match checked(&registry, kind, written.spec, own).await {
 		Ok(spec) => set(&registry, kind, targeted(&held), written.by, written.revision, spec).await,
 		Err(refusal) => *refusal,
 	}
@@ -263,7 +264,7 @@ async fn create(
 		Ok(written) => written,
 		Err(refusal) => return *refusal,
 	};
-	match checked(&registry, kind, written.spec).await {
+	match checked(&registry, kind, written.spec, None).await {
 		Ok(spec) => set(&registry, kind, Target::Unnamed, written.by, written.revision, spec).await,
 		Err(refusal) => *refusal,
 	}
@@ -287,7 +288,7 @@ async fn patch(
 		Ok(merged) => merged,
 		Err(refusal) => return *refusal,
 	};
-	match checked(&registry, kind, spec).await {
+	match checked(&registry, kind, spec, Some(&id)).await {
 		Ok(spec) => set(&registry, kind, Target::Held(&id), written.by, written.revision, spec).await,
 		Err(refusal) => *refusal,
 	}
@@ -328,11 +329,13 @@ async fn merged(
 	Ok((kept.id, Value::Object(spec)))
 }
 
-/// `spec` as its kind stores it, or why it is not stored.
+/// `spec` as its kind stores it, or why it is not stored. `own` is the id of the resource written,
+/// none for one being made, which an account's identities are not compared with.
 async fn checked(
 	registry: &Shared,
 	kind: Kind,
 	spec: Value,
+	own: Option<&str>,
 ) -> Result<Map<String, Value>, Refused> {
 	let spec = match kind {
 		Kind::Node => node::record(spec)
@@ -344,7 +347,33 @@ async fn checked(
 	if kind == Kind::Node {
 		referenced(registry, &spec).await?;
 	}
+	if kind == Kind::Account {
+		unique(registry, &spec, own).await?;
+	}
 	Ok(spec)
+}
+
+/// No other account at an account's provider holds one of its identities. Read outside the write's
+/// lock, as a `PATCH`'s merge is: only the author writes an account.
+async fn unique(
+	registry: &Shared,
+	spec: &Map<String, Value>,
+	own: Option<&str>,
+) -> Result<(), Refused> {
+	let accounts = match registry.store.resources(Kind::Account).await {
+		Ok(listed) => listed.items,
+		Err(error) => return Err(Box::new(store_unavailable(error))),
+	};
+	let others = accounts
+		.iter()
+		.filter(|other| Some(other.id.as_str()) != own)
+		.map(|other| (other.id.as_str(), &other.spec));
+	match account::clash(spec, others) {
+		Some(message) => {
+			Err(Box::new(response::failure_with(StatusCode::BAD_REQUEST, "invalid_resource", message)))
+		}
+		None => Ok(()),
+	}
 }
 
 /// A node's account is one the registry holds.

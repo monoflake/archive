@@ -90,12 +90,15 @@ references move to ids in a contract of their own.
   route to `PUT` a new one to, and a named kind answers that `POST` `405`, naming its `PUT`. Only the author writes one, through the API, never the
   import. Its `spec` is its `provider` as a whole word, `oracle`, `azure`, `racknerd`,
   `backblaze` or `cloudflare`, and `identities`, one to three, each exactly `{kind, value}` and each kind at most
-  once, so an account always keeps at least one way to be known: `kind` one of `user_id`, `tenancy`
-  and `email`, the three set for now and another discussed when they fall short; `value` the
+  once, so an account always keeps at least one way to be known: `kind` one of `account_id`, `username`
+  and `email`, **words no one provider owns** -- Oracle's tenancy is its `account_id`, Cloudflare's
+  account id is too -- so the model stays one while a provider's own label for a kind is the
+  console's to draw, later; decided with the author on 2026-10-14, replacing `tenancy` and
+  `user_id`, and another kind discussed when the three fall short; `value` the
   identity itself, kept here and answered, and `masked`, so it is drawn hidden until asked for --
   RFC cpc2b. Decided with the author on 2026-10-13: an identity is how the author finds their own
   account, so they read it back, and none of the three lets anyone act on the account. An identity
-  carrying any other key is refused. A node's `account` is of the catalog's `reference` type, naming
+  carrying any other key is refused. **No two accounts at one provider share an identity**: a write that would give an account the `{kind, value}` another at its provider holds -- an `email` compared without case, the rest exactly -- is refused `invalid_resource`, naming that account by its eight digits. The provider is what the author reads and may be corrected later; the id stays, and so does the failure domain. Decided with the author on 2026-10-14. A node's `account` is of the catalog's `reference` type, naming
   the kind it points to, and the catalog marks a kind with no name `named: false`.
 
 **A write carries the revision it read**, `{"by", "revision", "spec"}` with `revision` 0 for what

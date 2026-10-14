@@ -164,6 +164,34 @@ pub const MIGRATIONS: &[Migration] = &[
 			UPDATE accounts SET name = NULL, updated_at = now() WHERE name IS NOT NULL;
 		"#,
 	},
+	// An identity's kind is a word no one provider owns: `tenancy` is `account_id` and `user_id` is
+	// `username`, every value as it was. Each account changed is a change in the history as a write
+	// is, by `migration`. See spec/architecture/registry.md.
+	Migration {
+		version: 6,
+		name: "identity kinds no provider owns",
+		kind: Kind::Contract,
+		sql: r#"
+			CREATE FUNCTION registry_renamed(spec jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+				SELECT CASE WHEN jsonb_typeof(spec->'identities') = 'array' THEN jsonb_set(
+					spec,
+					'{identities}',
+					(SELECT coalesce(jsonb_agg(CASE identity->>'kind'
+						WHEN 'tenancy' THEN jsonb_set(identity, '{kind}', '"account_id"')
+						WHEN 'user_id' THEN jsonb_set(identity, '{kind}', '"username"')
+						ELSE identity
+					END ORDER BY place), '[]'::jsonb)
+					FROM jsonb_array_elements(spec->'identities') WITH ORDINALITY AS e(identity, place))
+				) ELSE spec END
+			$$;
+			INSERT INTO changes (kind, by, name, before, after, resource, task)
+				SELECT 'account', 'migration', name, spec, registry_renamed(spec), id, registry_id()
+				FROM accounts WHERE spec <> registry_renamed(spec) ORDER BY id;
+			UPDATE accounts SET spec = registry_renamed(spec), updated_at = now()
+				WHERE spec <> registry_renamed(spec);
+			DROP FUNCTION registry_renamed(jsonb);
+		"#,
+	},
 ];
 
 /// The advisory lock every registry takes before migrating: "registry" in ASCII.

@@ -42,7 +42,7 @@ const SECRET_VALUE = 'me-at-example-dot-com';
 const ACCOUNT_ID = 'a3f8c91d7e42b650';
 /** An account's identities as the registry keeps and answers them. */
 const IDENTITIES = [
-	{ kind: 'user_id', value: 'ocid1.user.oc1..example' },
+	{ kind: 'username', value: 'ocid1.user.oc1..example' },
 	{ kind: 'email', value: SECRET_VALUE },
 ];
 const NODE_ID = 'abd3922110a78032';
@@ -403,13 +403,13 @@ describe('writing', () => {
 
 describe('masked values', () => {
 	it('are given like any value, never asked for', async () => {
-		const items = ['--identity', `email,value=${SECRET_VALUE}`, '--identity', 'tenancy,value=t'];
+		const items = ['--identity', `email,value=${SECRET_VALUE}`, '--identity', 'account_id,value=t'];
 		const { out, failed } = await task('account', 'create', '--set', 'provider=azure', ...items);
 		expect(failed).toBeUndefined();
 		expect(asked).toEqual([]);
 		const sent = [
 			{ kind: 'email', value: SECRET_VALUE },
-			{ kind: 'tenancy', value: 't' },
+			{ kind: 'account_id', value: 't' },
 		];
 		const [made] = writes();
 		expect([made!.method, made!.path]).toEqual(['POST', '/v1/accounts']);
@@ -457,17 +457,17 @@ describe('secrets', () => {
 	beforeEach(() => {
 		state.catalog = WITH_A_SECRET;
 		state.held.accounts![ACCOUNT_ID]!.spec.identities = [
-			{ kind: 'user_id', secret: 'accounts/registry/ACCOUNT_00000000000000A1_USER_ID' },
+			{ kind: 'username', secret: 'accounts/registry/ACCOUNT_00000000000000A1_USERNAME' },
 			{ kind: 'email', secret: 'accounts/registry/ACCOUNT_00000000000000A1_EMAIL' },
 		];
 	});
 
 	it("types in an item's secret once per item, and sends it", async () => {
-		const items = ['--identity', 'email', '--identity', 'tenancy'];
+		const items = ['--identity', 'email', '--identity', 'account_id'];
 		const { out, failed } = await task('account', 'create', '--set', 'provider=azure', ...items);
 		expect(failed, out).toBeUndefined();
-		expect(asked).toEqual(['identity email: value: ', 'identity tenancy: value: ']);
-		const sent = ['email', 'tenancy'].map((kind) => ({ kind, value: SECRET_VALUE }));
+		expect(asked).toEqual(['identity email: value: ', 'identity account_id: value: ']);
+		const sent = ['email', 'account_id'].map((kind) => ({ kind, value: SECRET_VALUE }));
 		expect(writes()[0]!.body!.spec.identities).toEqual(sent);
 		expect(out).not.toContain(SECRET_VALUE);
 	});
@@ -476,8 +476,8 @@ describe('secrets', () => {
 		const { failed } = await task('account', 'patch', ACCOUNT_ID.slice(0, 8), '--identity', 'email');
 		expect(failed).toBeUndefined();
 		const identities = writes()[0]!.body!.spec.identities as Record<string, unknown>[];
-		expect(identities.map((one) => one.kind)).toEqual(['user_id', 'email']);
-		expect(identities[0]!.secret).toBe('accounts/registry/ACCOUNT_00000000000000A1_USER_ID');
+		expect(identities.map((one) => one.kind)).toEqual(['username', 'email']);
+		expect(identities[0]!.secret).toBe('accounts/registry/ACCOUNT_00000000000000A1_USERNAME');
 		expect(identities[1]).toEqual({ kind: 'email', value: SECRET_VALUE });
 	});
 

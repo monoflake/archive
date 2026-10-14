@@ -11,8 +11,9 @@ const FIELDS: &[&str] = &["provider", "identities"];
 /// Whose account it is, each by a whole word, never a short code.
 pub const PROVIDERS: &[&str] = &["oracle", "azure", "racknerd", "backblaze", "cloudflare"];
 
-/// What an identity is of: the provider's user id, its tenancy, the email it signs in with.
-pub const IDENTITIES: &[&str] = &["user_id", "tenancy", "email"];
+/// What an identity is of, in words no one provider owns: the account's id at its provider, the
+/// name its user signs in with, and its email.
+pub const IDENTITIES: &[&str] = &["account_id", "username", "email"];
 
 /// Every key an identity holds, each required.
 const IDENTITY: &[&str] = &["kind", "value"];
@@ -74,6 +75,38 @@ fn identity_refusal(identity: &Value) -> Option<Refusal> {
 	None
 }
 
+/// Why `spec` may not be stored, if it may not: an identity another account at its provider holds,
+/// of `others`, each by its id, the account written left out by its caller. An `email` is compared
+/// without case and every other kind exactly; the refusal names the other account by its first
+/// eight digits and the identity by its kind, never its value. See spec/architecture/registry.md.
+pub fn clash<'a>(
+	spec: &Map<String, Value>,
+	others: impl IntoIterator<Item = (&'a str, &'a Value)>,
+) -> Option<String> {
+	let provider = spec.get("provider")?;
+	let held = |spec: &Value| -> Vec<(String, String)> {
+		let identities = spec.get("identities").and_then(Value::as_array);
+		identities.into_iter().flatten().filter_map(compared).collect()
+	};
+	let wanted = held(&Value::Object(spec.clone()));
+	others.into_iter().filter(|(_, other)| other.get("provider") == Some(provider)).find_map(
+		|(id, other)| {
+			let theirs = held(other);
+			let (kind, _) = wanted.iter().find(|identity| theirs.contains(identity))?;
+			let short = id.get(..8).unwrap_or(id);
+			Some(format!("account {short} at this provider already holds this `{kind}`"))
+		},
+	)
+}
+
+/// An identity as it is compared: its kind, and its value, an email's in lower case.
+fn compared(identity: &Value) -> Option<(String, String)> {
+	let kind = identity.get("kind")?.as_str()?;
+	let value = identity.get("value")?.as_str()?;
+	let value = if kind == "email" { value.to_lowercase() } else { value.to_owned() };
+	Some((kind.to_owned(), value))
+}
+
 /// One line, not empty, no longer than an identity is.
 fn value_is_valid(value: &str) -> bool {
 	!value.is_empty() && value.len() <= MAX_VALUE_BYTES && !value.contains(['\n', '\r', '\0'])
@@ -89,7 +122,7 @@ mod tests {
 	}
 
 	fn oracle() -> Value {
-		json!({ "provider": "oracle", "identities": [identity("user_id"), identity("email")] })
+		json!({ "provider": "oracle", "identities": [identity("username"), identity("email")] })
 	}
 
 	/// An account at Oracle holding `identity` alone.
@@ -101,7 +134,7 @@ mod tests {
 	fn an_account_is_kept_whole_with_one_to_three_identities() {
 		assert_eq!(spec(oracle()).map(Value::Object), Ok(oracle()));
 		let every: Vec<Value> = IDENTITIES.iter().map(|kind| identity(kind)).collect();
-		for identities in [vec![identity("tenancy")], every] {
+		for identities in [vec![identity("account_id")], every] {
 			let given = json!({ "provider": "racknerd", "identities": identities });
 			assert!(spec(given.clone()).is_ok(), "{given}");
 		}
@@ -110,8 +143,8 @@ mod tests {
 	/// An account always keeps an identifier, and each of its kinds once.
 	#[test]
 	fn an_account_without_an_identity_or_with_a_kind_twice_is_refused() {
-		let twice = [identity("email"), identity("user_id"), identity("email")];
-		let four = [identity("email"), identity("user_id"), identity("tenancy"), identity("email")];
+		let twice = [identity("email"), identity("username"), identity("email")];
+		let four = [identity("email"), identity("username"), identity("account_id"), identity("email")];
 		for (given, rule) in [
 			(json!({ "provider": "azure" }), "required"),
 			(json!({ "provider": "azure", "identities": [] }), "one to three"),
@@ -168,6 +201,32 @@ mod tests {
 		for given in invalid {
 			assert!(matches!(spec(given.clone()), Err(Refusal::Invalid(_))), "{given}");
 		}
+	}
+
+	/// One identity per provider: an email across case, the rest exactly, and never the value said.
+	#[test]
+	fn an_identity_another_account_at_its_provider_holds_is_refused() {
+		let mine = |provider: &str, kind: &str, value: &str| json!({ "provider": provider, "identities": [{ "kind": kind, "value": value }] });
+		let other = mine("oracle", "email", "Me@Example.com");
+		let others = [("a3f8c91d7e42b650", &other)];
+		let spec = |value: Value| value.as_object().unwrap().clone();
+
+		let refused = clash(&spec(mine("oracle", "email", "me@example.COM")), others).unwrap();
+		assert_eq!(refused, "account a3f8c91d at this provider already holds this `email`");
+		assert!(!refused.to_lowercase().contains("me@example.com"), "{refused}");
+		assert_eq!(clash(&spec(mine("azure", "email", "me@example.com")), others), None);
+		assert_eq!(clash(&spec(mine("oracle", "email", "you@example.com")), others), None);
+
+		// An account's id and a username are compared exactly, case and all.
+		let held = mine("oracle", "account_id", "ocid1.tenancy.oc1..A");
+		let others = [("a3f8c91d7e42b650", &held)];
+		assert!(clash(&spec(mine("oracle", "account_id", "ocid1.tenancy.oc1..A")), others).is_some());
+		assert_eq!(clash(&spec(mine("oracle", "account_id", "ocid1.tenancy.oc1..a")), others), None);
+		assert_eq!(clash(&spec(mine("oracle", "username", "ocid1.tenancy.oc1..A")), others), None);
+		let held = mine("oracle", "username", "Alice");
+		let others = [("a3f8c91d7e42b650", &held)];
+		assert!(clash(&spec(mine("oracle", "username", "Alice")), others).is_some());
+		assert_eq!(clash(&spec(mine("oracle", "username", "alice")), others), None);
 	}
 
 	#[test]

@@ -126,7 +126,7 @@ async fn the_second_migration_keeps_every_change_as_a_node_s() {
 		.unwrap()
 		.get(0);
 
-	assert_eq!(store.migrate().await.unwrap(), [2, 3, 4, 5]);
+	assert_eq!(store.migrate().await.unwrap(), [2, 3, 4, 5, 6]);
 	let kind: String =
 		client.query_one("SELECT kind FROM changes WHERE id = $1", &[&id]).await.unwrap().get(0);
 	assert_eq!(kind, "node");
@@ -260,7 +260,7 @@ async fn the_third_migration_gives_every_resource_an_id_and_every_row_its_resour
 	)
 	.await;
 
-	assert_eq!(store.migrate().await.unwrap(), [3, 4, 5]);
+	assert_eq!(store.migrate().await.unwrap(), [3, 4, 5, 6]);
 	let id = |kind, name: &'static str| {
 		let store = &store;
 		async move { store.resource(kind, Key::Name(name)).await.unwrap().unwrap().id }
@@ -430,6 +430,66 @@ async fn an_account_is_made_unnamed_and_kept_by_its_id() {
 	assert!(rows.iter().all(|row| row.kind == "account" && row.name.is_none()), "{rows:?}");
 }
 
+/// What a release before the sixth migration left: an account whose identities are named by the
+/// kinds a provider owned. Each is renamed, its value as it was, as a change by `migration`.
+#[tokio::test]
+async fn the_sixth_migration_names_identities_by_kinds_no_provider_owns() {
+	let Some(store) = bare().await else { return };
+	let (mut client, connection) = store.config.connect(tokio_postgres::NoTls).await.unwrap();
+	tokio::spawn(connection);
+	let applied = migrations::apply(&mut client, &migrations::MIGRATIONS[..5]).await.unwrap();
+	assert_eq!(applied, [1, 2, 3, 4, 5]);
+	let before = json!({
+		"provider": "oracle",
+		"identities": [
+			{ "kind": "tenancy", "value": "ocid1.tenancy.oc1..example" },
+			{ "kind": "email", "value": "me@example.com" },
+			{ "kind": "user_id", "value": "Me" },
+		],
+	});
+	let untouched = json!({ "provider": "azure", "identities": [{ "kind": "email", "value": "x" }] });
+	client
+		.execute(
+			"INSERT INTO accounts (id, spec) VALUES ('15268cd1e92a305f', $1), ('00000000000000a2', $2)",
+			&[&before, &untouched],
+		)
+		.await
+		.unwrap();
+	client
+		.execute(
+			"INSERT INTO changes (kind, by, after, resource)
+			VALUES ('account', 'old', $1, '15268cd1e92a305f'), ('account', 'old', $2, '00000000000000a2')",
+			&[&before, &untouched],
+		)
+		.await
+		.unwrap();
+	let rows = history(&store).await.len();
+
+	assert_eq!(store.migrate().await.unwrap(), [6]);
+	let account = |id: &'static str| {
+		let store = &store;
+		async move { store.resource(Kind::Account, Key::Id(id)).await.unwrap().unwrap() }
+	};
+	let renamed = account("15268cd1e92a305f").await;
+	let after = json!({
+		"provider": "oracle",
+		"identities": [
+			{ "kind": "account_id", "value": "ocid1.tenancy.oc1..example" },
+			{ "kind": "email", "value": "me@example.com" },
+			{ "kind": "username", "value": "Me" },
+		],
+	});
+	assert_eq!(renamed.spec, after);
+	assert_eq!(account("00000000000000a2").await.spec, untouched);
+	let history = history(&store).await;
+	assert_eq!(history.len(), rows + 1, "one change, for the account renamed");
+	let change = &history[rows];
+	assert_eq!((change.kind.as_str(), change.by.as_str()), ("account", "migration"));
+	assert_eq!((&change.before, &change.after), (&Some(before), &Some(after)));
+	assert_eq!(renamed.revision, change.id);
+	assert!(store.migrate().await.unwrap().is_empty());
+}
+
 /// What a release before the fifth migration left: a domain, nodes naming it and an account by its
 /// code, and an account with a name. Each leaves as a change by `migration`.
 #[tokio::test]
@@ -460,7 +520,7 @@ async fn the_fifth_migration_leaves_accounts_unnamed_and_no_domain() {
 		.unwrap();
 	let before = history(&store).await.len();
 
-	assert_eq!(store.migrate().await.unwrap(), [5]);
+	assert_eq!(store.migrate().await.unwrap(), [5, 6]);
 	let node = |name: &'static str| {
 		let store = &store;
 		async move { store.resource(Kind::Node, Key::Name(name)).await.unwrap().unwrap() }

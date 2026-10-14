@@ -135,8 +135,8 @@
 						"name": "kind",
 						"type": "choice",
 						"choices": [
-							"user_id",
-							"tenancy",
+							"account_id",
+							"username",
 							"email"
 						],
 						"editable": true,

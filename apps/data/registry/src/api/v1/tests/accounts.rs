@@ -42,8 +42,10 @@ async fn an_account_is_made_by_post_and_read_and_written_by_its_id() {
 	let (_, listed) = ask(router.clone(), "/v1/accounts").await;
 	assert_eq!(listed["data"]["items"], json!([resource]));
 
-	// A second with the same spec is a second account: nothing tells two apart but their ids.
-	let other = made(&router, oracle()).await;
+	// A second at the same provider is a second account, its identities its own.
+	let mut second = oracle();
+	second["identities"] = json!([{ "kind": "email", "value": "you@example.com" }]);
+	let other = made(&router, second).await;
 	assert_ne!(other, id);
 
 	// A PATCH by id keeps what it does not name; a PUT by id sets the whole spec.
@@ -58,6 +60,49 @@ async fn an_account_is_made_by_post_and_read_and_written_by_its_id() {
 	assert_eq!(held["data"]["spec"], spec);
 	let (status, _) = put(router.clone(), &format!("/v1/accounts/{id}"), wanted(at, oracle())).await;
 	assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+/// No two accounts at one provider share an identity, an email compared without case: a `POST`,
+/// a `PUT` or a `PATCH` that would is refused, naming the other by its first eight digits and never
+/// the value; at another provider, or re-saved on the account that holds it, it is taken.
+#[tokio::test]
+async fn an_identity_is_held_by_one_account_at_its_provider() {
+	let Some(router) = reached().await else { return };
+	let first = made(&router, oracle()).await;
+	let short = &first[..8];
+	let shouting = json!([{ "kind": "email", "value": "ME@example.com" }]);
+	let mut duplicate = oracle();
+	duplicate["identities"] = shouting.clone();
+
+	let refused = post(router.clone(), "/v1/accounts", wanted(0, duplicate.clone())).await;
+	assert_eq!(code(&refused), (StatusCode::BAD_REQUEST, "invalid_resource"), "{refused:?}");
+	let message = refused.1["message"].as_str().unwrap();
+	assert!(message.contains(short) && message.contains("`email`"), "{message}");
+	assert!(!message.to_lowercase().contains("me@example.com"), "{message}");
+
+	// The same email at another provider is another account's to hold.
+	let mut azure = duplicate.clone();
+	azure["provider"] = json!("azure");
+	let second = made(&router, azure).await;
+	let path = format!("/v1/accounts/{second}");
+	let (_, held) = ask(router.clone(), &path).await;
+	let at = held["data"]["revision"].as_i64().unwrap();
+
+	// Moved to the first's provider, by a PATCH or a PUT, it would share the email.
+	let moved = patch(router.clone(), &path, wanted(at, json!({ "provider": "oracle" }))).await;
+	assert_eq!(code(&moved), (StatusCode::BAD_REQUEST, "invalid_resource"), "{moved:?}");
+	let replaced = put(router.clone(), &path, wanted(at, duplicate)).await;
+	assert_eq!(code(&replaced), (StatusCode::BAD_REQUEST, "invalid_resource"), "{replaced:?}");
+
+	// Re-saving an account's own identities clashes with nothing.
+	let own = format!("/v1/accounts/{first}");
+	let (_, held) = ask(router.clone(), &own).await;
+	let at = held["data"]["revision"].as_i64().unwrap();
+	let identities = json!({ "identities": oracle()["identities"].clone(), "provider": "oracle" });
+	let (status, body) = patch(router.clone(), &own, wanted(at, identities)).await;
+	assert_eq!(status, StatusCode::OK, "nothing changed, and nothing refused: {body}");
+	let (_, listed) = ask(router, "/v1/accounts").await;
+	assert_eq!(listed["data"]["items"].as_array().unwrap().len(), 2, "nothing refused was written");
 }
 
 /// A name is no way to an account: not in a route, not in a body, not in a list's query.

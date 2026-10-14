@@ -85,7 +85,7 @@ fn an_identity_s_fields_are_what_an_account_takes() {
 	assert_eq!(
 		answered["fields"],
 		json!([
-			{ "name": "kind", "type": "choice", "choices": ["user_id", "tenancy", "email"], "editable": true, "required": true },
+			{ "name": "kind", "type": "choice", "choices": ["account_id", "username", "email"], "editable": true, "required": true },
 			{ "name": "value", "type": "string", "masked": true, "editable": true, "required": true },
 		])
 	);
