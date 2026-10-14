@@ -180,7 +180,11 @@ dropped is restored to the moment before -- and losing every core at once.
 | 1 to 3 years   | the moment of each half year | one every six months                 |
 
 A base backup older than seven days is kept whole by keeping the WAL its own copying wrote, and
-nothing between it and the next; WAL-G marks the ones the tiers keep and deletes the rest. Every
+nothing between it and the next; WAL-G marks the ones the tiers keep and deletes the rest. **WAL-G's own deletes reach B2 as hide markers**,
+and the old copy each `backup-mark` overwrite leaves the same way: the bytes go with the bucket's
+lifecycle rule, a day later, not with the delete -- infra's `spec/architecture/host.md`, "A delete
+from the artifact bucket takes every version with it". Whether WAL-G's `S3_ENABLE_VERSIONING` closes
+it is RFC ujnb5, open. Every
 base backup is whole rather than a delta on the one before: the WAL is already the increment, a
 delta would make each restore a chain that one lost link breaks, and at a few gigabytes the
 difference in what is kept is cents a month. Deltas are weighed again when the compressed database

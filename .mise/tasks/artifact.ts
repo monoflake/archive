@@ -336,10 +336,16 @@ function refusal(answer: Answer): string {
 	return `${answer.status}${code ? ` ${code}` : ''}${message ? `: ${message}` : ''}`;
 }
 
-/** `send`, tried again on a network error, a 5xx or a 429; anything else not 2xx throws. */
-async function call(...args: Parameters<typeof send>): Promise<Answer> {
+/**
+ * `send`, tried again on a network error, a 5xx or a 429; anything else not 2xx throws, unless
+ * its status is one of `tolerated`, which is answered as it came.
+ */
+async function attempt(
+	tolerated: readonly number[],
+	...args: Parameters<typeof send>
+): Promise<Answer> {
 	const [, method, key] = args;
-	for (let attempt = 1; ; attempt++) {
+	for (let tried = 1; ; tried++) {
 		let answer: Answer | undefined;
 		let why = '';
 		try {
@@ -350,16 +356,22 @@ async function call(...args: Parameters<typeof send>): Promise<Answer> {
 		}
 		if (answer) {
 			if (answer.status >= 200 && answer.status < 300) return answer;
+			if (tolerated.includes(answer.status)) return answer;
 			why = refusal(answer);
 			if (answer.status < 500 && answer.status !== 429) {
 				throw new Error(`${method} ${key}: ${why}`);
 			}
 		}
-		if (attempt >= ATTEMPTS) throw new Error(`${method} ${key}: ${why}, ${ATTEMPTS} times`);
+		if (tried >= ATTEMPTS) throw new Error(`${method} ${key}: ${why}, ${ATTEMPTS} times`);
 		console.error(`artifact: ${method} ${key}: ${why}; trying again`);
 		// oxlint-disable-next-line no-await-in-loop -- the wait is the point
-		await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+		await new Promise((resolve) => setTimeout(resolve, 2000 * tried));
 	}
+}
+
+/** `send`, tried again on a network error, a 5xx or a 429; anything else not 2xx throws. */
+function call(...args: Parameters<typeof send>): Promise<Answer> {
+	return attempt([], ...args);
 }
 
 function unescape(text: string): string {
@@ -388,6 +400,70 @@ export async function list(bucket: Bucket, prefix: string): Promise<string[]> {
 		if (truncated && !token) throw new Error(`listing ${prefix}: truncated with no token`);
 	} while (token);
 	return keys;
+}
+
+/** The answers a store gives a request it does not implement, by status or by S3's code. */
+const UNIMPLEMENTED = [400, 405, 501];
+const UNIMPLEMENTED_CODES = new Set(['NotImplemented', 'MethodNotAllowed']);
+
+/** The ListObjectVersions marker naming the last entry of a page, the next page's start. */
+interface Marker {
+	key: string;
+	version: string;
+}
+
+/**
+ * The id of every version and delete marker of exactly `key`, across as many pages as
+ * ListObjectVersions gives -- a sibling it shares a prefix with is passed over. None where the
+ * store does not implement the listing, as a store that keeps no versions need not.
+ */
+export async function versions(bucket: Bucket, key: string): Promise<string[]> {
+	const ids: string[] = [];
+	let marker: Marker | undefined;
+	do {
+		const query: Record<string, string> = { versions: '', prefix: key };
+		if (marker) {
+			query['key-marker'] = marker.key;
+			query['version-id-marker'] = marker.version;
+		}
+		// oxlint-disable-next-line no-await-in-loop -- each page needs the last one's markers
+		const answer = await attempt(UNIMPLEMENTED, bucket, 'GET', '', query);
+		if (answer.status >= 300) {
+			const code = /<Code>([^<]*)<\/Code>/.exec(answer.body)?.[1] ?? '';
+			if (answer.status === 501 || UNIMPLEMENTED_CODES.has(code)) return [];
+			throw new Error(`listing the versions of ${key}: ${refusal(answer)}`);
+		}
+		const { body } = answer;
+		for (const entry of body.matchAll(/<(Version|DeleteMarker)>([\s\S]*?)<\/\1>/g)) {
+			const held = unescape(/<Key>([^<]*)<\/Key>/.exec(entry[2] ?? '')?.[1] ?? '');
+			const id = /<VersionId>([^<]*)<\/VersionId>/.exec(entry[2] ?? '')?.[1];
+			if (held === key && id) ids.push(unescape(id));
+		}
+		const truncated = /<IsTruncated>true<\/IsTruncated>/.test(body);
+		const next = /<NextKeyMarker>([^<]*)<\/NextKeyMarker>/.exec(body)?.[1];
+		const version = /<NextVersionIdMarker>([^<]*)<\/NextVersionIdMarker>/.exec(body)?.[1];
+		if (truncated && !next) {
+			throw new Error(`listing the versions of ${key}: truncated with no marker`);
+		}
+		marker = truncated
+			? { key: unescape(next ?? ''), version: unescape(version ?? '') }
+			: undefined;
+	} while (marker);
+	return ids;
+}
+
+/**
+ * Deletes `key` as a DELETE always has, then every version and delete marker of it the store still
+ * keeps, so the bytes go now. A store may keep versions with S3 Versioning off, answering a DELETE
+ * with a marker alone -- infra's spec/architecture/host.md, "The machine pulls; nothing pushes into
+ * it". A version already gone is not an error.
+ */
+export async function erase(bucket: Bucket, key: string): Promise<void> {
+	await call(bucket, 'DELETE', key, {});
+	for (const version of await versions(bucket, key)) {
+		// oxlint-disable-next-line no-await-in-loop -- one key's versions, in the order listed
+		await attempt([404], bucket, 'DELETE', key, { versionId: version });
+	}
 }
 
 /** An artifact's keys with its `.json` first, so a digest never outlives the zip it names. */
@@ -511,7 +587,7 @@ async function main(): Promise<void> {
 	const doomed = pruned(await list(bucket, prefix), prefix, name);
 	for (const gone of doomed) {
 		// oxlint-disable-next-line no-await-in-loop -- a digest is deleted before the zip it names
-		await call(bucket, 'DELETE', gone, {});
+		await erase(bucket, gone);
 		console.log(`artifact: deleted ${gone}`);
 	}
 	if (!doomed.length) console.log(`artifact: nothing under ${prefix} to prune`);

@@ -51,7 +51,10 @@ entrance and never a store behind it.
 versioning, lifecycle rules, replication of its own -- is left off, versioning above all: the
 platform keeps its own history, in records and in bytes not yet reclaimed, and a provider's versions
 of the same thing would be a second copy of it, billed by the byte and never read. Backblaze B2's is
-turned off on every bucket held there; R2 has none to turn off.
+turned off on every bucket held there, and still keeps versions underneath: a delete there is a
+hide marker until every version is deleted by id, as infra's `spec/architecture/host.md` says of the
+artifact bucket, and an overwrite keeps the old bytes the same way until the lifecycle rule removes
+them; R2 has none to turn off.
 
 **An object is kept at `{scope}/{ab}/{cd}/{cid}`, with no extension**, and is never overwritten,
 since its key is its content. What type it is belongs to the reference that names it: the same bytes

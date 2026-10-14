@@ -1,10 +1,22 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 
-import { address, authorization, configured, digest, files, pruned, zip } from './artifact.ts';
+import {
+	address,
+	authorization,
+	configured,
+	digest,
+	erase,
+	files,
+	pruned,
+	versions,
+	zip,
+} from './artifact.ts';
 import type { Bucket } from './artifact.ts';
 
 const scratch: string[] = [];
@@ -193,5 +205,174 @@ describe('zipping', () => {
 			expect(listed).not.toMatch(store ? /deflated/ : /none \(stored\)/);
 			expect(digest(out).size).toBeGreaterThan(0);
 		}
+	});
+});
+
+interface Asked {
+	method: string;
+	path: string;
+	query: Record<string, string>;
+}
+
+/** A fake S3 on a free port, answering each request with `answer` and recording every one. */
+async function store(
+	answer: (asked: Asked) => { status: number; body?: string },
+): Promise<{ bucket: Bucket; asked: Asked[]; close: () => Promise<void> }> {
+	const asked: Asked[] = [];
+	const server = createServer((request, response) => {
+		const url = new URL(request.url ?? '/', 'http://localhost');
+		const one = {
+			method: request.method ?? '',
+			path: url.pathname,
+			query: Object.fromEntries(url.searchParams),
+		};
+		asked.push(one);
+		const { status, body = '' } = answer(one);
+		response.writeHead(status, { 'content-type': 'application/xml' }).end(body);
+	});
+	await new Promise<void>((resolve) => server.listen(0, resolve));
+	const { port } = server.address() as AddressInfo;
+	return {
+		bucket: { ...BUCKET, endpoint: new URL(`http://localhost:${port}`) },
+		asked,
+		close: () => new Promise((resolve) => server.close(() => resolve())),
+	};
+}
+
+/** A ListObjectVersions page holding `entries`, as `[element, key, versionId]`. */
+function page(entries: [string, string, string][], next?: [string, string]): string {
+	const listed = entries
+		.map(
+			([element, key, id]) =>
+				`<${element}><Key>${key}</Key><VersionId>${id}</VersionId></${element}>`,
+		)
+		.join('');
+	const more = next
+		? `<IsTruncated>true</IsTruncated><NextKeyMarker>${next[0]}</NextKeyMarker>` +
+			`<NextVersionIdMarker>${next[1]}</NextVersionIdMarker>`
+		: '<IsTruncated>false</IsTruncated>';
+	return `<?xml version="1.0" encoding="UTF-8"?><ListVersionsResult>${more}${listed}</ListVersionsResult>`;
+}
+
+/** What `asked` deleted, as `key` or `key@version`. */
+function deleted(asked: Asked[]): string[] {
+	return asked
+		.filter((one) => one.method === 'DELETE')
+		.map((one) => {
+			const key = one.path.replace('/builds/', '');
+			return one.query.versionId ? `${key}@${one.query.versionId}` : key;
+		});
+}
+
+describe('erasing', () => {
+	const closing: (() => Promise<void>)[] = [];
+	afterEach(async () => {
+		await Promise.all(closing.splice(0).map((close) => close()));
+	});
+
+	test('deletes the key, then finds no version left of it', async () => {
+		const fake = await store((one) => ({
+			status: one.method === 'DELETE' ? 204 : 200,
+			body: page([]),
+		}));
+		closing.push(fake.close);
+		await erase(fake.bucket, 'o/r/1/deploy-a.zip');
+		expect(fake.asked).toEqual([
+			{ method: 'DELETE', path: '/builds/o/r/1/deploy-a.zip', query: {} },
+			{ method: 'GET', path: '/builds', query: { versions: '', prefix: 'o/r/1/deploy-a.zip' } },
+		]);
+	});
+
+	test('deletes every version and the marker the DELETE left', async () => {
+		const key = 'o/r/1/deploy-a.zip';
+		const fake = await store((one) =>
+			one.method === 'DELETE'
+				? { status: 204 }
+				: {
+						status: 200,
+						body: page([
+							['DeleteMarker', key, 'hide'],
+							['Version', key, 'v2'],
+							['Version', key, 'v1'],
+						]),
+					},
+		);
+		closing.push(fake.close);
+		await erase(fake.bucket, key);
+		expect(deleted(fake.asked)).toEqual([key, `${key}@hide`, `${key}@v2`, `${key}@v1`]);
+	});
+
+	test('follows a truncated listing by its key and version markers', async () => {
+		const key = 'o/r/1/deploy-a.zip';
+		const fake = await store((one) => {
+			if (one.method === 'DELETE') return { status: 204 };
+			if (!one.query['key-marker']) {
+				return {
+					status: 200,
+					body: page(
+						[
+							['DeleteMarker', key, 'hide'],
+							['Version', key, 'v3'],
+						],
+						[key, 'v3'],
+					),
+				};
+			}
+			return {
+				status: 200,
+				body: page([
+					['Version', key, 'v2'],
+					['Version', key, 'v1'],
+				]),
+			};
+		});
+		closing.push(fake.close);
+		expect(await versions(fake.bucket, key)).toEqual(['hide', 'v3', 'v2', 'v1']);
+		expect(fake.asked[1]?.query).toEqual({
+			versions: '',
+			prefix: key,
+			'key-marker': key,
+			'version-id-marker': 'v3',
+		});
+	});
+
+	test('takes a store that does not list versions as keeping none', async () => {
+		const fake = await store((one) =>
+			one.method === 'DELETE'
+				? { status: 204 }
+				: { status: 501, body: '<Error><Code>NotImplemented</Code></Error>' },
+		);
+		closing.push(fake.close);
+		await erase(fake.bucket, 'o/r/1/deploy-a.zip');
+		// Answered once, never tried again as a 5xx would be.
+		expect(fake.asked.map((one) => one.method)).toEqual(['DELETE', 'GET']);
+	});
+
+	test('never touches a sibling the key is a prefix of', async () => {
+		const fake = await store((one) =>
+			one.method === 'DELETE'
+				? { status: 204 }
+				: {
+						status: 200,
+						body: page([
+							['Version', 'a/b', 'mine'],
+							['DeleteMarker', 'a/bc', 'theirs'],
+							['Version', 'a/bc', 'theirs-too'],
+						]),
+					},
+		);
+		closing.push(fake.close);
+		await erase(fake.bucket, 'a/b');
+		expect(deleted(fake.asked)).toEqual(['a/b', 'a/b@mine']);
+	});
+
+	test('refuses a listing that fails for any other reason', async () => {
+		const fake = await store((one) =>
+			one.method === 'DELETE'
+				? { status: 204 }
+				: { status: 403, body: '<Error><Code>AccessDenied</Code></Error>' },
+		);
+		closing.push(fake.close);
+		await expect(erase(fake.bucket, 'a/b')).rejects.toThrow('403 AccessDenied');
 	});
 });
