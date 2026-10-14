@@ -512,5 +512,16 @@ export function gateway(scopes: Readonly<Record<string, Scope>> = SCOPES) {
 		return answered(answer);
 	});
 
+	/**
+	 * What the gateway itself threw is the envelope and is never stored: Hono's own answer is
+	 * `text/plain`, and a fault of this moment kept for the route's `faulted` lifetime would turn a
+	 * blip into an outage. A binding to a Worker that is not running throws on being looked at, as
+	 * @monoflake/sdk/limits says of `QUOTA`. As the site's API does, apps/site/api/src/app.ts in web.
+	 */
+	app.onError((error) => {
+		console.error(error);
+		return failure(500, 'service_unavailable');
+	});
+
 	return app;
 }

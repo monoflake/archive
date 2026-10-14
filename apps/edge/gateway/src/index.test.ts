@@ -203,6 +203,23 @@ describe('the gateway', () => {
 		expect(passed.status).toBe(503);
 	});
 
+	it('answers what it threw itself in the envelope, uncached', async () => {
+		const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+		// A binding to a Worker that is not running throws on being looked at.
+		const env = {
+			get SITE(): Fetcher {
+				throw new Error('the Worker is not running');
+			},
+		} as Env;
+		const answer = await ask('/v1/site/x', env);
+		expect(answer.status).toBe(500);
+		expect(answer.headers.get('content-type')).toMatch(/^application\/json/);
+		expect(answer.headers.get('cache-control')).toBe('no-store');
+		expect(await answer.json()).toMatchObject({ status: 'error', code: 'service_unavailable' });
+		expect(logged).toHaveBeenCalledOnce();
+		logged.mockRestore();
+	});
+
 	it('hands a Workers scope its request with the scope taken off', async () => {
 		const { fetcher, seen } = binding();
 		const answer = await ask(
