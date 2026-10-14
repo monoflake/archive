@@ -8,11 +8,16 @@ use crate::mesh::HEARTBEAT;
 use crate::presence::Entry;
 use crate::relay::{Change, Pulse, Relay, State};
 use crate::socket::{Heard, Received, Socket, SocketError};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use futures_util::{Stream, StreamExt};
 use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
 use url::Url;
@@ -111,6 +116,93 @@ fn entries(state: &State) -> BTreeMap<String, Value> {
 		.collect()
 }
 
+/// How often a browser's event stream says something when nothing else went out, so nothing on the
+/// way takes it for idle.
+pub const PING: Duration = Duration::from_secs(15);
+
+/// What a browser is sent, in order, whichever way it reads: the whole cluster first, then each
+/// node's changes -- its entry whole, or what changed of it to a reader that asked for `deltas` --
+/// each beat, and the fine readings of a node a page here watches.
+pub struct Feed {
+	relay: Arc<Relay>,
+	changes: broadcast::Receiver<Change>,
+	pulses: broadcast::Receiver<Pulse>,
+	deltas: bool,
+	/// What this reader holds of each node, for the next delta to be taken from.
+	sent: BTreeMap<String, Value>,
+}
+
+impl Feed {
+	/// A feed and the whole cluster it opens with, subscribed before the cluster is read so nothing
+	/// taken meanwhile is missed.
+	pub fn open(relay: Arc<Relay>, deltas: bool) -> (Self, Live) {
+		let (changes, pulses) = (relay.subscribe_changes(), relay.subscribe_pulses());
+		let state = relay.state();
+		let sent = if deltas { entries(&state) } else { BTreeMap::new() };
+		(Self { relay, changes, pulses, deltas, sent }, Live::Cluster(state))
+	}
+
+	/// The next message, or none once the relay stops. Cancel-safe, so it can wait in a `select!`.
+	pub async fn next(&mut self) -> Option<Live> {
+		loop {
+			tokio::select! {
+				change = self.changes.recv() => match change {
+					Ok(Change { node, entry }) => {
+						if let Some(live) = self.changed(node, entry) {
+							return Some(live);
+						}
+					}
+					Err(RecvError::Lagged(_)) => {
+						let state = self.relay.state();
+						if self.deltas {
+							self.sent = entries(&state);
+						}
+						return Some(Live::Cluster(state));
+					}
+					Err(RecvError::Closed) => return None,
+				},
+				pulse = self.pulses.recv() => match pulse {
+					Ok(Pulse::Beat { node, heard_at }) => return Some(Live::Beat { node, heard_at }),
+					Ok(Pulse::Readings { node, sample }) => return Some(Live::Readings { node, sample }),
+					// The next beat and the next readings say the same, newer.
+					Err(RecvError::Lagged(_)) => {}
+					Err(RecvError::Closed) => return None,
+				},
+			}
+		}
+	}
+
+	/// A node's new entry as this reader is sent it, or none where nothing in it changed.
+	fn changed(&mut self, node: String, entry: Entry) -> Option<Live> {
+		let after = self.deltas.then(|| serde_json::to_value(&entry).ok()).flatten();
+		let Some(after) = after else {
+			return Some(Live::Node { node, state: entry });
+		};
+		let live = match self.sent.get(&node) {
+			Some(before) => entry_delta(&node, before, &after),
+			None => Some(Live::Node { node: node.clone(), state: entry }),
+		};
+		self.sent.insert(node, after);
+		live
+	}
+}
+
+/// A browser's event stream: what a `Feed` says, a `data:` line each, and `: ping` every `PING`
+/// when nothing else went out. It ends when the browser goes; a new one starts whole.
+pub fn stream(
+	relay: Arc<Relay>,
+	deltas: bool,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+	let (feed, cluster) = Feed::open(relay, deltas);
+	let event = |live: Live| Ok(Event::default().data(text(&live)));
+	let rest = futures_util::stream::unfold(feed, move |mut feed| async move {
+		let live = feed.next().await?;
+		Some((event(live), feed))
+	});
+	let events = futures_util::stream::once(async move { event(cluster) }).chain(rest);
+	Sse::new(events).keep_alive(KeepAlive::new().interval(PING).text("ping"))
+}
+
 /// Until the browser closes or falls silent; a browser gone quiet is no failure. A socket that
 /// asked for `deltas` is sent each node's changes rather than its entry whole, after the cluster.
 pub async fn watch<S: Socket>(
@@ -129,12 +221,8 @@ async fn watching<S: Socket>(
 	mut socket: Heard<S>,
 	deltas: bool,
 ) -> Result<(), SocketError> {
-	let mut changes = relay.subscribe_changes();
-	let mut pulses = relay.subscribe_pulses();
-	let state = relay.state();
-	// What this socket holds of each node, for the next delta to be taken from.
-	let mut sent = if deltas { entries(&state) } else { BTreeMap::new() };
-	send(&mut socket, &Live::Cluster(state)).await?;
+	let (mut feed, cluster) = Feed::open(relay, deltas);
+	send(&mut socket, &cluster).await?;
 	let mut heartbeat = tokio::time::interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
 	loop {
 		tokio::select! {
@@ -143,42 +231,9 @@ async fn watching<S: Socket>(
 					return Ok(());
 				}
 			}
-			change = changes.recv() => match change {
-				Ok(Change { node, entry }) => {
-					let after = deltas.then(|| serde_json::to_value(&entry).ok()).flatten();
-					match after {
-						Some(after) => {
-							let delta = match sent.get(&node) {
-								Some(before) => entry_delta(&node, before, &after),
-								None => Some(Live::Node { node: node.clone(), state: entry }),
-							};
-							sent.insert(node, after);
-							if let Some(delta) = delta {
-								send(&mut socket, &delta).await?;
-							}
-						}
-						None => send(&mut socket, &Live::Node { node, state: entry }).await?,
-					}
-				}
-				Err(RecvError::Lagged(_)) => {
-					let state = relay.state();
-					if deltas {
-						sent = entries(&state);
-					}
-					send(&mut socket, &Live::Cluster(state)).await?;
-				}
-				Err(RecvError::Closed) => return Ok(()),
-			},
-			pulse = pulses.recv() => match pulse {
-				Ok(Pulse::Beat { node, heard_at }) => {
-					send(&mut socket, &Live::Beat { node, heard_at }).await?;
-				}
-				Ok(Pulse::Readings { node, sample }) => {
-					send(&mut socket, &Live::Readings { node, sample }).await?;
-				}
-				// The next beat and the next readings say the same, newer.
-				Err(RecvError::Lagged(_)) => {}
-				Err(RecvError::Closed) => return Ok(()),
+			live = feed.next() => match live {
+				Some(live) => send(&mut socket, &live).await?,
+				None => return Ok(()),
 			},
 			_ = heartbeat.tick() => {
 				socket.ping(bytes::Bytes::new()).await?;
@@ -187,8 +242,12 @@ async fn watching<S: Socket>(
 	}
 }
 
+fn text(live: &Live) -> String {
+	serde_json::to_string(live).expect("a message is a tree of strings")
+}
+
 async fn send<S: Socket>(socket: &mut S, live: &Live) -> Result<(), SocketError> {
-	socket.send_text(serde_json::to_string(live).expect("a message is a tree of strings")).await
+	socket.send_text(text(live)).await
 }
 
 #[cfg(test)]

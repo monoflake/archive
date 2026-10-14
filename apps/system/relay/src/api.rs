@@ -10,9 +10,9 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::{Query, State};
-use axum::http::header::ORIGIN;
+use axum::http::header::{ACCEPT, ORIGIN};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -113,6 +113,14 @@ async fn history(
 	}
 }
 
+/// Whether a request that is no upgrade asks for an event stream.
+fn streams(headers: &HeaderMap) -> bool {
+	headers
+		.get(ACCEPT)
+		.and_then(|accept| accept.to_str().ok())
+		.is_some_and(|accept| accept.contains("text/event-stream"))
+}
+
 /// `/live`'s query: whether the socket is sent each node's changes rather than its entry whole.
 #[derive(Deserialize)]
 struct Streamed {
@@ -161,6 +169,10 @@ async fn watched(
 		return response::failure(StatusCode::FORBIDDEN, "invalid_address");
 	}
 	let Ok(upgrade) = upgrade else {
+		// An event stream where the reader asks for one, as the console does since RFC grmtb.
+		if streams(&headers) {
+			return live::stream(relay, deltas).into_response();
+		}
 		return response::failure(StatusCode::UPGRADE_REQUIRED, "invalid_method");
 	};
 	upgrade.on_upgrade(move |socket| async move {

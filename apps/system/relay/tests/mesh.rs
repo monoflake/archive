@@ -331,6 +331,69 @@ async fn a_page_watching_another_node_is_sent_its_fine_readings() {
 	assert!(tyo.relay.leased_to("rdu"));
 }
 
+/// An event stream as a browser reads it: each `data:` line, as it arrives.
+struct Events {
+	body: Incoming,
+	held: String,
+}
+
+impl Events {
+	async fn open(address: SocketAddr, query: &str) -> (hyper::http::HeaderMap, Self) {
+		let client: Client<HttpConnector, Empty<Bytes>> =
+			Client::builder(TokioExecutor::new()).build(HttpConnector::new());
+		let request = hyper::Request::get(format!("http://{address}/live{query}"))
+			.header("accept", "text/event-stream")
+			.body(Empty::new())
+			.unwrap();
+		let answer = client.request(request).await.unwrap();
+		let headers = answer.headers().clone();
+		(headers, Self { body: answer.into_body(), held: String::new() })
+	}
+
+	/// The next event's data, read as it arrives.
+	async fn next(&mut self) -> serde_json::Value {
+		loop {
+			if let Some(end) = self.held.find("\n\n") {
+				let block: String = self.held.drain(..end + 2).collect();
+				if let Some(data) = block.lines().find_map(|line| line.strip_prefix("data: ")) {
+					return serde_json::from_str(data).unwrap();
+				}
+				continue;
+			}
+			let frame =
+				tokio::time::timeout(PATIENCE, self.body.frame()).await.expect("an event in time");
+			if let Ok(data) = frame.unwrap().unwrap().into_data() {
+				self.held.push_str(std::str::from_utf8(&data).unwrap());
+			}
+		}
+	}
+}
+
+#[tokio::test]
+async fn a_browser_that_asks_for_an_event_stream_is_sent_the_cluster_then_each_change() {
+	let rdu = start("rdu", "geo:1").await;
+	let tyo = start("tyo", "geo:7").await;
+	hold(&rdu, &tyo);
+	hold(&tyo, &rdu);
+	until("rdu holds tyo", || image(&rdu.relay, "tyo").as_deref() == Some("geo:7")).await;
+	let (headers, mut events) = Events::open(rdu.address, "?deltas=true").await;
+	assert_eq!(headers["content-type"], "text/event-stream");
+	let first = events.next().await;
+	assert_eq!((&first["type"], &first["node"]), (&"cluster".into(), &"rdu".into()));
+	let before = first["nodes"]["tyo"]["version"].as_u64().unwrap();
+	tyo.host.deploy("geo:8");
+	loop {
+		let next = events.next().await;
+		let rows = &next["snapshot"]["apps"]["set"];
+		if next["type"] == "delta" && next["node"] == "tyo" && rows[0]["image"] == "geo:8" {
+			assert_eq!(next["base"].as_u64(), Some(before));
+			break;
+		}
+	}
+	// Beats come on the same stream, between the changes.
+	while events.next().await["type"] != "beat" {}
+}
+
 /// The outcome the relay at `address` holds of `node`'s run `id`, as `/runs` answers it.
 async fn outcome(address: SocketAddr, node: &str, id: i64) -> Option<String> {
 	let client: Client<HttpConnector, Empty<Bytes>> =

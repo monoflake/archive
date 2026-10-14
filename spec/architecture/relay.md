@@ -80,10 +80,17 @@ lacks. A socket on which nothing has been heard for ninety seconds is dropped, a
 waited ninety seconds is given up: a neighbor gone without closing stops taking what is written,
 and TCP alone would hold that write for a quarter of an hour, as it did on `nrt` and `hnd` on
 2026-10-13. A dropped socket is redialed from one second, doubling to a minute. A
-browser's socket is pinged every thirty and dropped by the same ninety.
+browser's WebSocket is pinged every thirty and dropped by the same ninety.
 
 **A browser opens `/live` on `relay.canmi.app`**, behind Access, and is sent the whole cluster, then
-every change; `/state` answers the same once, for the console's polling. **`/live` admits a page on
+every change; `/state` answers the same once, for the console's polling. **`/live` is an event
+stream where the reader asks for one with `Accept: text/event-stream`, and a WebSocket where it
+asks for an upgrade**, the two side by side until every reader has moved -- RFC grmtb. Each event
+is a `data:` line carrying the message a socket is sent, the whole cluster first; `: ping` goes out
+after fifteen seconds of nothing else. A stream that ends is opened again whole, never resumed,
+since its reader may land on another relay. Caddy compresses it as it does any answer, flushed per
+event, and decides on the first write, which the cluster always clears at 512 bytes; its gzip
+does not carry matches across flushes, so a lone beat shrinks only under zstd. **`/live` admits a page on
 `.app` alone**, by its `Origin`: Access lets a reader in by a cookie the browser sends on any page's
 WebSocket, so without the check any site the reader visits could open it as them. A request with no
 `Origin` comes from no browser and carries no reader's cookie, and passes; the private mirror's
