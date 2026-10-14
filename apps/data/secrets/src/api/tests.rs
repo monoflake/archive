@@ -120,11 +120,10 @@ fn wanted(revision: i64, value: &str) -> Value {
 
 #[test]
 fn every_code_answered_is_in_the_catalog() {
-	let named = response::codes_named(include_str!("../api.rs"));
+	let source = include_str!("../api.rs");
+	let named = response::codes_named(source);
 	assert!(named.len() > 5, "{named:?}");
-	for code in named {
-		assert!(response::message_of(code).is_some(), "{code} is not in the response catalog");
-	}
+	response::assert_cataloged(&[source]);
 }
 
 #[tokio::test]

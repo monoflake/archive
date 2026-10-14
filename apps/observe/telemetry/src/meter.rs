@@ -7,7 +7,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::rt::TokioIo;
-use response::Envelope;
+use response::{Envelope, Failure};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -68,12 +68,12 @@ impl Meter {
 		let Ok(envelope) = serde_json::from_slice::<Envelope<Value>>(&body) else {
 			return Answer::Unavailable;
 		};
-		match envelope {
-			Envelope::Success { data } => Answer::Data(data),
-			Envelope::Error { code, message } if status.is_client_error() => {
+		match envelope.into_result() {
+			Ok(data) => Answer::Data(data),
+			Err(Failure { code, message }) if status.is_client_error() => {
 				Answer::Invalid { status, code, message }
 			}
-			Envelope::Error { .. } => Answer::Unavailable,
+			Err(_) => Answer::Unavailable,
 		}
 	}
 }

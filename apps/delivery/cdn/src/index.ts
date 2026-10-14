@@ -1,3 +1,4 @@
+import { envelopeErrors } from '@canmi/response/hono';
 import { poweredBy } from '@canmi/web/disclose/hono';
 import { Hono } from 'hono';
 import { cacheControl } from './cache';
@@ -69,11 +70,6 @@ app.all('*', (c) => failure(c, 400, 'invalid_address'));
  * is a fact about this moment, and caching the second turns a blip into an outage. The same
  * asymmetry the API keeps. See spec/architecture/artifacts.md.
  */
-app.onError((error, c) => {
-	console.error(error);
-	const response = failure(c, 500, 'service_unavailable');
-	response.headers.set('Cache-Control', 'no-store');
-	return response;
-});
+envelopeErrors(app, { notFound: false });
 
 export default app;

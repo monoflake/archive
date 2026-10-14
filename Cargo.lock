@@ -2845,9 +2845,9 @@ dependencies = [
 
 [[package]]
 name = "response"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48828b726d61d2770ff414e914f5eed9fe66dfd07df84f0a09a0e95cff58029d"
+checksum = "67a53ae2810ab2912984efc1524d9a89054844bed9a009446f9f2982a8552e67"
 dependencies = [
  "axum",
  "serde",

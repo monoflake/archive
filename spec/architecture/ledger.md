@@ -190,7 +190,8 @@ All under `/v1`, in the envelope, on the private side as the rest of the ledger.
 `outcome` of a step is `success`, `error` or `fatal`. **The ledger's own codes are declared in
 its `codes.json`**, never in lib's -- RFC v7g2p: `stale_lease`, `replay_diverged` and
 `run_exists_differently` `409`, `result_too_large` `413`, `no_such_run` `404`, and `turn_stalled`
-`409`.
+`409`. They are read by the `response` crate's `Codes`, which answers each with its declared status
+and holds them to the rules a code and a message follow.
 
 **A run remembers how its last five turns ended**, `turns` on the run (migration 6): `released` for
 one that let its lease go to a sleep, a wait or a retry, `stalled` for one the executor reported

@@ -361,22 +361,17 @@ mod tests {
 
 	#[test]
 	fn every_code_it_answers_with_is_in_the_catalogue() {
-		for code in response::codes_named(include_str!("runs_api.rs")) {
-			assert!(
-				response::message_of(code).is_some(),
-				"`{code}` is not in the response crate's codes.json"
-			);
-		}
+		response::assert_cataloged(&[include_str!("runs_api.rs")]);
 	}
 
 	#[test]
 	fn every_code_of_its_own_is_declared_and_each_declared_is_answered() {
-		let named = codes::named(include_str!("runs_api.rs"));
+		let source = include_str!("runs_api.rs");
+		codes::declared().assert_declared(&[source], "codes::failure");
+		// `Codes` lists none of its codes, so the other half reads the file as it is.
+		let named = response::named_after(source, "codes::failure");
 		let declared: serde_json::Map<String, serde_json::Value> =
 			serde_json::from_str(include_str!("../codes.json")).unwrap();
-		for code in &named {
-			assert!(declared.contains_key(*code), "`{code}` is not in the ledger's codes.json");
-		}
 		for code in declared.keys() {
 			assert!(named.contains(&code.as_str()), "`{code}` is declared and never answered");
 		}

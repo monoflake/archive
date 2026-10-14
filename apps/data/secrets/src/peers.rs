@@ -48,12 +48,11 @@ pub fn client() -> reqwest::Client {
 }
 
 /// The `data` of a successful envelope, or None for anything else.
-async fn data(response: reqwest::Response) -> Option<Value> {
-	if !response.status().is_success() {
+async fn data(answer: reqwest::Response) -> Option<Value> {
+	if !answer.status().is_success() {
 		return None;
 	}
-	let mut envelope: Value = response.json().await.ok()?;
-	(envelope["status"] == "success").then(|| envelope["data"].take())
+	response::decode(answer.bytes().await.ok()?).ok()
 }
 
 /// The share the copy at `base` holds, if it answers with one.

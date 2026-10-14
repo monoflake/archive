@@ -207,10 +207,10 @@ impl Registry {
 		};
 		let body =
 			tokio::time::timeout(PATIENCE, asked).await.map_err(|_| AskError::Slow(PATIENCE))??;
-		match serde_json::from_slice(&body)? {
-			response::Envelope::Success { data } => Ok(data),
-			response::Envelope::Error { code, message } => Err(AskError::Refused { code, message }),
-		}
+		let envelope: response::Envelope<Answer> = serde_json::from_slice(&body)?;
+		envelope
+			.into_result()
+			.map_err(|response::Failure { code, message }| AskError::Refused { code, message })
 	}
 
 	/// The first answer among `candidates`, asked in turn, and the node that gave it; or the last

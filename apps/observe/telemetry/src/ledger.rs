@@ -9,7 +9,6 @@ use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
-use response::Envelope;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
@@ -74,10 +73,7 @@ impl Ledger for Network {
 				return None;
 			}
 			let body = response.into_body().collect().await.ok()?.to_bytes();
-			match serde_json::from_slice::<Envelope<Vec<Count>>>(&body).ok()? {
-				Envelope::Success { data } => Some(data),
-				Envelope::Error { .. } => None,
-			}
+			response::decode::<Vec<Count>>(&body).ok()
 		})
 	}
 }

@@ -259,10 +259,10 @@ fn events(before: Option<i64>) -> String {
 /// What an answer carries, or the refusal it is. The status line is not read: the envelope says
 /// the same, and says which code.
 pub fn opened<T: DeserializeOwned>(body: &[u8]) -> Result<T, ReadError> {
-	match serde_json::from_slice(body)? {
-		response::Envelope::Success { data } => Ok(data),
-		response::Envelope::Error { code, message } => Err(ReadError::Refused { code, message }),
-	}
+	let envelope: response::Envelope<T> = serde_json::from_slice(body)?;
+	envelope
+		.into_result()
+		.map_err(|response::Failure { code, message }| ReadError::Refused { code, message })
 }
 
 #[cfg(test)]

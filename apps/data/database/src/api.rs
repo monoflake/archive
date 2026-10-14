@@ -146,8 +146,6 @@ mod tests {
 	fn the_socket_is_the_declared_one() {
 		let declared = include_str!("../service.toml");
 		assert!(declared.contains(&format!("\nsocket = \"{SOCKET}\"\n")));
-		for code in response::codes_named(include_str!("api.rs")) {
-			assert!(response::message_of(code).is_some(), "{code} is not in the catalogue");
-		}
+		response::assert_cataloged(&[include_str!("api.rs")]);
 	}
 }

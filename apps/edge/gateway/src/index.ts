@@ -6,6 +6,7 @@
  */
 import { poweredBy } from '@canmi/web/disclose/hono';
 import { failure } from '@canmi/response';
+import { envelopeErrors } from '@canmi/response/hono';
 import { robotsTxt, SECURITY_TXT_PATH, securityResponse } from '@canmi/me/robots';
 import { followSymlink, symlinkOf } from '@monoflake/sdk/symlink';
 import {
@@ -518,10 +519,7 @@ export function gateway(scopes: Readonly<Record<string, Scope>> = SCOPES) {
 	 * blip into an outage. A binding to a Worker that is not running throws on being looked at, as
 	 * @monoflake/sdk/limits says of `QUOTA`. As the site's API does, apps/site/api/src/app.ts in web.
 	 */
-	app.onError((error) => {
-		console.error(error);
-		return failure(500, 'service_unavailable');
-	});
+	envelopeErrors(app, { notFound: false });
 
 	return app;
 }

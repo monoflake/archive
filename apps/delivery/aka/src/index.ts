@@ -1,6 +1,7 @@
+import { envelopeErrors } from '@canmi/response/hono';
 import { poweredBy } from '@canmi/web/disclose/hono';
 import { Hono } from 'hono';
-import { cacheControl, NEVER } from './cache';
+import { cacheControl } from './cache';
 import { failure } from './respond';
 import { resolve } from './resolve';
 import { resource } from './resource';
@@ -67,11 +68,8 @@ app.route('/v1', names);
  */
 app.all('*', (c) => failure(c, 400, 'invalid_address'));
 
-app.onError((error, c) => {
-	console.error(error);
-	const response = failure(c, 500, 'service_unavailable');
-	response.headers.set('Cache-Control', NEVER);
-	return response;
-});
+// What was thrown below a route is the envelope, never stored; the catch-all above stays this
+// worker's, since its refusal keeps the corpus's lifetime.
+envelopeErrors(app, { notFound: false });
 
 export default app;
