@@ -30,6 +30,9 @@ export const CONFIG: Verify.Config = {
 	tasks: ['test-tasks'],
 	// The generated half of the address map, whose only check is a TypeScript test.
 	nodeCheckedRust: ['libs/sdk/src/lib.rs'],
+	// A crate's own `scripts/`, the registry's command line among them, belong to no package; the
+	// scripts' tsconfig, the vitest suite and oxlint read them all the same.
+	nodeRead: (path) => /^apps\/[^/]+\/[^/]+\/scripts\//.test(path),
 	// Every app's declaration is read by the gateway's scope table, whichever app it sits in, and so
 	// are the ones registered from elsewhere.
 	reaches: (path) =>

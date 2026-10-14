@@ -191,10 +191,12 @@ function lockEdited(importer: string, change: (section: string) => string): Revi
 	});
 }
 
+/** An importer's section with one more dependency in it. */
+const bump = (section: string) =>
+	`${section}\n      extra:\n        specifier: ^1.0.0\n        version: 1.0.0`;
+
 describe('a lockfile change', () => {
 	const LOCK = ['pnpm-lock.yaml'];
-	const bump = (section: string) =>
-		`${section}\n      extra:\n        specifier: ^1.0.0\n        version: 1.0.0`;
 
 	test("rebuilds a Node image whose importer moved, or a package's it imports", () => {
 		expect(split(LOCK, lockEdited('apps/compute/executor', bump))).toEqual([['executor'], []]);
