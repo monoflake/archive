@@ -26,6 +26,9 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# The URL map's Python mirror. See the workspace's spec/addresses.md, "Every URL is declared once".
+sys.path.insert(0, str(HERE.parents[1] / "libs/sdk/src"))
+from urls import EXTERNAL_ARTIFACTS  # noqa: E402
 
 
 def borrow(name):
@@ -66,7 +69,7 @@ SOURCES = "DEPLOY_SOURCES"
 # each told where it is in its config.env and given the read key, from secrets.json, in secret.env.
 ARTIFACT_READERS = ("deployer",)
 ARTIFACTS = {
-	"ARTIFACTS_ENDPOINT": "https://s3.us-west-004.backblazeb2.com",
+	"ARTIFACTS_ENDPOINT": EXTERNAL_ARTIFACTS,
 	"ARTIFACTS_REGION": "us-west-004",
 	"ARTIFACTS_BUCKET": "build-artifact",
 }
