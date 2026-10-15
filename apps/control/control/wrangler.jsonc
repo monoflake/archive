@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	// Control's own Cloudflare account, never the platform's: `mise run deploy-control` deploys it,
+	// Control's own Cloudflare account, never the platform's: `mise run control deploy` deploys it,
 	// naming the account. No service.toml, so neither CI nor the deployer lists it. RFC o7eir.
 	"name": "control",
 	"main": "src/worker.ts",
@@ -12,6 +12,67 @@
 			"database_name": "control",
 			"database_id": "b985205f-ab63-40f0-9212-2148a5e5a2d8",
 			"migrations_dir": "migrations",
+		},
+	],
+
+	// Each node's Caddy, through that node's tunnel, bound as `NODE_` and its id in capitals, in
+	// nodes.toml's order; hook.test.ts holds the two together. Every binding here is notified; the
+	// fetch's hostname is the Host. Each id is that node's VPC service in `monoflake`, as infra's
+	// `mise run tunnel` prints it.
+	"vpc_services": [
+		{
+			// tyo
+			"binding": "NODE_D132B0F553E3DCC3",
+			"service_id": "01a13de1-71c2-72a3-8fe8-c4c81352ab78",
+			"remote": true,
+		},
+		{
+			// nrt
+			"binding": "NODE_055D9B63BB419BA4",
+			"service_id": "01a13de1-8bb2-7f41-92da-ee247637c780",
+			"remote": true,
+		},
+		{
+			// hnd
+			"binding": "NODE_26BF596280326E7A",
+			"service_id": "01a13de1-a31a-7fe3-8899-3b319021e79b",
+			"remote": true,
+		},
+		{
+			// gvx
+			"binding": "NODE_A0A24BBAA0C0BEBA",
+			"service_id": "01a13de1-bc33-7721-9811-4d9959f9ac64",
+			"remote": true,
+		},
+		{
+			// bru
+			"binding": "NODE_ABD3922110A78032",
+			"service_id": "01a13de1-cec3-74c3-908f-d3645dd9400c",
+			"remote": true,
+		},
+		{
+			// buf
+			"binding": "NODE_E38F403F033D87F7",
+			"service_id": "01a13de1-e276-75c1-ace6-2f3c8fe03aee",
+			"remote": true,
+		},
+		{
+			// rdu
+			"binding": "NODE_D62C82B23A858876",
+			"service_id": "01a13de1-f32a-7fc1-b612-b3b145b927c6",
+			"remote": true,
+		},
+		{
+			// sha
+			"binding": "NODE_0196B5A8439ABB66",
+			"service_id": "01a13de2-1e94-7440-9f03-1c16203e588b",
+			"remote": true,
+		},
+		{
+			// sin
+			"binding": "NODE_9D399312D1C3DDC4",
+			"service_id": "01a13de2-033d-7f73-9cb5-c2d6084648c1",
+			"remote": true,
 		},
 	],
 

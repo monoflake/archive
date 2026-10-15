@@ -1,14 +1,16 @@
 /**
- * control's routes, apart from the Worker so a test can stand a database in: `/v1/health`, and the
+ * control's routes, apart from the Worker so a test can stand a database in: `/v1/health`; the
  * `registry` scope at `/v1/registry`: the resources read and written as the old registry answers
- * them, the catalog of their kinds, and the import that copies them across. Every route but
- * `/v1/health` takes a bearer. See RFC o7eir and spec/architecture/control.md.
+ * them, the catalog of their kinds, and the import that copies them across; and the `hook` scope,
+ * GitHub's deploy runs passed on to the nodes. Every route but `/v1/health` and the hook takes a
+ * bearer, or the console by its binding. See RFC o7eir and spec/architecture/control.md.
  */
 import { failure, success } from '@canmi/response';
 import { envelopeErrors } from '@canmi/response/hono';
 import { poweredBy } from '@canmi/web/disclose/hono';
 import { type Context, Hono, type MiddlewareHandler } from 'hono';
 import { admitted } from './auth.ts';
+import { delivered, type Env as Hooked } from './hook.ts';
 import { canonical, imported } from './import.ts';
 import { CATALOG } from './kinds.ts';
 import { identities, isId, isLabel, isObject, type Refusal, type Spec } from './specs.ts';
@@ -26,8 +28,15 @@ import {
 } from './store.ts';
 import { checked, clash, merged, type Written, written } from './write.ts';
 
-export interface Env {
+/**
+ * Marks a request the console made, through worker.ts's `Console`: a symbol, so no binding, secret
+ * or variable can be named it.
+ */
+export const CONSOLE: unique symbol = Symbol('console');
+
+export interface Env extends Hooked {
 	readonly DB: Database;
+	readonly [CONSOLE]?: true;
 	readonly CONTROL_READ_TOKEN?: string;
 	readonly CONTROL_WRITE_TOKEN?: string;
 	readonly CONTROL_IMPORT_TOKEN?: string;
@@ -68,6 +77,11 @@ function bearer(...tokens: Token[]): MiddlewareHandler<App> {
 		if (!matched.includes(true)) return failure(401, 'invalid_token');
 		await next();
 	};
+}
+
+/** The console, admitted by its binding, or else what `guard` admits. */
+function orConsole(guard: MiddlewareHandler<App>): MiddlewareHandler<App> {
+	return (c, next) => (c.env[CONSOLE] ? next() : guard(c, next));
 }
 
 const invalidMethod = (allowed: string) => () =>
@@ -121,8 +135,8 @@ app.get('/v1/health', async (c) => {
 app.all('/v1/health', invalidMethod('GET'));
 
 // The write token reads too: a writer reads what it is about to hold its write to.
-const read = bearer('CONTROL_READ_TOKEN', 'CONTROL_WRITE_TOKEN');
-const write = bearer('CONTROL_WRITE_TOKEN');
+const read = orConsole(bearer('CONTROL_READ_TOKEN', 'CONTROL_WRITE_TOKEN'));
+const write = orConsole(bearer('CONTROL_WRITE_TOKEN'));
 /** The `registry` scope: the nodes, the apps and the accounts, and their catalog. */
 const registry = new Hono<App>();
 
@@ -271,8 +285,12 @@ registry.all('/:plural/:key', (c) => {
 
 app.route('/v1/registry', registry);
 
+// The `hook` scope proves its caller by GitHub's signature, not by a bearer. RFC o7eir.
+app.post('/v1/hook/github', (c) => delivered(c.req.raw, c.env));
+app.all('/v1/hook/github', invalidMethod('POST'));
+
 /** Every scope under `/v1`: a path one does not take is no route, and any other scope none. */
-const SCOPES = new Set(['health', 'registry']);
+const SCOPES = new Set(['health', 'registry', 'hook']);
 
 const unscoped = (c: Context<App>) =>
 	SCOPES.has(c.req.param('scope') ?? '')
