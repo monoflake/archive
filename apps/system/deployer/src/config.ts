@@ -7,9 +7,6 @@
 /** Its declared port; see spec/architecture/services.md, "A service keeps one port". */
 export const PORT = 12020;
 
-/** The registry's port on each core's tailnet address; spec/architecture/registry.md. */
-export const REGISTRY_PORT = 12013;
-
 export interface Config {
 	/** The repositories whose runs it deploys, from `DEPLOY_SOURCES`, as host reads its own. */
 	readonly sources: readonly string[];
@@ -34,12 +31,12 @@ export interface Config {
 	/** The account and its token, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_WORKERS_TOKEN`. */
 	readonly cloudflare: { readonly account: string | undefined; readonly token: string | undefined };
 	/**
-	 * The registries each app's release is written to, as `address:port`: `REGISTRY`, the cores'
-	 * tailnet IPv4s as host is given them, asked in turn. See releases.ts.
+	 * Where each app's release is written: `CONTROL`, control's base URL. See releases.ts and
+	 * spec/architecture/control.md, "Who reads it, and with what".
 	 */
-	readonly registries: readonly string[];
-	/** What a release is written with: `REGISTRY_TOKEN`; none writes no release. */
-	readonly registryToken: string | undefined;
+	readonly control: string | undefined;
+	/** What a release is written with: `CONTROL_WRITE_TOKEN`; none writes no release. */
+	readonly controlToken: string | undefined;
 	/**
 	 * The bucket a run's artifacts are read from, RFC q28g5: `ARTIFACTS_ENDPOINT`, `_REGION` and
 	 * `_BUCKET`, read with `ARTIFACTS_READ_KEY_ID` and `_SECRET`. Unless all five are set, they are
@@ -95,14 +92,6 @@ export function sources(text: string): string[] {
 	return text.split(/\s+/).filter((source) => /^[\w.-]+\/[\w.-]+$/.test(source));
 }
 
-/** Addresses separated by whitespace, each given the registry's port where it names none. */
-export function registries(text: string): string[] {
-	return text
-		.split(/\s+/)
-		.filter(Boolean)
-		.map((at) => (at.includes(':') ? at : `${at}:${REGISTRY_PORT}`));
-}
-
 /** `key=value` pairs separated by commas, each side trimmed; a pair missing either is dropped. */
 export function pairs(text: string): [string, string][] {
 	return text.split(',').flatMap((pair) => {
@@ -135,8 +124,8 @@ export function configOf(env: Env): Config {
 			account: value(env, 'CLOUDFLARE_ACCOUNT_ID'),
 			token: value(env, 'CLOUDFLARE_WORKERS_TOKEN'),
 		},
-		registries: registries(value(env, 'REGISTRY') ?? ''),
-		registryToken: value(env, 'REGISTRY_TOKEN'),
+		control: value(env, 'CONTROL'),
+		controlToken: value(env, 'CONTROL_WRITE_TOKEN'),
 		artifacts: bucketOf(env),
 		data: value(env, 'DEPLOYER_DATA') ?? '/data',
 		port: Number(value(env, 'PORT') ?? PORT),

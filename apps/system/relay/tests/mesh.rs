@@ -127,7 +127,7 @@ async fn start(node: &str, image: &str) -> Started {
 }
 
 fn hold(from: &Started, to: &Started) {
-	let peer = Peer { name: to.relay.node().into(), address: to.address.to_string() };
+	let peer = Peer { id: to.relay.node().into(), address: to.address.to_string() };
 	tokio::spawn(relay::mesh::keep(from.relay.clone(), peer));
 }
 
@@ -149,107 +149,112 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
 
 #[tokio::test]
 async fn two_relays_converge_after_one_changes() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:7").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:7").await;
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
 	until("each holds the other", || {
-		image(&rdu.relay, "tyo").as_deref() == Some("geo:7")
-			&& image(&tyo.relay, "rdu").as_deref() == Some("geo:1")
+		image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:7")
+			&& image(&tyo.relay, "d62c82b23a858876").as_deref() == Some("geo:1")
 	})
 	.await;
 
 	let (mut browser, _) =
 		tokio_tungstenite::connect_async(format!("ws://{}/live", rdu.address)).await.unwrap();
 	let first = text(&mut browser).await;
-	assert_eq!((&first["type"], &first["node"]), (&"cluster".into(), &"rdu".into()));
-	assert_eq!(first["version"], 1);
-	assert_eq!(first["nodes"]["tyo"]["snapshot"]["apps"][0]["image"], "geo:7");
-	let before = first["nodes"]["tyo"]["version"].as_u64().unwrap();
+	assert_eq!((&first["type"], &first["node"]), (&"cluster".into(), &"d62c82b23a858876".into()));
+	assert_eq!(first["version"], 2);
+	assert_eq!(first["nodes"]["d132b0f553e3dcc3"]["snapshot"]["apps"][0]["image"], "geo:7");
+	let before = first["nodes"]["d132b0f553e3dcc3"]["version"].as_u64().unwrap();
 
 	tyo.host.deploy("geo:8");
-	until("rdu hears tyo's change", || image(&rdu.relay, "tyo").as_deref() == Some("geo:8")).await;
+	until("rdu hears tyo's change", || {
+		image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:8")
+	})
+	.await;
 	// tyo's round trips change its snapshot too, so one sent before the deploy may come first.
 	loop {
 		let next = text(&mut browser).await;
 		let image = &next["state"]["snapshot"]["apps"][0]["image"];
-		if next["type"] == "node" && next["node"] == "tyo" && image == "geo:8" {
+		if next["type"] == "node" && next["node"] == "d132b0f553e3dcc3" && image == "geo:8" {
 			assert!(next["state"]["version"].as_u64().unwrap() > before);
 			break;
 		}
 	}
 	// Neither holds anything of the other's as its own.
-	assert_eq!(image(&tyo.relay, "tyo").as_deref(), Some("geo:8"));
-	assert_eq!(image(&rdu.relay, "rdu").as_deref(), Some("geo:1"));
+	assert_eq!(image(&tyo.relay, "d132b0f553e3dcc3").as_deref(), Some("geo:8"));
+	assert_eq!(image(&rdu.relay, "d62c82b23a858876").as_deref(), Some("geo:1"));
 }
 
 #[tokio::test]
 async fn a_relay_that_compresses_and_one_that_does_not_still_hear_each_other() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:7").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:7").await;
 	// tyo stands in for a relay older than compressed frames: it neither says it reads them nor
 	// sends them, so each end speaks to the other plain.
 	tyo.relay.set_compression(false);
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
 	until("each holds the other", || {
-		image(&rdu.relay, "tyo").as_deref() == Some("geo:7")
-			&& image(&tyo.relay, "rdu").as_deref() == Some("geo:1")
+		image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:7")
+			&& image(&tyo.relay, "d62c82b23a858876").as_deref() == Some("geo:1")
 	})
 	.await;
 	rdu.host.deploy("geo:2");
 	tyo.host.deploy("geo:8");
 	until("each hears the other's change", || {
-		image(&rdu.relay, "tyo").as_deref() == Some("geo:8")
-			&& image(&tyo.relay, "rdu").as_deref() == Some("geo:2")
+		image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:8")
+			&& image(&tyo.relay, "d62c82b23a858876").as_deref() == Some("geo:2")
 	})
 	.await;
 }
 
 #[tokio::test]
 async fn a_relay_that_syncs_and_one_that_compares_still_hear_each_other() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:7").await;
-	let buf = start("buf", "geo:3").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:7").await;
+	let buf = start("e38f403f033d87f7", "geo:3").await;
 	// tyo stands in for a relay older than the sync, and buf reaches rdu only through it.
 	tyo.relay.set_sync(false);
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
 	hold(&buf, &tyo);
 	until("rdu hears tyo and buf", || {
-		image(&rdu.relay, "tyo").as_deref() == Some("geo:7")
-			&& image(&rdu.relay, "buf").as_deref() == Some("geo:3")
+		image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:7")
+			&& image(&rdu.relay, "e38f403f033d87f7").as_deref() == Some("geo:3")
 	})
 	.await;
 	rdu.host.deploy("geo:2");
 	tyo.host.deploy("geo:8");
 	buf.host.deploy("geo:4");
 	until("each hears the others' changes", || {
-		image(&rdu.relay, "tyo").as_deref() == Some("geo:8")
-			&& image(&rdu.relay, "buf").as_deref() == Some("geo:4")
-			&& image(&tyo.relay, "rdu").as_deref() == Some("geo:2")
-			&& image(&buf.relay, "rdu").as_deref() == Some("geo:2")
+		image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:8")
+			&& image(&rdu.relay, "e38f403f033d87f7").as_deref() == Some("geo:4")
+			&& image(&tyo.relay, "d62c82b23a858876").as_deref() == Some("geo:2")
+			&& image(&buf.relay, "d62c82b23a858876").as_deref() == Some("geo:2")
 	})
 	.await;
 }
 
 #[tokio::test]
 async fn a_browser_that_asks_for_deltas_is_sent_what_changed_of_a_node() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:7").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:7").await;
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
-	until("rdu holds tyo", || image(&rdu.relay, "tyo").as_deref() == Some("geo:7")).await;
+	until("rdu holds tyo", || image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:7"))
+		.await;
 	let url = format!("ws://{}/live?deltas=true", rdu.address);
 	let (mut browser, _) = tokio_tungstenite::connect_async(url).await.unwrap();
 	let first = text(&mut browser).await;
-	let before = first["nodes"]["tyo"]["version"].as_u64().unwrap();
+	let before = first["nodes"]["d132b0f553e3dcc3"]["version"].as_u64().unwrap();
 	tyo.host.deploy("geo:8");
 	loop {
 		let next = text(&mut browser).await;
 		assert_ne!(next["type"], "node", "an entry whole, to a socket that asked for deltas: {next}");
 		let rows = &next["snapshot"]["apps"]["set"];
-		if next["type"] == "delta" && next["node"] == "tyo" && rows[0]["image"] == "geo:8" {
+		if next["type"] == "delta" && next["node"] == "d132b0f553e3dcc3" && rows[0]["image"] == "geo:8"
+		{
 			assert_eq!(next["base"].as_u64(), Some(before));
 			assert!(next["set"]["version"].as_u64().unwrap() > before);
 			break;
@@ -260,76 +265,88 @@ async fn a_browser_that_asks_for_deltas_is_sent_what_changed_of_a_node() {
 #[tokio::test]
 async fn a_node_reaches_a_third_through_a_neighbor() {
 	// rdu and buf know tyo alone, and tyo dials nobody: it only accepts.
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:2").await;
-	let buf = start("buf", "geo:3").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:2").await;
+	let buf = start("e38f403f033d87f7", "geo:3").await;
 	hold(&rdu, &tyo);
 	hold(&buf, &tyo);
-	until("rdu hears buf", || image(&rdu.relay, "buf").as_deref() == Some("geo:3")).await;
+	until("rdu hears buf", || image(&rdu.relay, "e38f403f033d87f7").as_deref() == Some("geo:3"))
+		.await;
 	buf.host.deploy("geo:4");
-	until("rdu hears buf's change", || image(&rdu.relay, "buf").as_deref() == Some("geo:4")).await;
-	until("buf hears rdu", || image(&buf.relay, "rdu").as_deref() == Some("geo:1")).await;
+	until("rdu hears buf's change", || {
+		image(&rdu.relay, "e38f403f033d87f7").as_deref() == Some("geo:4")
+	})
+	.await;
+	until("buf hears rdu", || image(&buf.relay, "d62c82b23a858876").as_deref() == Some("geo:1"))
+		.await;
 }
 
 #[tokio::test]
 async fn each_relay_times_the_other_and_shows_its_own_round_trips() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:2").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:2").await;
 	hold(&rdu, &tyo);
 	until("each times the other", || {
-		rdu.relay.round_trips().contains_key("tyo") && tyo.relay.round_trips().contains_key("rdu")
+		rdu.relay.round_trips().contains_key("d132b0f553e3dcc3")
+			&& tyo.relay.round_trips().contains_key("d62c82b23a858876")
 	})
 	.await;
-	let round_trip = rdu.relay.round_trips()["tyo"];
+	let round_trip = rdu.relay.round_trips()["d132b0f553e3dcc3"];
 	assert!((0.0..1.0).contains(&round_trip), "{round_trip}");
 	// Its own as timed now; another node's from its newest minute, which none has ended yet.
 	let state = rdu.relay.state();
-	assert!(state.nodes["rdu"].round_trip.as_ref().is_some_and(|trips| trips.contains_key("tyo")));
-	assert!(state.nodes.get("tyo").is_none_or(|tyo| tyo.round_trip.is_none()));
+	assert!(
+		state.nodes["d62c82b23a858876"]
+			.round_trip
+			.as_ref()
+			.is_some_and(|trips| trips.contains_key("d132b0f553e3dcc3"))
+	);
+	assert!(state.nodes.get("d132b0f553e3dcc3").is_none_or(|tyo| tyo.round_trip.is_none()));
 	// A snapshot carries neither the round trips nor the meter's second.
-	let snapshot = &state.nodes["rdu"].held.as_ref().unwrap().snapshot;
+	let snapshot = &state.nodes["d62c82b23a858876"].held.as_ref().unwrap().snapshot;
 	assert!(snapshot.get("round_trip").is_none());
 	assert_eq!(snapshot["machine"], serde_json::json!({ "info": { "memory": 1000 } }));
 }
 
 #[tokio::test]
 async fn a_node_is_heard_by_its_beats_while_its_version_stands_still() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:2").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:2").await;
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
-	until("rdu holds tyo", || image(&rdu.relay, "tyo").is_some()).await;
-	let held = |relay: &Relay| relay.state().nodes["tyo"].held.clone().unwrap();
+	until("rdu holds tyo", || image(&rdu.relay, "d132b0f553e3dcc3").is_some()).await;
+	let held = |relay: &Relay| relay.state().nodes["d132b0f553e3dcc3"].held.clone().unwrap();
 	let before = held(&rdu.relay);
 	until("tyo heard again", || held(&rdu.relay).heard_at > before.heard_at).await;
 	tokio::time::sleep(ROUND * 10).await;
 	let after = held(&rdu.relay);
 	assert_eq!(after.version, before.version, "no new version while nothing changed");
 	assert!(after.heard_at > before.heard_at);
-	assert_eq!(rdu.relay.state().nodes["tyo"].state, Presence::Live);
+	assert_eq!(rdu.relay.state().nodes["d132b0f553e3dcc3"].state, Presence::Live);
 }
 
 #[tokio::test]
 async fn a_page_watching_another_node_is_sent_its_fine_readings() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:2").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:2").await;
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
 	until("each speaks to the other", || {
-		rdu.relay.speaking().contains("tyo") && tyo.relay.speaking().contains("rdu")
+		rdu.relay.speaking().contains("d132b0f553e3dcc3")
+			&& tyo.relay.speaking().contains("d62c82b23a858876")
 	})
 	.await;
 	let (mut browser, _) =
 		tokio_tungstenite::connect_async(format!("ws://{}/live", rdu.address)).await.unwrap();
-	rdu.relay.watch("tyo");
+	rdu.relay.watch("d132b0f553e3dcc3");
 	loop {
 		let next = text(&mut browser).await;
-		if next["type"] == "readings" && next["node"] == "tyo" {
+		if next["type"] == "readings" && next["node"] == "d132b0f553e3dcc3" {
 			assert_eq!(next["sample"]["values"]["cpu.usage"], 5.0);
 			break;
 		}
 	}
-	assert!(tyo.relay.leased_to("rdu"));
+	assert!(tyo.relay.leased_to("d62c82b23a858876"));
 }
 
 /// An event stream as a browser reads it: each `data:` line, as it arrives.
@@ -372,22 +389,26 @@ impl Events {
 
 #[tokio::test]
 async fn a_browser_that_asks_for_an_event_stream_is_sent_the_cluster_then_each_change() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:7").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:7").await;
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
-	until("rdu holds tyo", || image(&rdu.relay, "tyo").as_deref() == Some("geo:7")).await;
+	until("rdu holds tyo", || image(&rdu.relay, "d132b0f553e3dcc3").as_deref() == Some("geo:7"))
+		.await;
 	let (headers, mut events) = Events::open(rdu.address, "?deltas=true").await;
 	assert_eq!(headers["content-type"], "text/event-stream");
 	let first = events.next().await;
-	assert_eq!((&first["type"], &first["node"]), (&"cluster".into(), &"rdu".into()));
-	let before = first["nodes"]["tyo"]["version"].as_u64().unwrap();
+	assert_eq!((&first["type"], &first["node"]), (&"cluster".into(), &"d62c82b23a858876".into()));
+	let before = first["nodes"]["d132b0f553e3dcc3"]["version"].as_u64().unwrap();
 	tyo.host.deploy("geo:8");
 	let changed = async {
 		loop {
 			let next = events.next().await;
 			let rows = &next["snapshot"]["apps"]["set"];
-			if next["type"] == "delta" && next["node"] == "tyo" && rows[0]["image"] == "geo:8" {
+			if next["type"] == "delta"
+				&& next["node"] == "d132b0f553e3dcc3"
+				&& rows[0]["image"] == "geo:8"
+			{
 				assert_eq!(next["base"].as_u64(), Some(before));
 				return;
 			}
@@ -422,13 +443,13 @@ async fn outcome(address: SocketAddr, node: &str, id: i64) -> Option<String> {
 
 #[tokio::test]
 async fn a_run_reaches_the_other_relay_and_so_does_its_change() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:2").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:2").await;
 	// Written before either meets the other: the reading back carries it, then the window.
 	tyo.host.record(7, "running");
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
-	let held = || async { outcome(rdu.address, "tyo", 7).await };
+	let held = || async { outcome(rdu.address, "d132b0f553e3dcc3", 7).await };
 	let waited = async {
 		while held().await.as_deref() != Some("running") {
 			tokio::time::sleep(ROUND).await;
@@ -440,38 +461,43 @@ async fn a_run_reaches_the_other_relay_and_so_does_its_change() {
 	tyo.host.record(8, "running");
 	let waited = async {
 		while held().await.as_deref() != Some("succeeded")
-			|| outcome(rdu.address, "tyo", 8).await.is_none()
+			|| outcome(rdu.address, "d132b0f553e3dcc3", 8).await.is_none()
 		{
 			tokio::time::sleep(ROUND).await;
 		}
 	};
 	tokio::time::timeout(PATIENCE, waited).await.expect("rdu hears tyo's run change");
-	assert_eq!(outcome(tyo.address, "tyo", 8).await.as_deref(), Some("running"));
+	assert_eq!(outcome(tyo.address, "d132b0f553e3dcc3", 8).await.as_deref(), Some("running"));
 }
 
 #[tokio::test]
 async fn a_relay_stopping_tells_its_neighbor_why_before_it_goes() {
-	let rdu = start("rdu", "geo:1").await;
-	let tyo = start("tyo", "geo:2").await;
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let tyo = start("d132b0f553e3dcc3", "geo:2").await;
 	hold(&rdu, &tyo);
 	hold(&tyo, &rdu);
-	until("each holds the other", || image(&rdu.relay, "tyo").is_some()).await;
-	until("tyo speaks to rdu", || tyo.relay.speaking().contains("rdu")).await;
-	assert_eq!(rdu.relay.state().nodes["tyo"].state, Presence::Live);
+	until("each holds the other", || image(&rdu.relay, "d132b0f553e3dcc3").is_some()).await;
+	until("tyo speaks to rdu", || tyo.relay.speaking().contains("d62c82b23a858876")).await;
+	assert_eq!(rdu.relay.state().nodes["d132b0f553e3dcc3"].state, Presence::Live);
 	let (mut browser, _) =
 		tokio_tungstenite::connect_async(format!("ws://{}/live", rdu.address)).await.unwrap();
 
 	tyo.host.upgrading();
 	assert!(relay::leaving::leave(&tyo.relay, &*tyo.host).await, "rdu told in time");
-	until("rdu shows tyo upgrading", || rdu.relay.state().nodes["tyo"].state == Presence::Upgrading)
-		.await;
+	until("rdu shows tyo upgrading", || {
+		rdu.relay.state().nodes["d132b0f553e3dcc3"].state == Presence::Upgrading
+	})
+	.await;
 	let state = rdu.relay.state();
-	let leaving = &state.nodes["tyo"].held.as_ref().unwrap().snapshot["leaving"];
+	let leaving = &state.nodes["d132b0f553e3dcc3"].held.as_ref().unwrap().snapshot["leaving"];
 	assert_eq!(*leaving, serde_json::json!({ "reason": "upgrade", "within": 180 }));
 	// A browser is sent it as a node's state, beside the snapshot that says why.
 	loop {
 		let next = text(&mut browser).await;
-		if next["type"] == "node" && next["node"] == "tyo" && next["state"]["state"] == "upgrading" {
+		if next["type"] == "node"
+			&& next["node"] == "d132b0f553e3dcc3"
+			&& next["state"]["state"] == "upgrading"
+		{
 			assert_eq!(next["state"]["snapshot"]["leaving"]["reason"], "upgrade");
 			break;
 		}
@@ -480,8 +506,8 @@ async fn a_relay_stopping_tells_its_neighbor_why_before_it_goes() {
 
 #[tokio::test]
 async fn a_relay_without_the_secret_is_refused() {
-	let rdu = start("rdu", "geo:1").await;
-	let stranger = Peer { name: "rdu".into(), address: rdu.address.to_string() };
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let stranger = Peer { id: "d62c82b23a858876".into(), address: rdu.address.to_string() };
 	assert!(relay::mesh::dial(&stranger, "wrong").await.is_err());
 	assert!(relay::mesh::dial(&stranger, SECRET).await.is_ok());
 }
@@ -489,8 +515,8 @@ async fn a_relay_without_the_secret_is_refused() {
 /// Both ends without Nagle's delay, so a pong is not held back for the ACK of what went before it.
 #[tokio::test]
 async fn a_socket_dialed_and_one_accepted_send_without_delay() {
-	let rdu = start("rdu", "geo:1").await;
-	let peer = Peer { name: "rdu".into(), address: rdu.address.to_string() };
+	let rdu = start("d62c82b23a858876", "geo:1").await;
+	let peer = Peer { id: "d62c82b23a858876".into(), address: rdu.address.to_string() };
 	let dialed = relay::mesh::dial(&peer, SECRET).await.unwrap();
 	let MaybeTlsStream::Plain(stream) = dialed.get_ref() else { panic!("a plain stream") };
 	assert!(stream.nodelay().unwrap());

@@ -27,8 +27,8 @@ primary by its tailnet address.
 **`apps/data/database` runs on six members, `tyo`, `sin`, `rdu`, `buf`, `gvx` and `sha`, and
 Patroni chooses which one writes, its lease kept in etcd on five of them.** Since 2026-10-08; before it,
 `tyo` was named primary by hand and a failover was the operator's command. The cluster cannot be
-placed by the platform's scheduler, whose leases are kept in it, so its members are named in its
-`service.toml`, apart from the core -- infra's `spec/architecture/nodes.md`, "Three nodes are the
+placed by the platform's scheduler, whose leases are kept in it, so its members are named by hand,
+in control's placements of it, apart from the core -- infra's `spec/architecture/nodes.md`, "Three nodes are the
 core, named by the author".
 
 - **A commit is confirmed by `ANY 1` of the other two cores, under Patroni's quorum mode**, since

@@ -1,7 +1,7 @@
 /**
  * A ledger over HTTP for the thread tests: every step begun is started, every result kept, every
- * end recorded, and the registry's one route answered, so a thread reaches it as it would the
- * private side.
+ * end recorded, and one service's route answered, so a thread reaches it as it would the private
+ * side.
  */
 
 import { createServer } from 'node:http';
@@ -27,8 +27,8 @@ export async function httpLedger(): Promise<HttpLedger> {
 				? { status: 'started', attempt: 1, deadline: '2026-10-14T12:05:00Z' }
 				: /\/steps\/[^/]+$/.test(path)
 					? { next: 'continue' }
-					: path === '/registry/v1/apps/store'
-						? { placements: ['rdu', 'buf'] }
+					: path === '/service/v1/things/one'
+						? { id: 'one' }
 						: {};
 			response.setHeader('content-type', 'application/json');
 			response.end(JSON.stringify({ status: 'success', data }));

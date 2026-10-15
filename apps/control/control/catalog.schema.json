@@ -1,0 +1,126 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "Catalog",
+	"description": "What `GET /v1/registry/kinds` answers inside the envelope: every kind control holds. Its\nJSON Schema is `catalog.schema.json`, committed, and `src/kinds.ts` is typed by the reader made\nof it, which every reader in another language is derived from too -- RFC bq3vn and the\nworkspace's spec/json.md.",
+	"type": "object",
+	"properties": {
+		"items": {
+			"type": "array",
+			"items": {
+				"$ref": "#/$defs/Description"
+			}
+		}
+	},
+	"required": ["items"],
+	"$defs": {
+		"Action": {
+			"description": "None yet: backing up or restarting comes with the controllers, RFC jln34.",
+			"not": {}
+		},
+		"Description": {
+			"description": "One kind as the catalog describes it.",
+			"type": "object",
+			"properties": {
+				"actions": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/Action"
+					}
+				},
+				"columns": {
+					"description": "The fields a list shows first, in order.",
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"fields": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/Field"
+					}
+				},
+				"name": {
+					"$ref": "#/$defs/Kind"
+				},
+				"named": {
+					"description": "False for a kind whose resources have no name, a node's and an account's: each is its id, made\nby a `POST` to its collection, and shown by its fields and its id's first eight digits -- RFC\n32hd9 and RFC o7eir.",
+					"type": "boolean"
+				},
+				"plural": {
+					"description": "Its collection's segment of a route, `/v1/registry/<plural>`, so no reader derives one.",
+					"type": "string"
+				}
+			},
+			"required": ["name", "plural", "named", "fields", "actions", "columns"]
+		},
+		"Field": {
+			"type": "object",
+			"properties": {
+				"choices": {
+					"description": "What a `choice` may be, or each item of a `list` of choices, each once; empty for every other\nfield.",
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"editable": {
+					"description": "False for what only control writes.",
+					"type": "boolean"
+				},
+				"fields": {
+					"description": "The fields of each item of a `list` of objects, as an account's `identities`, in this same\nshape; an item's identifying field is its first required `choice`. Empty for every other\nfield.",
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/Field"
+					}
+				},
+				"kind": {
+					"description": "The kind a `reference` names a resource of by its id, or each item of a `list` does, as an\napp's `placements` name nodes; absent, never null, for every other field.",
+					"$ref": "#/$defs/Kind"
+				},
+				"masked": {
+					"description": "Kept and answered like any other value, and drawn hidden until the reader asks to see it, as\nan identity's `value` -- RFC cpc2b; beside its ordinary `type`.",
+					"type": "boolean"
+				},
+				"name": {
+					"type": "string"
+				},
+				"required": {
+					"type": "boolean"
+				},
+				"secret": {
+					"description": "Written and never read back, its value handed to the secret service and answered by the name\nit is kept under; beside its ordinary `type`. No field is one today.",
+					"type": "boolean"
+				},
+				"type": {
+					"$ref": "#/$defs/Type"
+				}
+			},
+			"required": ["name", "type", "editable", "required"]
+		},
+		"Kind": {
+			"description": "Every kind of resource control holds, answered by its name.",
+			"type": "string",
+			"enum": ["node", "app", "account"]
+		},
+		"Type": {
+			"oneOf": [
+				{
+					"type": "string",
+					"enum": ["string", "integer", "boolean", "choice", "list"]
+				},
+				{
+					"description": "A value of named keys of its own, as an app's `release`; src/specs.ts holds its shape.",
+					"type": "string",
+					"const": "object"
+				},
+				{
+					"description": "The id of a resource of the field's `kind`, as a node's `account`, which the console draws as\na choice among them -- RFC 2kuvi.",
+					"type": "string",
+					"const": "reference"
+				}
+			]
+		}
+	}
+}

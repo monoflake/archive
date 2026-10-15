@@ -17,7 +17,10 @@ export type Env = Readonly<Record<string, string | undefined>>;
 export interface Config {
 	/** Where its doorbell and health answer: `LISTEN`, `host:port`, as every service reads it. */
 	readonly listen: { readonly host: string; readonly port: number };
-	/** The node it runs on, `NODE`, which host sets on every container; named in every write. */
+	/**
+	 * The node it runs on, by its id: `NODE_ID`, which host sets on every container beside `NODE`,
+	 * the hostname. Named in every write, and what the ledger pushes a turn by.
+	 */
 	readonly node: string | undefined;
 	readonly capacity: number;
 	/** The ledger on the private side: `LEDGER_URL`, the URL map's when unset. */
@@ -33,8 +36,7 @@ export interface Config {
  * on the private side, by their scope.
  */
 export function defaultBindings(): Record<string, string> {
-	const side = URLS.internal.api.private;
-	return { LEDGER: URLS.internal.ledger, REGISTRY: `${side}/registry` };
+	return { LEDGER: URLS.internal.ledger };
 }
 
 export function configOf(env: Env): Config {
@@ -44,7 +46,7 @@ export function configOf(env: Env): Config {
 	};
 	return {
 		listen: listenOf(value(env, 'LISTEN')),
-		node: value(env, 'NODE'),
+		node: value(env, 'NODE_ID'),
 		capacity: capacityOf(value(env, 'CAPACITY')),
 		ledger: value(env, 'LEDGER_URL') ?? URLS.internal.ledger,
 		pushUrl: value(env, 'PUSH_URL') ?? `${URLS.internal.api.private}/executor/turns`,

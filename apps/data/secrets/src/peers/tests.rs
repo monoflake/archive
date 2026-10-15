@@ -12,7 +12,7 @@ async fn core_holding(share: Option<Share>) -> String {
 	if let Some(share) = share {
 		seal.hold(share);
 	}
-	serve(api::routes(secrets(unreached(), seal, Vec::new()))).await
+	serve(api::routes(secrets(unreached(), seal, Control::default()))).await
 }
 
 fn scratch(name: &str) -> std::path::PathBuf {
@@ -24,9 +24,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 #[test]
 fn the_cores_are_read_as_host_reads_them() {
 	let cores = Cores::parse(" 100.64.0.1\n100.64.0.2 ").unwrap();
-	let at = |port: u16| ["100.64.0.1", "100.64.0.2"].map(|host| format!("http://{host}:{port}"));
-	assert_eq!(cores.peers, at(12014));
-	assert_eq!(cores.registries, at(12013));
+	assert_eq!(cores.peers, ["100.64.0.1", "100.64.0.2"].map(|host| format!("http://{host}:12014")));
 	assert_eq!(Cores::parse("100.64.0.1 tyo"), Err("tyo".into()));
 	assert_eq!(Cores::parse("").unwrap(), Cores::default());
 }
@@ -131,28 +129,43 @@ async fn a_share_file_that_is_not_one_is_not_held() {
 	assert!(read_share(&path.with_file_name("absent")).is_err());
 }
 
-/// A registry that answers every app whatever `?node=` asks, as an old one or a proxy dropping the
-/// query would.
-async fn registry_ignoring_the_node() -> String {
+const TYO: &str = "d132b0f553e3dcc3";
+const SIN: &str = "9d399312d1c3ddc4";
+const NRT: &str = "055d9b63bb419ba4";
+
+#[test]
+fn control_is_its_base_without_a_trailing_slash() {
+	let host = "control.example";
+	let control = Control::new(&format!(" https://{host}/\n"), " read \n");
+	assert_eq!(control.base, format!("https://{host}"));
+	assert_eq!(control.token, "read");
+	assert_eq!(Control::new("", ""), Control::default());
+}
+
+/// Control answering every app whatever `?node=` asks, as a proxy dropping the query would.
+async fn control_ignoring_the_node() -> String {
 	use axum::routing::get;
 	let items = serde_json::json!({ "items": [
-		{ "kind": "app", "name": "gemini", "spec": { "placements": ["tyo"] } },
-		{ "kind": "app", "name": "grok", "spec": { "placements": ["sin"] } },
-		{ "kind": "app", "name": "shot", "spec": { "placements": ["tyo", "sin"] } },
+		{ "kind": "app", "name": "gemini", "spec": { "placements": [TYO] } },
+		{ "kind": "app", "name": "grok", "spec": { "placements": [SIN] } },
+		{ "kind": "app", "name": "shot", "spec": { "placements": [TYO, SIN] } },
 		{ "kind": "app", "name": "nowhere", "spec": {} },
 	], "revision": 9 });
 	let answer = move || {
 		let items = items.clone();
 		async move { response::success(axum::http::StatusCode::OK, items) }
 	};
-	serve(axum::Router::new().route("/v1/apps", get(answer))).await
+	serve(axum::Router::new().route("/v1/registry/apps", get(answer))).await
 }
 
 #[tokio::test]
-async fn a_node_is_given_only_the_apps_placed_on_it_whatever_the_registry_lists() {
-	let registries = [nobody(), registry_ignoring_the_node().await];
-	let placed = placed_apps(&client(), &registries, "tyo").await;
+async fn a_node_is_given_only_the_apps_placed_on_it_whatever_control_lists() {
+	let control = Control::new(&control_ignoring_the_node().await, "read");
+	let placed = placed_apps(&client(), &control, TYO).await;
 	assert_eq!(placed, Some(vec!["gemini".to_owned(), "shot".to_owned()]));
-	let placed = placed_apps(&client(), &registries, "nrt").await;
+	let placed = placed_apps(&client(), &control, NRT).await;
 	assert_eq!(placed, Some(Vec::new()));
+	let silent = Control::new(&nobody(), "read");
+	assert_eq!(placed_apps(&client(), &silent, TYO).await, None);
+	assert_eq!(placed_apps(&client(), &Control::default(), TYO).await, None);
 }

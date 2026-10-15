@@ -7,7 +7,7 @@ import { configOf } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { PACKAGED, zipOf } from './fixtures.ts';
 import { type Artifact, DECLARATIONS, RateLimited, Refused, Transient, Unread } from './github.ts';
-import { type Registry, Releases } from './releases.ts';
+import { type Control, Releases } from './releases.ts';
 import { Store } from './store.ts';
 
 const WEB = 'canmi21/web';
@@ -34,7 +34,7 @@ const DECLARED: Artifact = { app: DECLARATIONS, id: 9, digest: 'sha256:00' };
  * says, the console unless told, and the `images` given, each declared as `declared` says, plainly
  * where it says nothing, and with no declarations at all where it says null; either of the first
  * two throws where the option is an error. A Worker's download throws what `downloads` holds under
- * `<run> <app>`, while it does. Releases go to `registry`, where one is given.
+ * `<run> <app>`, while it does. Releases go to `control`, where one is given.
  */
 async function setup(
 	options: {
@@ -43,7 +43,7 @@ async function setup(
 		images?: Record<number, string[]>;
 		declared?: Record<number, Record<string, string> | null>;
 		downloads?: Record<string, Error>;
-		registry?: Pick<Registry, 'configured' | 'release'>;
+		control?: Pick<Control, 'configured' | 'release'>;
 	} = {},
 ) {
 	const data = await mkdtemp(join(tmpdir(), 'deployer-'));
@@ -91,7 +91,7 @@ async function setup(
 	const gate: { held?: Promise<void> } = {};
 	const logs: string[] = [];
 	const log = (line: string) => logs.push(line);
-	const releases = options.registry && new Releases({ store, registry: options.registry, log });
+	const releases = options.control && new Releases({ store, control: options.control, log });
 	const deployer = new Deployer({
 		config,
 		store,
@@ -436,14 +436,14 @@ describe('a Worker GitHub did not give for a reason of the moment', () => {
 	});
 });
 
-/** A registry that records each release it is asked to write, and fails while `down` is set. */
-function registry() {
+/** Control recording each release it is asked to write, and failing while `down` is set. */
+function control() {
 	const written: [string, number][] = [];
 	const state = { down: false };
-	const fake: Pick<Registry, 'configured' | 'release'> = {
+	const fake: Pick<Control, 'configured' | 'release'> = {
 		configured: true,
 		release: async (app, release) => {
-			if (state.down) throw new Error('no registry answered: 100.64.0.1:12013: fetch failed');
+			if (state.down) throw new Error('control did not answer: fetch failed');
 			written.push([app, release.run]);
 			return 'written';
 		},
@@ -453,8 +453,8 @@ function registry() {
 
 describe('releases', () => {
 	it('records every app a run built, image or Worker, once its run is taken', async () => {
-		const { fake, written } = registry();
-		const { store, took } = await setup({ registry: fake, images: { 5: ['geo', 'relay'] } });
+		const { fake, written } = control();
+		const { store, took } = await setup({ control: fake, images: { 5: ['geo', 'relay'] } });
 		await took(5);
 		expect(written).toEqual([
 			['console', 5],
@@ -464,10 +464,10 @@ describe('releases', () => {
 		expect(store.unwritten()).toEqual([]);
 	});
 
-	it('deploys while the registry is down, and writes the release on the next pass', async () => {
-		const { fake, written, state } = registry();
+	it('deploys while control is down, and writes the release on the next pass', async () => {
+		const { fake, written, state } = control();
 		const { store, logs, took, pass } = await setup({
-			registry: fake,
+			control: fake,
 			recent: { [WEB]: [5] },
 			images: { 5: ['geo'] },
 		});
@@ -476,9 +476,9 @@ describe('releases', () => {
 		expect(store.list()).toMatchObject([{ run: 5, worker: 'console', stage: 'deployed' }]);
 		expect(written).toEqual([]);
 		expect(logs).toContain(
-			`deployer: console's release from run 5 of ${WEB} is not written yet: no registry answered: 100.64.0.1:12013: fetch failed`,
+			`deployer: console's release from run 5 of ${WEB} is not written yet: control did not answer: fetch failed`,
 		);
-		// The registry not answering, the rest wait rather than each asking it again.
+		// Control not answering, the rest wait rather than each asking it again.
 		expect(logs.some((line) => line.includes("geo's release"))).toBe(false);
 		expect(store.unwritten().map((release) => release.app)).toEqual(['console', 'geo']);
 
@@ -492,9 +492,9 @@ describe('releases', () => {
 	});
 
 	it('takes a run that built images alone, for its releases, and holds it taken', async () => {
-		const { fake, written } = registry();
+		const { fake, written } = control();
 		const { asked, took, pass } = await setup({
-			registry: fake,
+			control: fake,
 			recent: { [WEB]: [5, 7] },
 			built: { 7: [] },
 			images: { 7: ['geo'] },
@@ -510,9 +510,9 @@ describe('releases', () => {
 	});
 
 	it('writes no release for an app rolled out by hand, and the rest of its run as ever', async () => {
-		const { fake, written } = registry();
+		const { fake, written } = control();
 		const { store, took } = await setup({
-			registry: fake,
+			control: fake,
 			images: { 5: ['database', 'geo'] },
 			declared: { 5: { database: 'name = "database"\nrollout = "manual"\n' } },
 		});
@@ -525,9 +525,9 @@ describe('releases', () => {
 	});
 
 	it("moves no image's release where the run's declarations cannot be read", async () => {
-		const { fake, written } = registry();
+		const { fake, written } = control();
 		const { store, logs, took } = await setup({
-			registry: fake,
+			control: fake,
 			images: { 5: ['geo'] },
 			declared: { 5: null },
 		});

@@ -5,8 +5,10 @@ platform's Postgres, so the code's repositories hold only what an app needs -- R
 the nodes and where each app runs; what each binding resolves to follows them there. Every
 component that needs it reads it while it runs, and none restarts for a change -- RFC qcyb3.
 
-**It is moving to control**, a Worker over D1 in an account of its own -- [control.md](control.md),
-RFC o7eir. Until a part has moved, this file rules it.
+**It is replaced by control in one cut**, a Worker over D1 in an account of its own --
+[control.md](control.md), RFC o7eir: every reader and writer, the relay and the command line among
+them, moves to control at once, and this service stops after it. What follows is the service as it
+ran until then, kept until its app is archived.
 
 ## Where it runs, and what it keeps
 

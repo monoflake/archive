@@ -3,7 +3,7 @@
 
 use secrets_service::api::{self, Secrets, Shared};
 use secrets_service::ceremony;
-use secrets_service::peers::{self, Cores, PORT};
+use secrets_service::peers::{self, Control, Cores, PORT};
 use secrets_service::seal::Seal;
 use secrets_service::store::Store;
 use secrets_service::tokens::{NodeTokens, ScopeTokens};
@@ -49,7 +49,7 @@ async fn serve() -> anyhow::Result<()> {
 		.map_err(|address| anyhow::anyhow!("CORES holds `{address}`, which is not an IPv4"))?;
 	let nodes = NodeTokens::parse(&std::env::var("SECRETS_NODE_TOKENS").unwrap_or_default())
 		.map_err(|pair| {
-			anyhow::anyhow!("SECRETS_NODE_TOKENS holds `{pair}`, which is not node:digest")
+			anyhow::anyhow!("SECRETS_NODE_TOKENS holds `{pair}`, which is not id:digest")
 		})?;
 	let scopes = ScopeTokens::parse(&std::env::var("SECRETS_SCOPE_TOKENS").unwrap_or_default())
 		.map_err(|pair| {
@@ -61,6 +61,10 @@ async fn serve() -> anyhow::Result<()> {
 		.map_err(|scope| {
 			anyhow::anyhow!("SECRETS_NODE_SCOPES holds `{scope}`, which is not a scope")
 		})?;
+	let control = Control::new(
+		&std::env::var("CONTROL").unwrap_or_default(),
+		&std::env::var("CONTROL_READ_TOKEN").unwrap_or_default(),
+	);
 	let store = Store::connect(&url, None)?;
 	let applied = store.migrate().await?;
 	if !applied.is_empty() {
@@ -80,6 +84,9 @@ async fn serve() -> anyhow::Result<()> {
 		eprintln!("secrets: CORES is not set; only the operator's key opens it");
 	}
 	eprintln!("secrets: {} node(s) may read", nodes.len());
+	if control.base.is_empty() || control.token.is_empty() {
+		eprintln!("secrets: CONTROL or CONTROL_READ_TOKEN is not set; no node is answered");
+	}
 	eprintln!("secrets: nodes are given the scopes {}, and no other", node_scopes.join(" "));
 	let share = std::env::var("SECRETS_SHARE").unwrap_or_else(|_| SHARE.into());
 
@@ -102,7 +109,7 @@ async fn serve() -> anyhow::Result<()> {
 		peer_token,
 		nodes,
 		node_scopes,
-		registries: cores.registries,
+		control,
 		client,
 	});
 	let listener = tokio::net::TcpListener::bind(&listen).await?;

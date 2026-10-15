@@ -286,17 +286,19 @@ mod tests {
 		let after = serde_json::json!({ "version": 20, "state": "live", "heard_at": "b",
 			"snapshot": { "apps": [{ "name": "geo", "image": "geo:2" }, { "name": "apt", "image": "apt:1" }] },
 			"runs": 4 });
-		let delta = serde_json::to_value(entry_delta("tyo", &before, &after).unwrap()).unwrap();
+		let delta =
+			serde_json::to_value(entry_delta("d132b0f553e3dcc3", &before, &after).unwrap()).unwrap();
 		assert_eq!(
 			delta,
-			serde_json::json!({ "type": "delta", "node": "tyo", "base": 10,
+			serde_json::json!({ "type": "delta", "node": "d132b0f553e3dcc3", "base": 10,
 				"set": { "heard_at": "b", "runs": 4, "version": 20 },
 				"snapshot": { "apps": { "set": [{ "name": "geo", "image": "geo:2" }] } } })
 		);
-		assert!(entry_delta("tyo", &after, &after).is_none());
+		assert!(entry_delta("d132b0f553e3dcc3", &after, &after).is_none());
 		// A peer heard at last: its snapshot whole, from an entry that held no version.
 		let unheard = serde_json::json!({ "state": "waiting" });
-		let heard = serde_json::to_value(entry_delta("tyo", &unheard, &after).unwrap()).unwrap();
+		let heard =
+			serde_json::to_value(entry_delta("d132b0f553e3dcc3", &unheard, &after).unwrap()).unwrap();
 		assert!(heard.get("base").is_none() && heard["set"]["snapshot"]["apps"].is_array());
 	}
 
@@ -304,21 +306,21 @@ mod tests {
 	async fn a_rounds_beats_go_to_a_page_as_one_message_the_newest_of_each_node() {
 		use crate::cluster::Carried;
 		let relay = Relay::new(
-			"rdu".into(),
+			"d62c82b23a858876".into(),
 			"s3cret".into(),
 			std::collections::BTreeSet::new(),
 			crate::runs::Store::memory().unwrap(),
 		)
 		.unwrap();
 		let now = u64::try_from(Timestamp::now().as_millisecond()).unwrap();
-		for node in ["tyo", "buf"] {
+		for node in ["d132b0f553e3dcc3", "e38f403f033d87f7"] {
 			let carried = Carried { version: now - 1_000, snapshot: Arc::new(serde_json::json!({})) };
 			relay.take(node, carried, None);
 		}
 		let (mut feed, _) = Feed::rounded(relay.clone(), true, Duration::from_millis(50));
-		relay.beaten("tyo", now, Some("buf"));
-		relay.beaten("buf", now + 10, Some("buf"));
-		relay.beaten("tyo", now + 20, Some("buf"));
+		relay.beaten("d132b0f553e3dcc3", now, Some("e38f403f033d87f7"));
+		relay.beaten("e38f403f033d87f7", now + 10, Some("e38f403f033d87f7"));
+		relay.beaten("d132b0f553e3dcc3", now + 20, Some("e38f403f033d87f7"));
 		let beats = loop {
 			let next = tokio::time::timeout(Duration::from_secs(5), feed.next()).await.unwrap();
 			if let Some(Live::Beats { beats }) = next {
@@ -326,10 +328,10 @@ mod tests {
 			}
 		};
 		// Heard as this relay's clock says: tyo's second beat, after buf's, is the one it keeps.
-		assert_eq!(beats.keys().collect::<Vec<_>>(), ["buf", "tyo"]);
-		assert!(beats["tyo"] >= beats["buf"]);
+		assert_eq!(beats.keys().collect::<Vec<_>>(), ["d132b0f553e3dcc3", "e38f403f033d87f7"]);
+		assert!(beats["d132b0f553e3dcc3"] >= beats["e38f403f033d87f7"]);
 		let text = text(&Live::Beats { beats });
-		assert!(text.starts_with(r#"{"type":"beats","beats":{"buf":""#), "{text}");
+		assert!(text.starts_with(r#"{"type":"beats","beats":{"d132b0f553e3dcc3":""#), "{text}");
 		// A round nobody was heard in sends nothing.
 		let quiet = tokio::time::timeout(Duration::from_millis(200), feed.next()).await;
 		assert!(quiet.is_err());

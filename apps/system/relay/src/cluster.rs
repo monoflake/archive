@@ -152,9 +152,9 @@ mod tests {
 	#[test]
 	fn a_newer_version_replaces_an_older_one() {
 		let mut cluster = Cluster::default();
-		assert!(cluster.merge("rdu", carried(taken(0), "old"), at(0)));
-		assert!(cluster.merge("rdu", carried(taken(3), "new"), at(3)));
-		let held = &cluster.nodes()["rdu"];
+		assert!(cluster.merge("d62c82b23a858876", carried(taken(0), "old"), at(0)));
+		assert!(cluster.merge("d62c82b23a858876", carried(taken(3), "new"), at(3)));
+		let held = &cluster.nodes()["d62c82b23a858876"];
 		assert_eq!((held.version, held.heard_at), (taken(3), at(3)));
 		assert_eq!(held.snapshot["said"], "new");
 	}
@@ -163,20 +163,20 @@ mod tests {
 	fn a_version_is_heard_when_its_origin_took_it_never_later_than_now() {
 		let mut cluster = Cluster::default();
 		// Handed on start by a neighbor still holding it: five minutes old, not heard now.
-		cluster.merge("rdu", carried(taken(0), "stale"), at(300));
-		assert_eq!(cluster.nodes()["rdu"].heard_at, at(0));
+		cluster.merge("d62c82b23a858876", carried(taken(0), "stale"), at(300));
+		assert_eq!(cluster.nodes()["d62c82b23a858876"].heard_at, at(0));
 		// From a clock ahead of this one, heard now rather than in the future.
-		cluster.merge("tyo", carried(taken(2), "ahead"), at(1));
-		assert_eq!(cluster.nodes()["tyo"].heard_at, at(1));
+		cluster.merge("d132b0f553e3dcc3", carried(taken(2), "ahead"), at(1));
+		assert_eq!(cluster.nodes()["d132b0f553e3dcc3"].heard_at, at(1));
 	}
 
 	#[test]
 	fn an_older_or_equal_version_is_ignored() {
 		let mut cluster = Cluster::default();
-		cluster.merge("rdu", carried(taken(0), "new"), at(0));
-		assert!(!cluster.merge("rdu", carried(taken(0) - 1, "old"), at(3)));
-		assert!(!cluster.merge("rdu", carried(taken(0), "again"), at(6)));
-		let held = &cluster.nodes()["rdu"];
+		cluster.merge("d62c82b23a858876", carried(taken(0), "new"), at(0));
+		assert!(!cluster.merge("d62c82b23a858876", carried(taken(0) - 1, "old"), at(3)));
+		assert!(!cluster.merge("d62c82b23a858876", carried(taken(0), "again"), at(6)));
+		let held = &cluster.nodes()["d62c82b23a858876"];
 		assert_eq!((held.heard_at, held.snapshot["said"].as_str()), (at(0), Some("new")));
 	}
 
@@ -184,61 +184,74 @@ mod tests {
 	fn a_beat_moves_when_a_node_was_heard_and_never_back() {
 		let mut cluster = Cluster::default();
 		// A beat ahead of the snapshot it belongs to is kept until the snapshot comes.
-		assert_eq!(cluster.beat("rdu", taken(2), at(2)), None);
-		cluster.merge("rdu", carried(taken(0), "old"), at(2));
-		assert_eq!(cluster.nodes()["rdu"].heard_at, at(2));
-		assert_eq!(cluster.beat("rdu", taken(5), at(5)), Some(at(5)));
-		assert_eq!(cluster.beat("rdu", taken(4), at(6)), None);
-		assert_eq!(cluster.nodes()["rdu"].heard_at, at(5));
-		assert_eq!(cluster.beats(), Versions::from([("rdu".into(), taken(5))]));
+		assert_eq!(cluster.beat("d62c82b23a858876", taken(2), at(2)), None);
+		cluster.merge("d62c82b23a858876", carried(taken(0), "old"), at(2));
+		assert_eq!(cluster.nodes()["d62c82b23a858876"].heard_at, at(2));
+		assert_eq!(cluster.beat("d62c82b23a858876", taken(5), at(5)), Some(at(5)));
+		assert_eq!(cluster.beat("d62c82b23a858876", taken(4), at(6)), None);
+		assert_eq!(cluster.nodes()["d62c82b23a858876"].heard_at, at(5));
+		assert_eq!(cluster.beats(), Versions::from([("d62c82b23a858876".into(), taken(5))]));
 	}
 
 	#[test]
 	fn the_newest_versions_are_kept_with_their_digests() {
 		let mut cluster = Cluster::default();
 		for version in 1..=6 {
-			cluster.merge("rdu", carried(version, &format!("v{version}")), at(0));
+			cluster.merge("d62c82b23a858876", carried(version, &format!("v{version}")), at(0));
 		}
-		assert!(cluster.at("rdu", 2).is_none());
-		assert_eq!(cluster.at("rdu", 3).unwrap()["said"], "v3");
+		assert!(cluster.at("d62c82b23a858876", 2).is_none());
+		assert_eq!(cluster.at("d62c82b23a858876", 3).unwrap()["said"], "v3");
 		let newest = crate::delta::digest(&json!({ "said": "v6" }));
-		assert_eq!(cluster.digest("rdu"), Some(newest));
-		assert_eq!(cluster.digest("tyo"), None);
+		assert_eq!(cluster.digest("d62c82b23a858876"), Some(newest));
+		assert_eq!(cluster.digest("d132b0f553e3dcc3"), None);
 	}
 
 	#[test]
 	fn an_unknown_node_is_added() {
 		let mut cluster = Cluster::default();
-		cluster.merge("rdu", carried(9, "rdu"), at(0));
-		assert!(cluster.merge("tyo", carried(1, "tyo"), at(1)));
-		assert_eq!(cluster.versions(), Versions::from([("rdu".into(), 9), ("tyo".into(), 1)]));
+		cluster.merge("d62c82b23a858876", carried(9, "d62c82b23a858876"), at(0));
+		assert!(cluster.merge("d132b0f553e3dcc3", carried(1, "d132b0f553e3dcc3"), at(1)));
+		assert_eq!(
+			cluster.versions(),
+			Versions::from([("d62c82b23a858876".into(), 9), ("d132b0f553e3dcc3".into(), 1)])
+		);
 	}
 
 	#[test]
 	fn meeting_sends_each_side_exactly_what_it_lacks() {
 		let mut here = Cluster::default();
 		let mut there = Cluster::default();
-		for (node, version) in [("rdu", 9), ("tyo", 4), ("buf", 7), ("gvx", 2)] {
+		for (node, version) in [
+			("d62c82b23a858876", 9),
+			("d132b0f553e3dcc3", 4),
+			("e38f403f033d87f7", 7),
+			("a0a24bbaa0c0beba", 2),
+		] {
 			here.merge(node, carried(version, "here"), at(0));
 		}
 		// `there` is tyo: its own is newer there, buf is equal, gvx older, rdu missing, nrt its own.
-		for (node, version) in [("tyo", 6), ("buf", 7), ("gvx", 1), ("nrt", 3)] {
+		for (node, version) in [
+			("d132b0f553e3dcc3", 6),
+			("e38f403f033d87f7", 7),
+			("a0a24bbaa0c0beba", 1),
+			("055d9b63bb419ba4", 3),
+		] {
 			there.merge(node, carried(version, "there"), at(0));
 		}
 
 		let to_there: Vec<(String, u64)> = here
-			.lacking(&there.versions(), "tyo")
+			.lacking(&there.versions(), "d132b0f553e3dcc3")
 			.into_iter()
 			.map(|(node, carried)| (node, carried.version))
 			.collect();
-		assert_eq!(to_there, [("gvx".into(), 2), ("rdu".into(), 9)]);
+		assert_eq!(to_there, [("a0a24bbaa0c0beba".into(), 2), ("d62c82b23a858876".into(), 9)]);
 
 		// tyo's own goes back however old it is here; nrt is new to `here`.
 		let to_here: Vec<(String, u64)> = there
-			.lacking(&here.versions(), "rdu")
+			.lacking(&here.versions(), "d62c82b23a858876")
 			.into_iter()
 			.map(|(node, carried)| (node, carried.version))
 			.collect();
-		assert_eq!(to_here, [("nrt".into(), 3), ("tyo".into(), 6)]);
+		assert_eq!(to_here, [("055d9b63bb419ba4".into(), 3), ("d132b0f553e3dcc3".into(), 6)]);
 	}
 }

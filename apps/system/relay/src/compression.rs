@@ -117,8 +117,10 @@ mod tests {
 			})
 			.collect();
 		let state = serde_json::json!({ "version": version, "snapshot": { "apps": apps } });
-		serde_json::to_vec(&serde_json::json!({ "type": "node", "node": "rdu", "state": state }))
-			.unwrap()
+		serde_json::to_vec(
+			&serde_json::json!({ "type": "node", "node": "d62c82b23a858876", "state": state }),
+		)
+		.unwrap()
 	}
 
 	#[test]

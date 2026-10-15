@@ -3,12 +3,15 @@ import { addressOf, envOf } from './bindings.ts';
 
 describe('a binding', () => {
 	it('sends the path and query of what it is asked to its base, whatever the host', () => {
-		expect(addressOf('http://registry.invalid/registry', '/v1/apps/store')).toBe(
-			'http://registry.invalid/registry/v1/apps/store',
+		expect(addressOf('http://service.invalid/service', '/v1/things/one')).toBe(
+			'http://service.invalid/service/v1/things/one',
 		);
 		expect(
-			addressOf('http://r.invalid/registry/', 'https://anything.invalid/v1/apps?node=rdu'),
-		).toBe('http://r.invalid/registry/v1/apps?node=rdu');
+			addressOf(
+				'http://s.invalid/service/',
+				'https://anything.invalid/v1/things?node=d62c82b23a858876',
+			),
+		).toBe('http://s.invalid/service/v1/things?node=d62c82b23a858876');
 		expect(addressOf('http://r.invalid', new Request('http://x.invalid/v1/kinds'))).toBe(
 			'http://r.invalid/v1/kinds',
 		);
@@ -20,12 +23,12 @@ describe('a binding', () => {
 			asked.push(new Request(input, init));
 			return new Response('ok');
 		}) as typeof fetch;
-		const env = envOf({ REGISTRY: 'http://r.invalid/registry' }, reach);
-		await env.REGISTRY?.fetch('/v1/apps', { method: 'PATCH', body: '{}' });
-		await env.REGISTRY?.fetch(new Request('http://x.invalid/v1/apps/store', { method: 'DELETE' }));
+		const env = envOf({ SERVICE: 'http://s.invalid/service' }, reach);
+		await env.SERVICE?.fetch('/v1/things', { method: 'PATCH', body: '{}' });
+		await env.SERVICE?.fetch(new Request('http://x.invalid/v1/things/one', { method: 'DELETE' }));
 		expect(asked.map((request) => `${request.method} ${request.url}`)).toEqual([
-			'PATCH http://r.invalid/registry/v1/apps',
-			'DELETE http://r.invalid/registry/v1/apps/store',
+			'PATCH http://s.invalid/service/v1/things',
+			'DELETE http://s.invalid/service/v1/things/one',
 		]);
 	});
 });

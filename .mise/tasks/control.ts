@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-//MISE description="Control in its own Cloudflare account: `control deploy|token|import [--dry-run]`"
+//MISE description="Control in its own Cloudflare account: `control deploy|token|writers|import [--dry-run]`"
 /**
- * The one way `apps/control/control` is deployed, given its tokens, and filled from the old
- * registry. Its account is not the platform's, so wrangler is handed control's token and the one
- * account it reaches, in its own environment alone, every other Cloudflare variable left out. No
- * token and no account id is printed. See RFC o7eir.
+ * The one way `apps/control/control` is deployed, given its tokens, its writers given theirs, and
+ * filled from the old registry. Its account is not the platform's, so wrangler is handed control's
+ * token and the one account it reaches, in its own environment alone, every other Cloudflare
+ * variable left out. No token and no account id is printed. See RFC o7eir and
+ * spec/architecture/control.md.
  */
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -13,14 +14,24 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parse } from 'smol-toml';
 import * as v from 'valibot';
-import { PORT, address, placements } from '../../apps/data/registry/scripts/platform.ts';
+import {
+	Failure,
+	address,
+	placedOn,
+	placements,
+} from '../../apps/data/registry/scripts/platform.ts';
 import { URLS } from '../../libs/sdk/src/index.ts';
 import { ROOT } from './workspace.ts';
 
 const APP = join(ROOT, 'apps/control/control');
 const WORKER = 'control';
 const READ = 'CONTROL_READ_TOKEN';
+const WRITE = 'CONTROL_WRITE_TOKEN';
 const IMPORT = 'CONTROL_IMPORT_TOKEN';
+/** The tokens infra holds too: hosts read control, and an operator's deploy by hand writes it. */
+const SHARED = new Set([READ, WRITE]);
+/** The old registry's port on each of its cores, which `import` reads until the cut. */
+const REGISTRY_PORT = 12013;
 const INFRA = join(ROOT, '../infra');
 const NODES = join(INFRA, 'nodes/nodes.toml');
 /** What control shows a node as, from nodes.toml -- infra's spec/architecture/nodes.md. */
@@ -123,17 +134,19 @@ async function deploy(dry: boolean): Promise<void> {
 }
 
 /**
- * Both bearers drawn anew, each put on the Worker and into secrets.json on stdin alone, the read
- * one into infra's too, which hosts read control with; the old ones stop working as the Worker
- * takes the new, so `mise run node` in infra follows. A Worker not there yet is refused, since
+ * Every bearer drawn anew, each put on the Worker and into secrets.json on stdin alone, the read
+ * and write ones into infra's too, which hosts read control with and a deploy by hand writes it
+ * with; the old ones stop working as the Worker takes the new, so `mise run node` in infra,
+ * `seal token` and `control writers` follow. A Worker not there yet is refused, since
  * `wrangler secret put` would make an empty one of that name.
  */
 async function token(dry: boolean): Promise<void> {
 	if (dry) {
-		for (const name of [READ, IMPORT]) {
-			const where = name === READ ? 'secrets.json here and in infra' : 'secrets.json';
+		for (const name of [READ, WRITE, IMPORT]) {
+			const where = SHARED.has(name) ? 'secrets.json here and in infra' : 'secrets.json';
 			console.log(`would draw ${name}, put it on the Worker ${WORKER}, and set it in ${where}`);
 		}
+		console.log('then `mise run node` in infra, `seal token` and `control writers` give them out');
 		return;
 	}
 	const { env, account: id, token: credential } = await wranglerEnv();
@@ -143,14 +156,14 @@ async function token(dry: boolean): Promise<void> {
 	);
 	if (!script.ok)
 		fail(`the Worker ${WORKER} is not deployed (${script.status}); run \`control deploy\` first`);
-	for (const name of [READ, IMPORT]) {
+	for (const name of [READ, WRITE, IMPORT]) {
 		const value = randomBytes(32).toString('base64url');
 		run(['pnpm', 'exec', 'wrangler', 'secret', 'put', name, '--name', WORKER], `putting ${name}`, {
 			cwd: APP,
 			env,
 			input: value,
 		});
-		for (const cwd of name === READ ? [ROOT, INFRA] : [ROOT]) {
+		for (const cwd of SHARED.has(name) ? [ROOT, INFRA] : [ROOT]) {
 			run(['sops', 'set', '--value-stdin', 'secrets.json', `["${name}"]`], `setting ${name}`, {
 				cwd,
 				input: JSON.stringify(value),
@@ -158,6 +171,181 @@ async function token(dry: boolean): Promise<void> {
 		}
 		console.log(`control: ${name} drawn, put on ${WORKER} and set in secrets.json`);
 	}
+	console.log('control: then `mise run node` in infra, `seal token` and `control writers`');
+}
+
+/**
+ * The app that writes control while it runs: the deployer, recording each app's release -- RFC
+ * jln34. It is given where control is and the write token, and with them every source host deploys
+ * from added to its own `DEPLOY_SOURCES`, so no app host runs is left without a release;
+ * `GITHUB_ACTIONS_TOKEN`, which reads those sources' runs; and the bucket CI leaves each run's
+ * artifacts in, RFC q28g5 and 7cwmp. An owner's own GitHub token is the author's, kept apart and
+ * never written here -- RFC 024i3.
+ */
+const WRITER = 'deployer';
+const GITHUB = 'GITHUB_ACTIONS_TOKEN';
+const SOURCES = 'DEPLOY_SOURCES';
+const ARTIFACTS: Record<string, string> = {
+	ARTIFACTS_ENDPOINT: URLS.external.artifacts,
+	ARTIFACTS_REGION: 'auto',
+	ARTIFACTS_BUCKET: 'artifact',
+};
+const ARTIFACTS_KEY = ['ARTIFACTS_READ_KEY_ID', 'ARTIFACTS_READ_SECRET'];
+/** The console reads and writes control with both bearers, as Worker secrets of its own. */
+const CONSOLE = 'console';
+const CONSOLE_DIRECTORY = join(ROOT, '../web/apps/console');
+const SSH = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
+
+/**
+ * Run on a node with KEY=VALUE lines on stdin and the app's directory and the file's name as
+ * arguments: each key set, every other line kept, the file root's alone; prints current or
+ * changed. The database task's `UPSERT`, which every other env write here goes through.
+ */
+export const UPSERT = `set -eu
+umask 077
+dir=$1
+file=$dir/$2
+mountpoint -q /data || { echo "/data is not mounted" >&2; exit 1; }
+mkdir -p /data/apps
+[ -d "$dir" ] || btrfs subvolume create "$dir" >/dev/null
+chmod 700 "$dir"
+cp -p "$file" "$file.new" 2>/dev/null || : > "$file.new"
+while IFS= read -r pair; do
+	[ -n "$pair" ] || continue
+	K=\${pair%%=*} V=\${pair#*=} awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"] }
+		index($0, k "=") == 1 { if (!d) print k "=" v; d = 1; next }
+		{ print }
+		END { if (!d) print k "=" v }' "$file.new" > "$file.tmp"
+	mv "$file.tmp" "$file.new"
+done
+if [ -f "$file" ] && cmp -s "$file.new" "$file"; then
+	rm -f "$file.new"
+	echo current
+else
+	chown root:root "$file.new"
+	chmod 600 "$file.new"
+	mv "$file.new" "$file"
+	echo changed
+fi
+`;
+
+/** `text` quoted for a POSIX shell. */
+const quoted = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
+
+/** What `command` printed on `node`, given `input`; undefined when it failed. */
+function ssh(node: string, command: string, input = ''): string | undefined {
+	const ran = spawnSync('ssh', [...SSH, `root@${node}`, command], {
+		input,
+		encoding: 'utf8',
+		stdio: ['pipe', 'pipe', 'inherit'],
+	});
+	return ran.status === 0 ? ran.stdout.trim() : undefined;
+}
+
+/** `pairs` set in /data/apps/<app>/<file> on `node`, every other line kept; a failure stops. */
+function upsert(node: string, app: string, file: string, pairs: Record<string, string>): void {
+	const command = `sh -c ${quoted(UPSERT)} sh ${quoted(`/data/apps/${app}`)} ${quoted(file)}`;
+	const lines = Object.entries(pairs).map(([key, value]) => `${key}=${value}\n`);
+	const answer = ssh(node, command, lines.join(''));
+	if (answer === undefined) fail(`${node}: writing /data/apps/${app}/${file} failed`);
+	console.log(`control: ${node}: /data/apps/${app}/${file} ${answer}`);
+}
+
+/** `key` as /data/apps/<app>/config.env on `node` sets it, '' when it sets none. */
+function configured(node: string, app: string, key: string): string {
+	const path = quoted(`/data/apps/${app}/config.env`);
+	const answer = ssh(node, `if [ -f ${path} ]; then sed -n 's/^${key}=//p' ${path}; fi`);
+	return answer ?? fail(`${node}: reading ${key} of ${app} failed`);
+}
+
+/**
+ * Each `owner/repo` that `DEPLOY_SOURCES` names in the text of infra's host_env.py, read rather
+ * than run; undefined where it holds none. Exported for the test.
+ */
+export function deploySources(text: string): string[] | undefined {
+	const found = /^DEPLOY_SOURCES\s*=\s*"([^"]*)"/m.exec(text);
+	return found?.[1]?.split(/\s+/).flatMap((entry) => (entry ? [entry.split('=')[0]!] : []));
+}
+
+/** The sources `current` names, in its order, then each of `wanted` it does not, each once. */
+export function widened(current: string, wanted: readonly string[]): string {
+	const have = [...new Set(current.split(/\s+/).filter(Boolean))];
+	return [...have, ...wanted.filter((source) => !have.includes(source))].join(' ');
+}
+
+/** Every repository host deploys from, as DEPLOY_SOURCES names them on infra's `main`. */
+function hostSources(): string[] {
+	const file = '.mise/tasks/host_env.py';
+	const args = ['--ignore-working-copy', '-R', INFRA, 'file', 'show', '-r', 'main', file];
+	const shown = spawnSync('jj', args, { cwd: INFRA, encoding: 'utf8' });
+	if (shown.status !== 0) fail(`reading ${file} on infra's main failed`);
+	return deploySources(shown.stdout) ?? fail(`infra's ${file} holds no DEPLOY_SOURCES string`);
+}
+
+/** wrangler in the console's app, as its own pnpm has it, given `input` on stdin. */
+function consoleWrangler(args: string[], input?: string) {
+	return spawnSync('pnpm', ['exec', 'wrangler', ...args], {
+		cwd: CONSOLE_DIRECTORY,
+		input,
+		encoding: 'utf8',
+	});
+}
+
+/**
+ * The deployer, on each node control places it on, and the console Worker given what they write
+ * control with, as the old registry's writers were by `registry token`. The console Worker must be
+ * there first: `wrangler secret put` without one makes it.
+ */
+async function writers(dry: boolean): Promise<void> {
+	const [reading, writing, github] = [READ, WRITE, GITHUB].map((name) => process.env[name]);
+	const key = Object.fromEntries(ARTIFACTS_KEY.map((name) => [name, process.env[name] ?? '']));
+	const missing = [
+		...(reading ? [] : [READ]),
+		...(writing ? [] : [WRITE]),
+		...(github ? [] : [GITHUB]),
+		...ARTIFACTS_KEY.filter((name) => !key[name]),
+	];
+	if (missing.length > 0) {
+		const said = `secrets.json has no ${missing.join(', ')}; \`control token\` draws control's`;
+		if (!dry) fail(said);
+		console.log(`${said} (a real run stops here)`);
+	}
+	const nodes = reading ? await placedOn(WRITER) : [];
+	if (reading && nodes.length === 0) fail(`control places ${WRITER} on no node`);
+	const sources = hostSources();
+	const config = { CONTROL: URLS.control, ...ARTIFACTS };
+	if (dry) {
+		const where = reading ? nodes.join(', ') : `the nodes control places ${WRITER} on`;
+		const secrets = [WRITE, GITHUB, ...ARTIFACTS_KEY].map((name) => `${name}=<redacted>`);
+		console.log(`would, on ${where}, set in /data/apps/${WRITER}/secret.env: ${secrets.join(' ')}`);
+		const told = Object.entries(config).map(([name, value]) => `${name}=${value}`);
+		console.log(`would set in /data/apps/${WRITER}/config.env: ${told.join(' ')}`);
+		console.log(`would add to its ${SOURCES} each of ${sources.join(' ')} it does not name`);
+		console.log(
+			`would check the Worker ${CONSOLE} is there, then put ${READ} and ${WRITE} on it, from` +
+				` ${CONSOLE_DIRECTORY}, on stdin`,
+		);
+		return;
+	}
+	const listed = consoleWrangler(['deployments', 'list', '--name', CONSOLE, '--json']);
+	if (listed.status !== 0) fail(`the Worker ${CONSOLE} is not there, or wrangler cannot read it`);
+	for (const node of nodes) {
+		const current = configured(node, WRITER, SOURCES);
+		upsert(node, WRITER, 'secret.env', { [WRITE]: writing!, [GITHUB]: github!, ...key });
+		upsert(node, WRITER, 'config.env', { ...config, [SOURCES]: widened(current, sources) });
+	}
+	for (const [name, value] of [
+		[READ, reading!],
+		[WRITE, writing!],
+	] as const) {
+		const put = consoleWrangler(['secret', 'put', name, '--name', CONSOLE], value);
+		if (put.status !== 0) fail(`putting ${name} on the Worker ${CONSOLE} failed`);
+		console.log(`control: ${CONSOLE}: ${name} put as a Worker secret, read by its next request`);
+	}
+	console.log(
+		`control: ${WRITER} reads them on its next deploy;` +
+			` \`mise run //repos/infra:node redeploy <node> ${WRITER}\``,
+	);
 }
 
 /** Every resource of `plural` the old registry holds, from the first core to answer. */
@@ -165,7 +353,7 @@ async function read(plural: string): Promise<{ items: Item[]; revision: number }
 	for (const core of placements()) {
 		let body: unknown;
 		try {
-			const answer = await fetch(`http://${address(core)}:${PORT}/v1/${plural}`, {
+			const answer = await fetch(`http://${address(core)}:${REGISTRY_PORT}/v1/${plural}`, {
 				signal: AbortSignal.timeout(TIMEOUT_MS),
 			});
 			body = await answer.json();
@@ -248,7 +436,7 @@ async function load(dry: boolean): Promise<void> {
 		return;
 	}
 	const token = process.env[IMPORT] ?? fail(`${IMPORT} is not set; \`control token\` draws it`);
-	const answer = await fetch(`${URLS.control}/v1/import`, {
+	const answer = await fetch(`${URLS.control}/v1/registry/import`, {
 		method: 'PUT',
 		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
 		body: JSON.stringify(sent),
@@ -266,8 +454,14 @@ if (import.meta.main) {
 	});
 	const dry = values['dry-run'] ?? false;
 	const [verb] = positionals;
-	if (verb === 'deploy') await deploy(dry);
-	else if (verb === 'token') await token(dry);
-	else if (verb === 'import') await load(dry);
-	else fail('usage: control deploy|token|import [--dry-run]');
+	try {
+		if (verb === 'deploy') await deploy(dry);
+		else if (verb === 'token') await token(dry);
+		else if (verb === 'writers') await writers(dry);
+		else if (verb === 'import') await load(dry);
+		else fail('usage: control deploy|token|writers|import [--dry-run]');
+	} catch (error) {
+		if (!(error instanceof Failure)) throw error;
+		fail(error.message);
+	}
 }

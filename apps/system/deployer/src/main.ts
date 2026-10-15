@@ -11,7 +11,7 @@ import { CatchUp, every } from './catch-up.ts';
 import { bucketMissing, configOf, tokenFor } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { GitHub } from './github.ts';
-import { Registry, Releases } from './releases.ts';
+import { Control, Releases } from './releases.ts';
 import { handle } from './server.ts';
 import { Store } from './store.ts';
 import { run } from './wrangler.ts';
@@ -22,8 +22,8 @@ const store = new Store(join(config.data, 'deployer.db'));
 const github = new GitHub((repository) => tokenFor(repository, process.env));
 // The run is GitHub's to vouch for either way; only its artifacts move to the bucket, RFC q28g5.
 const source = config.artifacts ? new Bucket(config.artifacts, github) : github;
-const registry = new Registry(config.registries, config.registryToken);
-const releases = new Releases({ store, registry });
+const control = new Control(config.control, config.controlToken);
+const releases = new Releases({ store, control });
 const deployer = new Deployer({ config, store, github: source, wrangler: run, releases });
 
 if (config.sources.length === 0) console.log('deployer: DEPLOY_SOURCES names no repository');
@@ -32,8 +32,8 @@ const missing = bucketMissing(process.env);
 if (missing.length > 0) {
 	console.log(`deployer: ${missing.join(', ')} not set, so artifacts are read from GitHub`);
 }
-if (!registry.configured) {
-	console.log('deployer: REGISTRY or REGISTRY_TOKEN is not set, so no release is recorded yet');
+if (!control.configured) {
+	console.log('deployer: CONTROL or CONTROL_WRITE_TOKEN is not set, so no release is recorded yet');
 }
 
 serve({

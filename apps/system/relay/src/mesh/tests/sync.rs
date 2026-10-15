@@ -6,7 +6,7 @@ use super::*;
 fn synced_hello(versions: Versions) -> Received {
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "tyo".into(),
+		node: "d132b0f553e3dcc3".into(),
 		versions,
 		runs: None,
 		minutes: None,
@@ -44,7 +44,7 @@ async fn synced(
 	}
 	let sent = Arc::new(Mutex::new(Vec::new()));
 	let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
-	let conversing = tokio::spawn(converse(relay.clone(), Some("tyo"), fake));
+	let conversing = tokio::spawn(converse(relay.clone(), Some("d132b0f553e3dcc3"), fake));
 	tokio::time::sleep(Duration::from_millis(20)).await;
 	during();
 	let waited = async {
@@ -60,21 +60,21 @@ async fn synced(
 
 #[tokio::test]
 async fn a_synced_neighbor_is_sent_this_nodes_change_as_a_delta_from_what_it_holds() {
-	let relay = relay("rdu");
-	relay.take("rdu", carried(10, "geo:1"), None);
+	let relay = relay("d62c82b23a858876");
+	relay.take("d62c82b23a858876", carried(10, "geo:1"), None);
 	let sent = synced(
 		&relay,
-		Versions::from([("rdu".into(), 10)]),
+		Versions::from([("d62c82b23a858876".into(), 10)]),
 		vec![],
 		|| {
-			relay.take("rdu", carried(20, "geo:2"), None);
+			relay.take("d62c82b23a858876", carried(20, "geo:2"), None);
 		},
 		|sent| sent.iter().any(|one| matches!(one, Message::Delta { .. })),
 	)
 	.await;
 	let delta = sent.iter().find(|one| matches!(one, Message::Delta { .. })).unwrap();
 	let Message::Delta { node, base, version, digest, changes } = delta else { unreachable!() };
-	assert_eq!((node.as_str(), *base, *version), ("rdu", 10, 20));
+	assert_eq!((node.as_str(), *base, *version), ("d62c82b23a858876", 10, 20));
 	let rows = changes.apps.as_ref().unwrap();
 	assert_eq!(rows.set, [serde_json::json!({ "name": "geo", "image": "geo:2" })]);
 	let applied = crate::delta::apply(&carried(10, "geo:1").snapshot, changes).unwrap();
@@ -84,11 +84,11 @@ async fn a_synced_neighbor_is_sent_this_nodes_change_as_a_delta_from_what_it_hol
 
 #[tokio::test]
 async fn a_delta_that_does_not_apply_is_asked_for_whole_and_a_want_is_answered_whole() {
-	let relay = relay("rdu");
-	relay.take("buf", carried(3, "geo:1"), None);
+	let relay = relay("d62c82b23a858876");
+	relay.take("e38f403f033d87f7", carried(3, "geo:1"), None);
 	let changes = crate::delta::diff(&carried(3, "geo:1").snapshot, &carried(4, "geo:2").snapshot);
 	let delta = |base: u64, digest: String| Message::Delta {
-		node: "buf".into(),
+		node: "e38f403f033d87f7".into(),
 		base,
 		version: 4,
 		digest,
@@ -99,36 +99,38 @@ async fn a_delta_that_does_not_apply_is_asked_for_whole_and_a_want_is_answered_w
 		// From a base this relay does not hold, and with a digest its result does not read.
 		text(&delta(2, right.clone())),
 		text(&delta(3, "0000000000000000".into())),
-		text(&Message::Want { node: "buf".into() }),
+		text(&Message::Want { node: "e38f403f033d87f7".into() }),
 	];
 	let wanted = |sent: &[Message]| {
 		let wants = sent.iter().filter(|one| matches!(one, Message::Want { .. })).count();
-		let whole = sent.iter().any(|one| matches!(one, Message::Node { node, .. } if node == "buf"));
+		let whole = sent
+			.iter()
+			.any(|one| matches!(one, Message::Node { node, .. } if node == "e38f403f033d87f7"));
 		wants == 2 && whole
 	};
-	let versions = Versions::from([("buf".into(), 3)]);
+	let versions = Versions::from([("e38f403f033d87f7".into(), 3)]);
 	synced(&relay, versions, then, || {}, wanted).await;
-	assert_eq!(relay.versions()["buf"], 3);
+	assert_eq!(relay.versions()["e38f403f033d87f7"], 3);
 	// The right one is taken, and only from the base held.
 	let sent = synced(&relay, Versions::new(), vec![text(&delta(3, right))], || {}, |_| true).await;
 	assert!(!sent.iter().any(|one| matches!(one, Message::Want { .. })));
 	tokio::time::sleep(Duration::from_millis(20)).await;
-	assert_eq!(relay.versions()["buf"], 4);
+	assert_eq!(relay.versions()["e38f403f033d87f7"], 4);
 }
 
 #[tokio::test]
 async fn a_sync_saying_another_digest_at_the_same_version_is_answered_whole() {
-	let relay = relay("rdu");
-	relay.take("buf", carried(3, "geo:1"), None);
-	let held = hex(relay.lines()["buf"].1);
+	let relay = relay("d62c82b23a858876");
+	relay.take("e38f403f033d87f7", carried(3, "geo:1"), None);
+	let held = hex(relay.lines()["e38f403f033d87f7"].1);
 	let sync = |digest: String| Message::Sync {
-		nodes: BTreeMap::from([("buf".into(), Line(3, digest, 0))]),
+		nodes: BTreeMap::from([("e38f403f033d87f7".into(), Line(3, digest, 0))]),
 		runs: Versions::new(),
 		minutes: Versions::new(),
 	};
-	let versions = Versions::from([("buf".into(), 3)]);
+	let versions = Versions::from([("e38f403f033d87f7".into(), 3)]);
 	let whole = |sent: &[Message]| {
-		sent.iter().any(|one| matches!(one, Message::Node { node, .. } if node == "buf"))
+		sent.iter().any(|one| matches!(one, Message::Node { node, .. } if node == "e38f403f033d87f7"))
 	};
 	// The same digest wants nothing; another gets the node whole.
 	let same = synced(&relay, versions.clone(), vec![text(&sync(held))], || {}, |_| true).await;

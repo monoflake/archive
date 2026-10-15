@@ -4,13 +4,13 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import * as v from 'valibot';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Catalog, type Description, type Field } from './catalog.gen.ts';
-import { Failure, cell, run, singular, type World } from './platform.ts';
+import { Catalog, type Description, type Field } from '../../../control/control/src/catalog.gen.ts';
+import { CATALOG as HELD } from '../../../control/control/src/kinds.ts';
+import { Failure, cell, nodeIds, placedOn, run, singular, type World } from './platform.ts';
 
-const REGISTRY = join(import.meta.dirname, '..');
-// The fake answers the catalog the registry generates, never a copy of it -- RFC bq3vn.
-const CATALOG = JSON.parse(readFileSync(join(REGISTRY, 'catalog.json'), 'utf8')) as Description[];
-const EXAMPLES = join(REGISTRY, 'examples/catalog');
+// The fake answers the catalog control holds, never a copy of it -- RFC bq3vn.
+const CATALOG = structuredClone(HELD.items);
+const EXAMPLES = join(import.meta.dirname, '../examples/catalog');
 
 /**
  * The catalog with an identity's value marked `secret` and the name it would be kept under beside
@@ -44,6 +44,7 @@ const WITH_A_SECRET = structuredClone(CATALOG).map((kind) =>
 );
 
 const TOKEN = 'token-for-the-fake';
+const READ = 'read-token-for-the-fake';
 const SECRET_VALUE = 'me-at-example-dot-com';
 const ACCOUNT_ID = 'a3f8c91d7e42b650';
 /** An account's identities as the registry keeps and answers them. */
@@ -52,6 +53,12 @@ const IDENTITIES = [
 	{ kind: 'email', value: SECRET_VALUE },
 ];
 const NODE_ID = 'abd3922110a78032';
+const SIN_ID = '9d399312d1c3ddc4';
+/** Each node's id by its name, as nodes.toml holds them. */
+const IDS = new Map([
+	['tyo', NODE_ID],
+	['sin', SIN_ID],
+]);
 
 interface Resource {
 	kind: string;
@@ -69,7 +76,7 @@ interface Sent {
 }
 
 /** What the fake answers from, and every request it was sent. */
-class Registry {
+class Control {
 	revision = 10;
 	requests: Sent[] = [];
 	refusal: [string, string] | undefined;
@@ -79,7 +86,10 @@ class Registry {
 	constructor() {
 		this.held = {
 			nodes: {
-				[NODE_ID]: this.resource('node', NODE_ID, 'tyo', {
+				[NODE_ID]: this.resource('node', NODE_ID, null, {
+					city: 'Tokyo',
+					country: 'JP',
+					continent: 'AS',
 					address: '100.64.0.1',
 					tier: 'datacenter',
 					account: ACCOUNT_ID,
@@ -87,6 +97,14 @@ class Registry {
 					retired: false,
 					roles: ['compute', 'core'],
 					grants: ['hub:peer'],
+				}),
+				[SIN_ID]: this.resource('node', SIN_ID, null, {
+					city: 'Singapore',
+					country: 'SG',
+					continent: 'AS',
+					address: '100.64.0.2',
+					tier: 'datacenter',
+					system: 'debian',
 				}),
 			},
 			apps: {},
@@ -109,7 +127,14 @@ class Registry {
 
 	answer(sent: Sent): [number, unknown] {
 		this.requests.push(sent);
-		const parts = sent.path.replace(/^\/|\/$/g, '').split('/');
+		if (sent.method === 'GET' && sent.auth !== `Bearer ${READ}`) {
+			return [401, { status: 'error', code: 'invalid_token', message: 'No read token' }];
+		}
+		if (!sent.path.startsWith('/v1/registry/')) {
+			return [404, { status: 'error', code: 'no_such_route', message: 'No such route' }];
+		}
+		const parts = sent.path.replace(/^\/v1\/registry\/|\/$/g, '').split('/');
+		parts.unshift('v1');
 		if (parts.join('/') === 'v1/kinds') {
 			return [200, { status: 'success', data: { items: this.catalog } }];
 		}
@@ -131,7 +156,7 @@ class Registry {
 			return [200, { status: 'success', data: found }];
 		}
 		if (sent.auth !== `Bearer ${TOKEN}`) {
-			return [401, { status: 'error', code: 'unauthorized', message: 'No token' }];
+			return [401, { status: 'error', code: 'invalid_token', message: 'No write token' }];
 		}
 		if (this.refusal) {
 			return [400, { status: 'error', code: this.refusal[0], message: this.refusal[1] }];
@@ -163,17 +188,19 @@ class Registry {
 	}
 }
 
-let state: Registry;
+let state: Control;
 let server: Server;
 let printed: string[];
 let asked: string[];
 let token: string | undefined;
+let read: string | undefined;
 
 beforeEach(async () => {
-	state = new Registry();
+	state = new Control();
 	printed = [];
 	asked = [];
 	token = TOKEN;
+	read = READ;
 	server = createServer((request, response) => {
 		let text = '';
 		request.on('data', (chunk: Buffer) => (text += chunk.toString()));
@@ -195,12 +222,18 @@ afterEach(async () => {
 	await new Promise((done) => server.close(done));
 });
 
+/** Where the fake listens, as `host:port`. */
+function listening(): string {
+	const { address, port } = server.address() as AddressInfo;
+	return `${address}:${port}`;
+}
+
 function world(): World {
 	return {
-		placements: () => ['tyo', 'sin', 'rdu'],
-		address: () => '127.0.0.1',
-		port: (server.address() as AddressInfo).port,
-		token: () => token,
+		control: `http://${listening()}`,
+		readToken: () => read,
+		writeToken: () => token,
+		nodes: () => IDS,
 		typedIn: async (prompt) => {
 			asked.push(prompt);
 			return SECRET_VALUE;
@@ -235,41 +268,55 @@ async function refused(...args: string[]): Promise<string> {
 const shown = (out: string) => JSON.parse(out.slice(out.indexOf('{')));
 
 describe('reading', () => {
-	it('lists the catalog columns, ids by their first eight digits, with no token', async () => {
+	it('lists the catalog columns, ids by their first eight digits, with the read token', async () => {
 		const { out, failed } = await task('nodes', 'list');
 		expect(failed).toBeUndefined();
 		const [head, row] = out.split('\n');
-		expect(head!.split(/\s+/)).toEqual(['id', 'name', 'address', 'tier', 'account', 'system']);
+		const columns = ['id', 'city', 'country', 'address', 'tier', 'account', 'system'];
+		expect(head!.split(/\s+/)).toEqual(columns);
 		expect(row!.split(/\s+/)).toEqual([
 			NODE_ID.slice(0, 8),
-			'tyo',
+			'Tokyo',
+			'JP',
 			'100.64.0.1',
 			'datacenter',
 			ACCOUNT_ID.slice(0, 8),
 			'debian',
 		]);
-		expect(state.requests.every((sent) => sent.auth === undefined)).toBe(true);
+		expect(state.requests.every((sent) => sent.auth === `Bearer ${READ}`)).toBe(true);
+	});
+
+	it('reads nothing without the read token', async () => {
+		read = '';
+		expect(await refused('nodes', 'list')).toContain('CONTROL_READ_TOKEN');
+		expect(state.requests).toEqual([]);
 	});
 
 	it('lists the items as answered with --json', async () => {
 		const { out } = await task('node', 'list', '--json');
-		expect(JSON.parse(out)).toEqual([state.held.nodes![NODE_ID]]);
+		expect(JSON.parse(out)).toEqual(Object.values(state.held.nodes!));
 	});
 
-	it("gets the spec in the catalog's order, then the rest", async () => {
+	it("gets a node by its name, its spec in the catalog's order, then the rest", async () => {
 		const { out } = await task('node', 'get', 'tyo');
 		const lines = out.split('\n');
-		expect(lines[0]).toBe('node tyo');
+		expect(lines[0]).toBe(`node ${NODE_ID.slice(0, 8)}`);
 		expect(lines[1], 'get shows the id whole').toContain(NODE_ID);
 		const names = lines.slice(3).map((line) => line.trim().split(/\s+/)[0]);
-		const order = ['address', 'tier', 'system', 'retired', 'account', 'roles', 'grants'];
-		expect(names).toEqual(order);
+		const order = ['city', 'country', 'continent', 'address', 'tier', 'system', 'retired'];
+		expect(names).toEqual([...order, 'account', 'roles', 'grants']);
 		expect(out).toContain('compute,core');
+		expect(state.requests.at(-1)!.path).toBe(`/v1/registry/nodes/${NODE_ID}`);
 	});
 
 	it('gets by id, as JSON', async () => {
 		const { out } = await task('node', 'get', NODE_ID, '--json');
-		expect(JSON.parse(out).name).toBe('tyo');
+		expect(JSON.parse(out).id).toBe(NODE_ID);
+	});
+
+	it('refuses a node by a name nodes.toml does not hold, asking control nothing of it', async () => {
+		expect(await refused('node', 'get', 'zzz')).toContain('nodes.toml names no such node');
+		expect(state.requests.map((sent) => sent.path)).toEqual(['/v1/registry/kinds']);
 	});
 
 	it('fails on a kind the catalog does not hold, naming those it does', async () => {
@@ -277,7 +324,7 @@ describe('reading', () => {
 	});
 
 	it('fails on a resource not held, with its code', async () => {
-		expect(await refused('node', 'get', 'zzz')).toContain('no_such_resource');
+		expect(await refused('app', 'get', 'zzz')).toContain('no_such_resource');
 	});
 
 	it('refuses an option the catalog does not make', async () => {
@@ -327,24 +374,41 @@ describe('reading', () => {
 });
 
 describe('writing', () => {
-	it('creates by PUT at revision 0, as operator, with the token', async () => {
+	it('creates by PUT at revision 0, as operator, placed on node ids given by name', async () => {
 		const { out, failed } = await task('app', 'create', 'ledger', '--set', 'placements=tyo,sin');
 		expect(failed).toBeUndefined();
 		const [sent] = writes();
-		expect([sent!.method, sent!.path]).toEqual(['PUT', '/v1/apps/ledger']);
+		expect([sent!.method, sent!.path]).toEqual(['PUT', '/v1/registry/apps/ledger']);
 		expect(sent!.auth).toBe(`Bearer ${TOKEN}`);
-		const spec = { placements: ['tyo', 'sin'] };
+		const spec = { placements: [NODE_ID, SIN_ID] };
 		expect(sent!.body).toEqual({ by: 'operator', revision: 0, spec });
 		expect(out).toContain('written, revision 11, task 00000000000000f1');
 	});
 
+	it('places on a node given by its id or its start, each once', async () => {
+		const given = `placements=${SIN_ID.slice(0, 8)},${NODE_ID}`;
+		const { failed } = await task('app', 'create', 'ledger', '--set', given);
+		expect(failed).toBeUndefined();
+		expect(writes()[0]!.body!.spec.placements).toEqual([SIN_ID, NODE_ID]);
+		expect(await task('app', 'create', 'web', '--set', 'placements=tyo,zzz')).toMatchObject({
+			failed: expect.stringContaining('node zzz: nodes.toml names no such node'),
+		});
+		expect(await task('app', 'create', 'web', '--set', `placements=tyo,${NODE_ID}`)).toMatchObject({
+			failed: expect.stringContaining('names each node once'),
+		});
+		expect(writes()).toHaveLength(1);
+	});
+
 	it("resolves a reference by its id's first eight digits and types every scalar", async () => {
 		const account = `account=${ACCOUNT_ID.slice(0, 8)}`;
-		const scalars = ['address=100.64.0.2', 'tier=datacenter', account, 'system=alpine'];
+		const place = ['city=Osaka', 'country=JP', 'continent=AS'];
+		const scalars = [...place, 'address=100.64.0.3', 'tier=datacenter', account, 'system=alpine'];
 		const set = [...scalars, 'expiry=2036', 'core=true'].flatMap((pair) => ['--set', pair]);
-		const { failed } = await task('node', 'create', 'sin', ...set, '--json', 'grants=["hub:peer"]');
+		const { failed } = await task('node', 'create', ...set, '--json', 'grants=["hub:peer"]');
 		expect(failed).toBeUndefined();
-		const spec = writes()[0]!.body!.spec;
+		const [sent] = writes();
+		expect([sent!.method, sent!.path]).toEqual(['POST', '/v1/registry/nodes']);
+		const spec = sent!.body!.spec;
 		expect(spec.account).toBe(ACCOUNT_ID);
 		expect([spec.expiry, spec.core, spec.grants]).toEqual([2036, true, ['hub:peer']]);
 	});
@@ -375,7 +439,7 @@ describe('writing', () => {
 		const { out, failed } = await task('node', 'patch', 'tyo', ...given);
 		expect(failed, out).toBeUndefined();
 		const [sent] = writes();
-		expect([sent!.method, sent!.path]).toEqual(['PATCH', `/v1/nodes/${NODE_ID}`]);
+		expect([sent!.method, sent!.path]).toEqual(['PATCH', `/v1/registry/nodes/${NODE_ID}`]);
 		const spec = { retired: true, roles: null };
 		expect(sent!.body).toEqual({ by: 'operator', revision: 10, spec });
 		expect(state.held.nodes![NODE_ID]!.spec).not.toHaveProperty('roles');
@@ -388,7 +452,7 @@ describe('writing', () => {
 	it('says unchanged for a write that changes nothing', async () => {
 		const { out, failed } = await task('node', 'patch', 'tyo', '--set', 'retired=false');
 		expect(failed).toBeUndefined();
-		expect(out).toContain('node tyo: unchanged');
+		expect(out).toContain(`node ${NODE_ID.slice(0, 8)}: unchanged`);
 	});
 
 	it('fails a refusal with its code and message', async () => {
@@ -397,10 +461,10 @@ describe('writing', () => {
 		expect(failed).toContain('refused forbidden_field: `status` is not written');
 	});
 
-	it('sends nothing without the token', async () => {
+	it('sends nothing without the write token', async () => {
 		token = '';
 		expect(await refused('app', 'create', 'web', '--set', 'placements=tyo')).toContain(
-			'REGISTRY_TOKEN',
+			'CONTROL_WRITE_TOKEN',
 		);
 	});
 
@@ -420,7 +484,7 @@ describe('masked values', () => {
 			{ kind: 'account_id', value: 't' },
 		];
 		const [made] = writes();
-		expect([made!.method, made!.path]).toEqual(['POST', '/v1/accounts']);
+		expect([made!.method, made!.path]).toEqual(['POST', '/v1/registry/accounts']);
 		expect(made!.body!.spec.identities).toEqual(sent);
 		expect(out).toContain('new account: written, id 0000000b00000000, revision 11');
 	});
@@ -511,7 +575,7 @@ describe('secrets', () => {
 		expect(asked).toEqual([]);
 	});
 
-	it('refuses what the registry writes', async () => {
+	it('refuses what control writes', async () => {
 		const failed = await refused(
 			'account',
 			'patch',
@@ -533,7 +597,7 @@ describe('secrets', () => {
 		const { out, failed } = await task('account', 'create', ...given);
 		expect(failed).toBeUndefined();
 		expect([asked, writes()]).toEqual([[], []]);
-		expect(out).toContain('would POST /v1/accounts,');
+		expect(out).toContain('would POST /v1/registry/accounts,');
 		expect(shown(out).spec.identities).toEqual([{ kind: 'email', value: '<hidden>' }]);
 		expect(out).not.toContain(TOKEN);
 		expect(out).not.toContain(SECRET_VALUE);
@@ -542,7 +606,7 @@ describe('secrets', () => {
 	it('reads the revision on a patch dry run and writes nothing', async () => {
 		const { out } = await task('node', 'patch', 'tyo', '--set', 'retired=true', '-n');
 		expect(writes()).toEqual([]);
-		expect(out).toContain(`would PATCH /v1/nodes/${NODE_ID}`);
+		expect(out).toContain(`would PATCH /v1/registry/nodes/${NODE_ID}`);
 		expect(shown(out).revision).toBe(10);
 	});
 });
@@ -569,6 +633,29 @@ describe('the catalog', () => {
 
 	it.each(examples('invalid'))('refuses the shared invalid example %s', (_, example) => {
 		expect(v.safeParse(Catalog, example).success).toBe(false);
+	});
+});
+
+describe('the edge', () => {
+	it('reads each node id by its name from nodes.toml, and refuses one without', () => {
+		const ids = nodeIds(`[tyo]\nid = "${NODE_ID}"\ncity = "Tokyo"\n\n[sin]\nid = "${SIN_ID}"\n`);
+		expect(ids).toEqual(IDS);
+		expect(() => nodeIds('[tyo]\ncity = "Tokyo"\n')).toThrow(Failure);
+		expect(() => nodeIds('[tyo]\nid = "D132B0F553E3DCC3"\n')).toThrow(Failure);
+	});
+
+	it('names the nodes control places an app on, in its order, by the read token', async () => {
+		const app = (placements: string[]) =>
+			state.resource('app', `${placements.length}`.padStart(16, '0'), 'secrets', { placements });
+		state.held.apps!.secrets = app([SIN_ID, NODE_ID]);
+		expect(await placedOn('secrets', world())).toEqual(['sin', 'tyo']);
+		expect(state.requests.map((sent) => [sent.path, sent.auth])).toEqual([
+			['/v1/registry/apps/secrets', `Bearer ${READ}`],
+		]);
+		state.held.apps!.secrets = app([]);
+		expect(await placedOn('secrets', world())).toEqual([]);
+		state.held.apps!.secrets = app(['0000000000000000']);
+		await expect(placedOn('secrets', world())).rejects.toThrow('nodes.toml names no node');
 	});
 });
 

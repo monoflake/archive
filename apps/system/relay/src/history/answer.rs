@@ -328,13 +328,13 @@ mod tests {
 
 	fn minute(at: i64, leaving: bool) -> Minute {
 		let leaving = leaving.then_some(Reason::Restart);
-		let round_trip = BTreeMap::from([("rdu".into(), 0.15)]);
+		let round_trip = BTreeMap::from([("d62c82b23a858876".into(), 0.15)]);
 		let down = BTreeMap::from([("geo".into(), 2)]);
 		Minute { at, beats: 20, down, held: 0, round_trip, leaving, readings: Default::default() }
 	}
 
 	fn run(run: Option<u64>, started: i64, outcome: Outcome) -> Run {
-		Run { node: "tyo".into(), run, started, last: started, outcome }
+		Run { node: "d132b0f553e3dcc3".into(), run, started, last: started, outcome }
 	}
 
 	#[test]
@@ -366,15 +366,15 @@ mod tests {
 		assert_eq!(answering.span(), (DAWN + 8 * DAY, DAWN + 11 * DAY));
 		// Day 8 is held as an hour, which ends saying it is leaving; nothing more until day 10.
 		let hour = Fold { minutes: 60, beats: 1200, leaving: 1, tail: true, ..Fold::default() };
-		answering.held("tyo", DAWN + 8 * DAY, HOUR, &hour);
+		answering.held("d132b0f553e3dcc3", DAWN + 8 * DAY, HOUR, &hour);
 		// Day 10 as minutes: leaving said at minute 4, minute 5 missing, minute 29 not due yet.
 		for at in (0..30).filter(|at| *at != 5) {
-			answering.minute("tyo", &minute(DAWN + 10 * DAY + at * MINUTE, at == 4));
+			answering.minute("d132b0f553e3dcc3", &minute(DAWN + 10 * DAY + at * MINUTE, at == 4));
 		}
-		answering.first(BTreeMap::from([("tyo".into(), DAWN + 8 * DAY)]));
-		let history = answering.runs(vec![]).answered("rdu".into());
+		answering.first(BTreeMap::from([("d132b0f553e3dcc3".into(), DAWN + 8 * DAY)]));
+		let history = answering.runs(vec![]).answered("d62c82b23a858876".into());
 
-		let slots = &history.nodes["tyo"];
+		let slots = &history.nodes["d132b0f553e3dcc3"];
 		// Beats, due, missing, announced and leaving.
 		type Read = (Option<u64>, Option<u64>, u32, u32, u32);
 		let read: Vec<Read> = slots
@@ -390,12 +390,12 @@ mod tests {
 			]
 		);
 		assert_eq!(slots[2].down, BTreeMap::from([("geo".into(), 58)]));
-		assert_eq!(slots[2].round_trip["rdu"], Spread { mean: 0.15, worst: 0.15 });
+		assert_eq!(slots[2].round_trip["d62c82b23a858876"], Spread { mean: 0.15, worst: 0.15 });
 
 		let written = serde_json::to_value(&history).unwrap();
 		assert_eq!(written["slot"], 86_400);
 		assert_eq!(written["from"], "2026-10-17T00:00:00Z");
-		assert!(written["nodes"]["tyo"][0].get("runs").is_none());
+		assert!(written["nodes"]["d132b0f553e3dcc3"][0].get("runs").is_none());
 	}
 
 	#[test]
@@ -406,16 +406,19 @@ mod tests {
 			let mut answering = Answering::new(asked, now);
 			for (at, mean, max) in [(0, 10.0, 30.0), (1, 30.0, 90.0)] {
 				let readings = cpu(mean, max);
-				answering.minute("tyo", &Minute { readings, ..minute(DAWN + HOUR + at * MINUTE, false) });
+				answering.minute(
+					"d132b0f553e3dcc3",
+					&Minute { readings, ..minute(DAWN + HOUR + at * MINUTE, false) },
+				);
 			}
-			answering.first(BTreeMap::from([("tyo".into(), DAWN + HOUR)]));
-			answering.runs(vec![]).answered("rdu".into())
+			answering.first(BTreeMap::from([("d132b0f553e3dcc3".into(), DAWN + HOUR)]));
+			answering.runs(vec![]).answered("d62c82b23a858876".into())
 		};
 		let asked = Asked::new(3 * 3600, 3600).unwrap();
-		assert!(answered(asked).nodes["tyo"].iter().all(|slot| slot.readings.is_empty()));
+		assert!(answered(asked).nodes["d132b0f553e3dcc3"].iter().all(|slot| slot.readings.is_empty()));
 		let history = answered(asked.with_readings());
 		let hour = Timestamp::from_millisecond(DAWN + HOUR).unwrap();
-		let slot = history.nodes["tyo"].iter().find(|slot| slot.at == hour).unwrap();
+		let slot = history.nodes["d132b0f553e3dcc3"].iter().find(|slot| slot.at == hour).unwrap();
 		assert_eq!(slot.readings, cpu(20.0, 90.0));
 	}
 
@@ -423,12 +426,14 @@ mod tests {
 	fn a_gap_not_announced_is_missing_alone_and_nothing_is_due_before_the_first_minute() {
 		let now = DAWN + 2 * HOUR + 10_000;
 		let mut answering = Answering::new(Asked::new(3 * 3600, 3600).unwrap(), now);
-		answering.minute("tyo", &minute(DAWN + 30 * MINUTE, false));
-		answering.minute("tyo", &minute(DAWN + 40 * MINUTE, false));
-		answering.first(BTreeMap::from([("tyo".into(), DAWN + 30 * MINUTE)]));
-		let history = answering.runs(vec![]).answered("rdu".into());
-		let read: Vec<(u32, u32, Option<u64>)> =
-			history.nodes["tyo"].iter().map(|slot| (slot.missing, slot.announced, slot.due)).collect();
+		answering.minute("d132b0f553e3dcc3", &minute(DAWN + 30 * MINUTE, false));
+		answering.minute("d132b0f553e3dcc3", &minute(DAWN + 40 * MINUTE, false));
+		answering.first(BTreeMap::from([("d132b0f553e3dcc3".into(), DAWN + 30 * MINUTE)]));
+		let history = answering.runs(vec![]).answered("d62c82b23a858876".into());
+		let read: Vec<(u32, u32, Option<u64>)> = history.nodes["d132b0f553e3dcc3"]
+			.iter()
+			.map(|slot| (slot.missing, slot.announced, slot.due))
+			.collect();
 		// Nothing is due before the first minute; of the hour before this one, every minute is due
 		// but its last, and this one holds none due yet, so it is absent.
 		assert_eq!(read, [(28, 0, Some(30 * 20)), (59, 0, Some(59 * 20))]);
@@ -438,7 +443,7 @@ mod tests {
 	fn whole_days_take_a_days_count_and_finer_slots_the_mirrors_rows() {
 		let now = DAWN + 40 * DAY;
 		let day = Day {
-			node: "tyo".into(),
+			node: "d132b0f553e3dcc3".into(),
 			at: DAWN,
 			outcomes: Outcomes { succeeded: 2, ..Outcomes::default() },
 			beyond: vec![7],
@@ -453,9 +458,9 @@ mod tests {
 		};
 		let mut answering = Answering::new(Asked::new(41 * 86_400, 86_400).unwrap(), now);
 		answering.days(vec![day.clone()]);
-		let history = answering.runs(runs()).answered("rdu".into());
+		let history = answering.runs(runs()).answered("d62c82b23a858876".into());
 		let counted: Vec<(Timestamp, Outcomes)> =
-			history.nodes["tyo"].iter().map(|slot| (slot.at, slot.runs)).collect();
+			history.nodes["d132b0f553e3dcc3"].iter().map(|slot| (slot.at, slot.runs)).collect();
 		let at = |at| Timestamp::from_millisecond(at).unwrap();
 		let partly = Outcomes { partly_failed: 1, ..Outcomes::default() };
 		assert_eq!(counted, [(at(DAWN), day.outcomes), (at(DAWN + 2 * DAY), partly)]);
@@ -464,9 +469,11 @@ mod tests {
 		let now = DAWN + 2 * DAY + HOUR;
 		let mut answering = Answering::new(Asked::new(3 * 86_400, 3600).unwrap(), now);
 		answering.days(vec![day]);
-		let history = answering.runs(runs()).answered("rdu".into());
-		let runs: u32 =
-			history.nodes["tyo"].iter().map(|slot| slot.runs.failed + slot.runs.succeeded).sum();
+		let history = answering.runs(runs()).answered("d62c82b23a858876".into());
+		let runs: u32 = history.nodes["d132b0f553e3dcc3"]
+			.iter()
+			.map(|slot| slot.runs.failed + slot.runs.succeeded)
+			.sum();
 		assert_eq!(runs, 2);
 	}
 }

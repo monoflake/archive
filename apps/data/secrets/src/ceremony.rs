@@ -59,6 +59,13 @@ pub fn parse(arguments: &[String]) -> Result<Asked, String> {
 	Ok(Asked { recipient, nodes, out })
 }
 
+/// Three lowercase letters, a machine's name: a share file is named for the core an operator copies
+/// it to, the one place a node is not its id. See spec/architecture/control.md, "Who reads it, and
+/// with what".
+fn name_is_valid(name: &str) -> bool {
+	name.len() == 3 && name.bytes().all(|b| b.is_ascii_lowercase())
+}
+
 /// Writes `<node>.share` for each of the three nodes, in the order given, and `recovery.age`, into
 /// `out`, each made new at mode 600, so a lock already set is never written over.
 pub fn init(asked: &Asked) -> Result<Vec<String>, String> {
@@ -73,7 +80,7 @@ pub fn init(asked: &Asked) -> Result<Vec<String>, String> {
 		));
 	}
 	for (index, node) in asked.nodes.iter().enumerate() {
-		if !crate::api::node_name_is_valid(node) || asked.nodes[..index].contains(node) {
+		if !name_is_valid(node) || asked.nodes[..index].contains(node) {
 			return Err(format!("`{node}` is not a core's name, or is named twice"));
 		}
 	}

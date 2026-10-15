@@ -10,6 +10,9 @@ use crate::window::milliseconds;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// The tables `ready` makes, which an open of a file of another schema drops; see `runs::SCHEMA`.
+pub const TABLES: [&str; 4] = ["minutes", "hours", "days", "run_days"];
+
 pub fn ready(connection: &Connection) -> rusqlite::Result<()> {
 	connection.execute_batch(
 		"CREATE TABLE IF NOT EXISTS minutes (
@@ -284,7 +287,7 @@ mod tests {
 			leaving,
 			readings: BTreeMap::new(),
 		};
-		("tyo".into(), Row { version: 1, minute })
+		("d132b0f553e3dcc3".into(), Row { version: 1, minute })
 	}
 
 	fn held(connection: &Connection, table: &str) -> Vec<(i64, u32, u32, bool)> {
@@ -306,11 +309,11 @@ mod tests {
 		// Two days on from b's end, both hours fold, and their minutes go.
 		keep(connection, &[], DAWN + 3 * DAY).unwrap();
 		assert_eq!(held(connection, "hours"), [(a, 2, 4, false), (b, 2, 29, true)]);
-		assert!(above(connection, "tyo", 0).unwrap().is_empty());
+		assert!(above(connection, "d132b0f553e3dcc3", 0).unwrap().is_empty());
 		// A minute that old, arriving late, is past keeping and is not written.
 		keep(connection, &[row(a + 10 * MINUTE, false)], DAWN + 3 * DAY).unwrap();
-		assert!(above(connection, "tyo", 0).unwrap().is_empty());
-		assert_eq!(tails(connection, DAWN + 3 * DAY).unwrap()["tyo"], (b + HOUR, true));
+		assert!(above(connection, "d132b0f553e3dcc3", 0).unwrap().is_empty());
+		assert_eq!(tails(connection, DAWN + 3 * DAY).unwrap()["d132b0f553e3dcc3"], (b + HOUR, true));
 
 		// Thirty days on from the day's end, the hours fold into the day.
 		keep(connection, &[], DAWN + 32 * DAY).unwrap();

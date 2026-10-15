@@ -56,8 +56,8 @@ like any new value.
 **The apps the service needs before it can answer a node are given nothing from it**: `database`,
 `postgres`, `primary`, `quorum`, `registry` and `secrets` itself. A write for one of them in a scope
 a node is given is refused, `SECRETS_TOKEN`'s included. Otherwise a platform rebuilt from nothing
-could not start them, since the service answers a node only once its database and the registry
-answer it. A scope no node is given still holds their values: the registry's `accounts`, for one.
+could not start them, since the service answers a node only once its database and control answer
+it. A scope no node is given still holds their values: the registry's `accounts`, for one.
 
 ## The lock
 
@@ -87,8 +87,8 @@ rather than used.
 1. `mise run database grant platform secrets` makes `platform_secrets` and writes `DATABASE_URL` to
    each core's `secret.env`.
 2. `mise run seal token` makes `SECRETS_TOKEN` and `SECRETS_PEER_TOKEN` in `secrets.json` the first
-   time, to be committed, and writes them to each core with every node's digest, and `CORES` to
-   `config.env`.
+   time, to be committed, and writes them to each core with every node's digest, keyed by its id,
+   and `CORES`, `CONTROL` and `CONTROL_READ_TOKEN` to its environment.
 3. `mise run seal prepare` makes each core's empty `/data/seal`, owned by the service, mode 700:
    host mounts it, and Docker refuses the container while it is missing.
 4. The cores grant `secrets:peer` and `secrets:seal`, from infra's `CORE_GRANTS`, written to host's
@@ -101,10 +101,11 @@ rather than used.
 
 ## Who reads what
 
-**Writing and listing take `SECRETS_TOKEN`; a node reads only the secrets of the apps the registry
-places on it**, `GET /v1/nodes/{node}/secrets`, with its own token. The service asks the registry with `?node=`
-and still keeps only the apps whose placements name the node, as host does, so a registry that
-ignored the query opens nothing it should not. That token is derived and never
+**Writing and listing take `SECRETS_TOKEN`; a node reads only the secrets of the apps control places
+on it**, `GET /v1/nodes/{id}/secrets` by its 16-hex id, with its own token. The service asks control
+with `?node=` over TLS with `CONTROL_READ_TOKEN` -- [control.md](control.md) -- and still keeps only
+the apps whose placements name the node, as host does, so an answer that ignored the query opens
+nothing it should not. That token is derived and never
 stored: HMAC-SHA256 of `platform secrets read` under the node's `HOST_TOKEN`, which is already root
 on that node. The service keeps only each one's SHA-256 digest, written by `mise run seal token`, so
 its environment reads nothing.
@@ -115,10 +116,10 @@ files". The node's read answers, beside each value with its class and revision:
 
 - **`removed`**: each value of those apps deleted since it was written, by scope, app, name and the
   revision that removed it. A node takes a value away only on a removal, never because a value is
-  missing from the answer. A value can be missing because the registry no longer places the app
+  missing from the answer. A value can be missing because control no longer places the app
   there, or because a scope left `SECRETS_NODE_SCOPES`, and taking values away for either would empty
   every app at once.
-- **`apps`**: the apps the registry placed on the node, so an app the service did not look at is
+- **`apps`**: the apps control placed on the node, so an app the service did not look at is
   not mistaken for one with nothing kept.
 
 ## Writing a value

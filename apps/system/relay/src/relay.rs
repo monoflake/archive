@@ -27,8 +27,9 @@ mod tests;
 pub use tasks::{recall, watch, write, written};
 
 /// The version of what the mesh and a browser are sent, read first by either. See the workspace's
-/// spec/json.md, "A contract has a version, and it is the first thing read".
-pub const VERSION: u32 = 1;
+/// spec/json.md, "A contract has a version, and it is the first thing read". Version 1 named each
+/// node by its name, 2 by its id -- RFC o7eir -- so a relay of each never merges the other's nodes.
+pub const VERSION: u32 = 2;
 
 /// How long `/health` waits for the first read of host before it answers healthy regardless: a
 /// relay that cannot read its own node still carries every other node.
@@ -98,7 +99,7 @@ pub struct Runs {
 struct Holding {
 	cluster: Cluster,
 	shown: BTreeMap<String, Presence>,
-	/// The neighbors dialed, shown as waiting until they are heard; changed as the registry is, see
+	/// The neighbors dialed, shown as waiting until they are heard; changed as control is, see
 	/// `registry::follow`.
 	peers: BTreeSet<String>,
 	/// The version of each node's runs as last shown, so a page reads the runs again when one moves.
@@ -190,7 +191,7 @@ pub struct Relay {
 	measured: Mutex<BTreeMap<String, (Duration, Instant)>>,
 	/// The newest of this node's own versions sent to each neighbor, for a relay leaving to wait on.
 	told: told::Sender<Versions>,
-	/// The nodes the registry lists as retired, whose relays are refused; see `registry::follow`.
+	/// The nodes control lists as retired, whose relays are refused; see `registry::follow`.
 	retired: Mutex<BTreeSet<String>>,
 }
 

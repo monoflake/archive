@@ -28,8 +28,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REPOS = ROOT.parent
 NODES = REPOS / "infra/nodes/nodes.toml"
+# The URL map's Python mirror. See the workspace's spec/addresses.md, "Every URL is declared once".
+sys.path.insert(0, str(ROOT / "libs/sdk/src"))
+from urls import CONTROL  # noqa: E402
+
+# What control is read with, from secrets.json: which nodes an app is placed on is control's alone.
+# See spec/architecture/control.md, "Who reads it, and with what".
+READ_TOKEN = "CONTROL_READ_TOKEN"
 APP = "database"
-SERVICE = ROOT / "apps/data/database/service.toml"
 # Where its image is built, which a deploy by hand names. See spec/architecture/databases.md,
 # "Upgrades are pinned, reported, and rolled by hand".
 REPOSITORY = "monoflake/platform"
@@ -194,9 +200,52 @@ def stored_secret(key, dry):
 	return value
 
 
+def node_ids():
+	"""Each node's id by its name, from infra's nodes.toml: control holds a node by its id, and an
+	operator reaches it by its name."""
+	if not NODES.is_file():
+		fail(f"{NODES} is not there; clone infra beside this repository")
+	ids = {name: table.get("id") for name, table in tomllib.loads(NODES.read_text()).items()}
+	for name, node in ids.items():
+		if not (isinstance(node, str) and re.fullmatch(r"[0-9a-f]{16}", node)):
+			fail(f"nodes.toml's [{name}] has no id of 16 hexadecimal digits")
+	return ids
+
+
+def control_data(path):
+	"""The `data` of control's answer to `GET path`, read with its read token; anything else fails."""
+	token = os.environ.get(READ_TOKEN)
+	if not token:
+		fail(f"secrets.json has no {READ_TOKEN}; `mise run control token` draws it")
+	request = urllib.request.Request(
+		f"{CONTROL}{path}",
+		headers={"Authorization": f"Bearer {token}", "User-Agent": "monoflake-platform-tasks"},
+	)
+	try:
+		with urllib.request.urlopen(request, timeout=10) as answer:
+			envelope = json.load(answer)
+	except urllib.error.HTTPError as refused:
+		fail(f"control refused GET {path}: {refused.code} {refused.read().decode(errors='replace').strip()}")
+	except (OSError, ValueError) as error:
+		fail(f"control did not answer GET {path}: {error}")
+	if envelope.get("status") != "success":
+		fail(f"control answered GET {path} with {envelope}")
+	return envelope["data"]
+
+
+def placed_on(app):
+	"""The names of the nodes control places `app` on, in its order; none for a Worker."""
+	placements = control_data(f"/v1/registry/apps/{app}")["spec"].get("placements") or []
+	names = {node: name for name, node in node_ids().items()}
+	unknown = [node for node in placements if node not in names]
+	if unknown:
+		fail(f"control places {app} on {', '.join(unknown)}, which nodes.toml names no node")
+	return [names[node] for node in placements]
+
+
 def placements():
-	"""The core nodes the database runs on, from its service.toml."""
-	return tomllib.loads(SERVICE.read_text())["placements"]
+	"""The core nodes the database runs on, in control's order."""
+	return placed_on(APP)
 
 
 def cluster(addresses):
@@ -225,7 +274,7 @@ def env(arguments, dry):
 	if arguments:
 		fail("env takes no arguments")
 	nodes = placements()
-	cores = manifest_of(QUORUM)["placements"]
+	cores = placed_on(QUORUM)
 	if not set(ORDER) <= set(nodes) or not set(cores) <= set(nodes):
 		fail(f"ORDER, {', '.join(ORDER)}, and {QUORUM}'s members must be among {', '.join(nodes)}")
 	missing = [key for key in [*STORE, BUCKET] if not os.environ.get(key)]
@@ -284,7 +333,7 @@ def env(arguments, dry):
 			failed.append(node)
 	# The proxy on every node asks each member's REST which is primary; it needs no password.
 	proxy = {"PRIMARY_MEMBERS": peers, "PRIMARY_REST_PORT": str(REST)}
-	for node in manifest_of(PROXY)["placements"]:
+	for node in placed_on(PROXY):
 		if dry:
 			shown_proxy = " ".join(f"{k}={v!r}" for k, v in proxy.items())
 			print(f"database: {node}: would set in /data/apps/{PROXY}/config.env: {shown_proxy}")
@@ -303,17 +352,6 @@ def env(arguments, dry):
 		f" hand:\n"
 		f"  mise run //repos/infra:node deploy <node> --run <run> --repository {REPOSITORY} --app <app>"
 	)
-
-
-def manifest_of(app):
-	"""The service.toml naming `app`, in any repository beside this one."""
-	for path in sorted(REPOS.glob("*/apps/**/service.toml")):
-		if "node_modules" in path.parts:
-			continue
-		declared = tomllib.loads(path.read_text())
-		if declared.get("name") == app:
-			return declared
-	fail(f"no service.toml in {REPOS} names {app}")
 
 
 def ident(name):
@@ -364,8 +402,7 @@ def grant(arguments, dry):
 		fail(f"grant takes a scope, one of {', '.join(SCOPES)}, and an app's name")
 	scope, app = names
 	login = f"{scope}_{app.replace('-', '_')}"
-	known = set(tomllib.loads(NODES.read_text()))
-	where = [node for node in manifest_of(app)["placements"] if node in known]
+	where = placed_on(app)
 	cores = placements()
 	primary = None
 	if not dry:
@@ -700,7 +737,7 @@ def quorum_auth(arguments, dry):
 	as it is. See spec/architecture/databases.md, "Where it runs, and which one writes"."""
 	if arguments:
 		fail("quorum-auth takes no arguments")
-	core = manifest_of(QUORUM)["placements"][0]
+	core = next(iter(placed_on(QUORUM)), None) or fail(f"control places {QUORUM} on no node")
 	# Its default endpoint is the member beside it.
 	etcdctl = f"docker exec -i {QUORUM} etcdctl"
 	if dry:
@@ -727,8 +764,7 @@ def quorum_auth(arguments, dry):
 def mirror_env(arguments, dry):
 	if arguments:
 		fail("mirror-env takes no arguments")
-	known = set(tomllib.loads(NODES.read_text()))
-	where = [node for node in manifest_of(MIRROR)["placements"] if node in known]
+	where = placed_on(MIRROR)
 	missing = [key for key in MIRRORED if not os.environ.get(key)]
 	if missing:
 		message = f"secrets.json has no {', '.join(missing)}; add them with `mise run secret`"

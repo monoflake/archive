@@ -35,8 +35,9 @@ const PASS_LIMIT: Duration = Duration::from_secs(60);
 async fn main() -> anyhow::Result<()> {
 	let data = PathBuf::from(std::env::var("PROBE_DATA").unwrap_or_else(|_| "/data".into()));
 	let listen = std::env::var("LISTEN").unwrap_or_else(|_| format!("0.0.0.0:{PORT}"));
-	// Which node this probe asks from, as `place` in every table: the one host says it runs on.
-	let place = std::env::var("NODE").map_err(|_| anyhow::anyhow!("NODE is not set"))?;
+	// Which node this probe asks from, as `place` in every table: the one host says it runs on, by
+	// its id. See spec/architecture/control.md, "Who reads it, and with what".
+	let place = std::env::var("NODE_ID").map_err(|_| anyhow::anyhow!("NODE_ID is not set"))?;
 	let token = std::env::var("PROBE_TOKEN").ok().filter(|token| !token.is_empty());
 	let database = std::env::var("SUPABASE_DATABASE_URL").ok().filter(|url| !url.is_empty());
 

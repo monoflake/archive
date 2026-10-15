@@ -34,11 +34,11 @@ impl Halves for Stuck {
 
 #[tokio::test]
 async fn a_neighbor_that_takes_nothing_written_is_dropped_once_silent() {
-	let relay = relay("rdu");
+	let relay = relay("d62c82b23a858876");
 	let (feed, incoming) = mpsc::unbounded_channel();
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "tyo".into(),
+		node: "d132b0f553e3dcc3".into(),
 		versions: Versions::new(),
 		runs: None,
 		minutes: None,
@@ -51,9 +51,13 @@ async fn a_neighbor_that_takes_nothing_written_is_dropped_once_silent() {
 	let silence = Duration::from_millis(300);
 	let stuck = Heard::within(Stuck { incoming }, silence);
 	let opened = Instant::now();
-	let conversing = tokio::spawn(converse(relay.clone(), Some("tyo"), stuck));
+	let conversing = tokio::spawn(converse(relay.clone(), Some("d132b0f553e3dcc3"), stuck));
 	// This node's next snapshot, which the socket starts to write and never finishes.
-	relay.take("rdu", Carried { version: 1, snapshot: Arc::new(serde_json::json!({})) }, None);
+	relay.take(
+		"d62c82b23a858876",
+		Carried { version: 1, snapshot: Arc::new(serde_json::json!({})) },
+		None,
+	);
 	let ended = tokio::time::timeout(Duration::from_secs(5), conversing)
 		.await
 		.expect("dropped, not left waiting on the write")
@@ -96,10 +100,11 @@ async fn narrow() -> (Dial, Dial) {
 /// read, and so each still hears the other's newest once the writing stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_ends_writing_faster_than_either_reads_keep_reading() {
-	let (here, there) = (relay("rdu"), relay("sin"));
+	let (here, there) = (relay("d62c82b23a858876"), relay("9d399312d1c3ddc4"));
 	let (dialed, accepted) = narrow().await;
 	let silence = Duration::from_secs(10);
-	let dialing = tokio::spawn(converse(here.clone(), Some("sin"), Heard::within(dialed, silence)));
+	let dialing =
+		tokio::spawn(converse(here.clone(), Some("9d399312d1c3ddc4"), Heard::within(dialed, silence)));
 	let accepting = tokio::spawn(converse(there.clone(), None, Heard::within(accepted, silence)));
 
 	let snapshot = Arc::new(serde_json::json!({ "said": "x".repeat(1024 * 1024) }));
@@ -107,12 +112,14 @@ async fn two_ends_writing_faster_than_either_reads_keep_reading() {
 	let writing = Instant::now();
 	while writing.elapsed() < Duration::from_secs(1) {
 		last += 1;
-		here.take("rdu", Carried { version: last, snapshot: snapshot.clone() }, None);
-		there.take("sin", Carried { version: last, snapshot: snapshot.clone() }, None);
+		here.take("d62c82b23a858876", Carried { version: last, snapshot: snapshot.clone() }, None);
+		there.take("9d399312d1c3ddc4", Carried { version: last, snapshot: snapshot.clone() }, None);
 		tokio::time::sleep(Duration::from_millis(10)).await;
 	}
 	let caught = async {
-		while here.versions().get("sin") != Some(&last) || there.versions().get("rdu") != Some(&last) {
+		while here.versions().get("9d399312d1c3ddc4") != Some(&last)
+			|| there.versions().get("d62c82b23a858876") != Some(&last)
+		{
 			tokio::time::sleep(Duration::from_millis(50)).await;
 		}
 	};

@@ -150,10 +150,10 @@ mod tests {
 				detail: Some("google: rcode 2".into()),
 			},
 		];
-		writer.keep("rdu", &rounds).unwrap();
+		writer.keep("d62c82b23a858876", &rounds).unwrap();
 		AppState {
 			checks: Arc::new(crate::checks::parse(crate::checks::DECLARED).unwrap()),
-			place: "rdu".into(),
+			place: "d62c82b23a858876".into(),
 			archive: Arc::new(Mutex::new(Archive::open(&path).unwrap())),
 		}
 	}
@@ -197,7 +197,7 @@ mod tests {
 		assert!(results[0].get("detail").is_none());
 		assert_eq!(results[1]["detail"], "google: rcode 2");
 		assert!(body["data"].get("next").is_none());
-		assert_eq!(body["data"]["place"], "rdu");
+		assert_eq!(body["data"]["place"], "d62c82b23a858876");
 
 		let (status, _, body) =
 			ask(router.clone(), "/v1/checks/dns.site/results?since=6&until=60").await;

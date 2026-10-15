@@ -97,8 +97,7 @@ ceiling, never a reservation -- RFC fr1vj.
 
 **A workflow's `env` is its bindings, each a `fetch`** that sends the path and query it is asked
 for to the base it was declared with, whatever host the request named, as a workerd service binding
-does. Every workflow is given `LEDGER`, the URL map's ledger, and `REGISTRY`, the registry's scope,
-both on the private side; `BINDINGS` adds or replaces them. What only a server can do is offered to
+does. Every workflow is given `LEDGER`, the URL map's ledger, on the private side; `BINDINGS` adds or replaces them. What only a server can do is offered to
 a workflow the same way, as a binding -- RFC dmmk8.
 
 ## Where a workflow lives
@@ -115,7 +114,7 @@ From its environment, as every platform service reads its own:
 | Variable     | What it is                                                                                  |
 | ------------ | ------------------------------------------------------------------------------------------- |
 | `LISTEN`     | where the doorbell and `/health` answer, `host:port`; `0.0.0.0:12030` when unset            |
-| `NODE`       | the node it runs on, which host sets on every container; without it, it does not start      |
+| `NODE_ID`    | the node it runs on, which host sets on every container; without it, it does not start      |
 | `CAPACITY`   | how many leases it holds at once, a whole number from 1; 4 when unset                       |
 | `LEDGER_URL` | the ledger's base; the URL map's, on the private side, when unset                           |
 | `PUSH_URL`   | where the ledger rings it; its own scope on the private side, `/executor/turns`, when unset |

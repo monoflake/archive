@@ -28,7 +28,7 @@ pub fn digest(token: &str) -> [u8; 32] {
 	Sha256::digest(token.as_bytes()).into()
 }
 
-/// `name:digest` pairs separated by whitespace, each name one `valid` takes and each digest a
+/// `key:digest` pairs separated by whitespace, each name one `valid` takes and each digest a
 /// token's SHA-256 in lowercase hex. The first pair that is not one is the error.
 fn pairs(value: &str, valid: fn(&str) -> bool) -> Result<Vec<(String, [u8; 32])>, String> {
 	value
@@ -44,14 +44,14 @@ fn pairs(value: &str, valid: fn(&str) -> bool) -> Result<Vec<(String, [u8; 32])>
 		.collect()
 }
 
-/// Each node's read token, by the node's name, as the digest of it.
+/// Each node's read token, by the node's id, as the digest of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeTokens(BTreeMap<String, [u8; 32]>);
 
 impl NodeTokens {
-	/// `SECRETS_NODE_TOKENS` read: `node:digest` pairs, see `pairs`.
+	/// `SECRETS_NODE_TOKENS` read: `id:digest` pairs, see `pairs`.
 	pub fn parse(value: &str) -> Result<Self, String> {
-		Ok(NodeTokens(pairs(value, crate::api::node_name_is_valid)?.into_iter().collect()))
+		Ok(NodeTokens(pairs(value, crate::api::node_id_is_valid)?.into_iter().collect()))
 	}
 
 	/// Whether `token` is `node`'s own. A node with no token admits nobody.
@@ -150,25 +150,39 @@ impl ScopeTokens {
 mod tests {
 	use super::*;
 
+	const TYO: &str = "d132b0f553e3dcc3";
+	const SIN: &str = "9d399312d1c3ddc4";
+	const RDU: &str = "d62c82b23a858876";
+
 	#[test]
 	fn a_node_is_admitted_by_its_own_token_alone() {
-		let value =
-			format!("tyo:{} sin:{}", hex::encode(digest("tyo-token")), hex::encode(digest("sin-token")));
+		let value = format!(
+			"{TYO}:{} {SIN}:{}",
+			hex::encode(digest("tyo-token")),
+			hex::encode(digest("sin-token"))
+		);
 		let tokens = NodeTokens::parse(&value).unwrap();
 		assert_eq!(tokens.len(), 2);
-		assert!(tokens.admits("tyo", "tyo-token"));
-		assert!(!tokens.admits("tyo", "sin-token"));
-		assert!(!tokens.admits("tyo", ""));
-		assert!(!tokens.admits("rdu", "tyo-token"));
-		assert!(!tokens.admits("rdu", ""));
+		assert!(tokens.admits(TYO, "tyo-token"));
+		assert!(!tokens.admits(TYO, "sin-token"));
+		assert!(!tokens.admits(TYO, ""));
+		assert!(!tokens.admits(RDU, "tyo-token"));
+		assert!(!tokens.admits(RDU, ""));
+		assert!(!tokens.admits("tyo", "tyo-token"));
 	}
 
 	#[test]
 	fn a_pair_that_is_not_one_is_refused() {
 		let good = hex::encode(digest("x"));
-		for value in
-			["tyo".to_owned(), "tyo:abcd".into(), format!("TYO:{good}"), format!("tyo:{good}x")]
-		{
+		for value in [
+			TYO.to_owned(),
+			format!("{TYO}:abcd"),
+			format!("tyo:{good}"),
+			format!("D132B0F553E3DCC3:{good}"),
+			format!("d132b0f553e3dcc:{good}"),
+			format!("d132b0f553e3dcg3:{good}"),
+			format!("{TYO}:{good}x"),
+		] {
 			assert!(NodeTokens::parse(&value).is_err(), "{value}");
 		}
 		assert!(NodeTokens::parse("").unwrap().is_empty());
@@ -181,7 +195,7 @@ mod tests {
 		let read = "e427d2347bcf34900e081847095ac6d30609ba546b08e680d5f8f4ee8c389116";
 		let digest = "d0cd53f06568c9cdf0be664afcf1aa86acef7179e1840e1377afe84c902ba564";
 		assert_eq!(hex::encode(super::digest(read)), digest);
-		assert!(NodeTokens::parse(&format!("rdu:{digest}")).unwrap().admits("rdu", read));
+		assert!(NodeTokens::parse(&format!("{RDU}:{digest}")).unwrap().admits(RDU, read));
 	}
 
 	#[test]

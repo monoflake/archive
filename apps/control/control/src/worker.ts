@@ -4,6 +4,7 @@ import { app } from './index.ts';
 interface Env {
 	readonly DB: D1Database;
 	readonly CONTROL_READ_TOKEN?: string;
+	readonly CONTROL_WRITE_TOKEN?: string;
 	readonly CONTROL_IMPORT_TOKEN?: string;
 }
 

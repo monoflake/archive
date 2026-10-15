@@ -16,8 +16,8 @@ describe('the configuration', () => {
 	});
 
 	it('reaches the ledger and is rung on the private side unless told otherwise', () => {
-		const config = configOf({ NODE: 'tyo' });
-		expect(config.node).toBe('tyo');
+		const config = configOf({ NODE: 'tyo', NODE_ID: 'd132b0f553e3dcc3' });
+		expect(config.node).toBe('d132b0f553e3dcc3');
 		expect(config.ledger).toMatch(/\/ledger$/);
 		expect(config.pushUrl).toMatch(/\/executor\/turns$/);
 		expect(config.bindings).toEqual(defaultBindings());
@@ -28,14 +28,15 @@ describe('the configuration', () => {
 
 	it('adds and replaces bindings from BINDINGS', () => {
 		const { bindings } = configOf({
-			BINDINGS: 'STORE=http://store.invalid, REGISTRY=http://r.invalid',
+			BINDINGS: 'STORE=http://store.invalid, LEDGER=http://ledger.invalid',
 		});
 		expect(bindings.STORE).toBe('http://store.invalid');
-		expect(bindings.REGISTRY).toBe('http://r.invalid');
-		expect(bindings.LEDGER).toBe(defaultBindings().LEDGER);
+		expect(bindings.LEDGER).toBe('http://ledger.invalid');
+		expect(configOf({}).bindings).toEqual({ LEDGER: defaultBindings().LEDGER });
 	});
 
-	it('leaves NODE unset when it is, so the executor refuses to start', () => {
+	it('leaves NODE_ID unset when it is, so the executor refuses to start', () => {
 		expect(configOf({}).node).toBeUndefined();
+		expect(configOf({ NODE: 'tyo' }).node).toBeUndefined();
 	});
 });

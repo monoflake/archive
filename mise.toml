@@ -116,14 +116,14 @@ description = "Manage every kind the registry holds, read off its catalog: `plat
 run = "node apps/data/registry/scripts/platform.ts"
 
 [tasks.catalog]
-description = "Regenerate the registry catalog's TypeScript reader from its committed schema, with web's generator"
-run = "node ../web/apps/console/scripts/contracts.ts --schema apps/data/registry/catalog.schema.json --reader apps/data/registry/scripts/catalog.gen.ts --again 'mise run catalog'"
+description = "Regenerate control's catalog's TypeScript reader from its committed schema, with web's generator"
+run = "node ../web/apps/console/scripts/contracts.ts --schema apps/control/control/catalog.schema.json --reader apps/control/control/src/catalog.gen.ts --again 'mise run catalog'"
 
 [tasks.check-catalog]
-description = "Fail when the registry catalog's TypeScript reader no longer matches its schema; passed over, named, where web is not cloned beside this"
+description = "Fail when control's catalog's TypeScript reader no longer matches its schema; passed over, named, where web is not cloned beside this"
 run = """
 if [ -f ../web/apps/console/scripts/contracts.ts ]; then
-	node ../web/apps/console/scripts/contracts.ts --check --schema apps/data/registry/catalog.schema.json --reader apps/data/registry/scripts/catalog.gen.ts --again 'mise run catalog'
+	node ../web/apps/console/scripts/contracts.ts --check --schema apps/control/control/catalog.schema.json --reader apps/control/control/src/catalog.gen.ts --again 'mise run catalog'
 else
 	echo "check-catalog: web is not cloned beside this; the catalog's reader is not checked" >&2
 fi

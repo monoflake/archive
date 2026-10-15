@@ -148,7 +148,10 @@ mod tests {
 			beats,
 			down: down.iter().map(|app| ((*app).to_owned(), 2)).collect(),
 			held: 0,
-			round_trip: trip.map(|seconds| ("tyo".to_owned(), seconds)).into_iter().collect(),
+			round_trip: trip
+				.map(|seconds| ("d132b0f553e3dcc3".to_owned(), seconds))
+				.into_iter()
+				.collect(),
 			leaving: leaving.then_some(Reason::Restart),
 			readings: trip
 				.map(|seconds| {
@@ -180,7 +183,7 @@ mod tests {
 		assert_eq!(hour.minutes, 3);
 		assert_eq!(hour.beats, 41);
 		assert_eq!(hour.down, BTreeMap::from([("apt".into(), 2), ("geo".into(), 4)]));
-		assert_eq!(hour.round_trip["tyo"], Trip { mean: 0.2, worst: 0.3, minutes: 2 });
+		assert_eq!(hour.round_trip["d132b0f553e3dcc3"], Trip { mean: 0.2, worst: 0.3, minutes: 2 });
 		assert_eq!(hour.readings["cpu.usage"], Trip { mean: 20.0, worst: 60.0, minutes: 2 });
 		// Its gap of 57 minutes followed no word of leaving.
 		assert_eq!((hour.leaving, hour.announced, hour.tail), (0, 0, false));
@@ -194,7 +197,7 @@ mod tests {
 			[(0, 60 * MINUTE, &hour), (60 * MINUTE, 120 * MINUTE, &other)],
 		);
 		assert_eq!((day.minutes, day.beats), (4, 61));
-		assert_eq!(day.round_trip["tyo"], Trip { mean: 0.3, worst: 0.5, minutes: 3 });
+		assert_eq!(day.round_trip["d132b0f553e3dcc3"], Trip { mean: 0.3, worst: 0.5, minutes: 3 });
 	}
 
 	#[test]

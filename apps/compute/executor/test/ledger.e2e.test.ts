@@ -46,7 +46,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 
 	it('runs a run as a task, a done step once however often it is replayed', async () => {
 		await world.open('issue-1', 'issue');
-		const node = new Node(world, 'sin');
+		const node = new Node(world, '9d399312d1c3ddc4');
 		const first = await node.turn('issue-1');
 		expect(first.ended).toEqual({ ended: 'halted', why: 'turn' });
 		const sleeping = await world.view('issue-1');
@@ -81,8 +81,8 @@ describe.runIf(ready())('the executor against the ledger', () => {
 	it('loses nothing when a node is lost mid-step, and refuses its late report', async () => {
 		await world.open('lost-1', 'hold');
 		world.witness.hold('/a/hold/lost-1');
-		const lost = new Node(world, 'sin', undefined, `${world.witness.base}/a`);
-		const survivor = new Node(world, 'rdu', undefined, `${world.witness.base}/b`);
+		const lost = new Node(world, '9d399312d1c3ddc4', undefined, `${world.witness.base}/a`);
+		const survivor = new Node(world, 'd62c82b23a858876', undefined, `${world.witness.base}/b`);
 		const turn = await lost.granted('lost-1');
 		const running = lost.start(turn);
 		await until('the lost node begins the step', () => world.witness.count('/a/hold/lost-1') === 1);
@@ -99,7 +99,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 
 	it('retries a failed step after its backoff and stops at its limit', async () => {
 		await world.open('flaky-1', 'flaky');
-		const node = new Node(world, 'sin');
+		const node = new Node(world, '9d399312d1c3ddc4');
 		const first = await node.turn('flaky-1');
 		expect(first.ended).toEqual({ ended: 'halted', why: 'turn' });
 		expect(await world.status('flaky-1')).toBe('sleeping');
@@ -116,7 +116,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 
 	it('never retries a NonRetryableError', async () => {
 		await world.open('fatal-1', 'fatal');
-		const { ended } = await new Node(world, 'sin').turn('fatal-1');
+		const { ended } = await new Node(world, '9d399312d1c3ddc4').turn('fatal-1');
 		expect(ended).toEqual({ ended: 'failed', error: 'never' });
 		expect((await world.view('fatal-1')).steps[0]).toMatchObject({ attempt: 1, status: 'failed' });
 		expect(world.witness.count('/doomed')).toBe(1);
@@ -125,7 +125,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 	it('fails a step begun more than twenty times by holders that were lost', async () => {
 		await world.open('starts-1', 'hold');
 		world.witness.hold('/hold/starts-1');
-		const node = new Node(world, 'sin');
+		const node = new Node(world, '9d399312d1c3ddc4');
 		const turn = await node.granted('starts-1');
 		const running = node.start(turn);
 		await until('the step begins', () => world.witness.count('/hold/starts-1') === 1);
@@ -142,7 +142,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 	it('counts a step found past its deadline as a failed attempt', async () => {
 		await world.open('deadline-1', 'hold');
 		world.witness.hold('/hold/deadline-1');
-		const node = new Node(world, 'sin');
+		const node = new Node(world, '9d399312d1c3ddc4');
 		const turn = await node.granted('deadline-1');
 		const running = node.start(turn);
 		await until('the step begins', () => world.witness.count('/hold/deadline-1') === 1);
@@ -158,14 +158,14 @@ describe.runIf(ready())('the executor against the ledger', () => {
 
 	it('fails a step whose result is past 1 MiB', async () => {
 		await world.open('huge-1', 'huge');
-		const { ended } = await new Node(world, 'sin').turn('huge-1');
+		const { ended } = await new Node(world, '9d399312d1c3ddc4').turn('huge-1');
 		expect(ended).toMatchObject({ ended: 'failed' });
 		expect((await world.view('huge-1')).steps[0]?.status).toBe('failed');
 	});
 
 	it('fails a run whose code disagrees with the record', async () => {
 		await world.open('diverged-1', 'before');
-		const node = new Node(world, 'sin');
+		const node = new Node(world, '9d399312d1c3ddc4');
 		const first = await node.turn('diverged-1');
 		expect(first.ended).toEqual({ ended: 'halted', why: 'turn' });
 		await world.sql`UPDATE runs SET workflow = 'after' WHERE id = 'diverged-1'`;
@@ -180,7 +180,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 
 	it('waits for an event holding nothing, takes it once, and says when none came', async () => {
 		await world.open('approve-1', 'approve');
-		const node = new Node(world, 'sin');
+		const node = new Node(world, '9d399312d1c3ddc4');
 		const first = await node.turn('approve-1');
 		expect(first.ended).toEqual({ ended: 'halted', why: 'turn' });
 		expect((await world.view('approve-1')).lease).toBeNull();
@@ -205,12 +205,12 @@ describe.runIf(ready())('the executor against the ledger', () => {
 
 	it('grants a run only to a node that names its workflow', async () => {
 		await world.open('named-1', 'fatal');
-		const elsewhere = new Node(world, 'sin', ['issue']);
+		const elsewhere = new Node(world, '9d399312d1c3ddc4', ['issue']);
 		await elsewhere.poll();
 		await new Promise((resolve) => setTimeout(resolve, 2_500));
 		expect(await elsewhere.poll()).toEqual([]);
 		expect(await world.status('named-1')).toBe('ready');
-		const { ended } = await new Node(world, 'rdu', ['fatal']).turn('named-1');
+		const { ended } = await new Node(world, 'd62c82b23a858876', ['fatal']).turn('named-1');
 		expect(ended).toEqual({ ended: 'failed', error: 'never' });
 	});
 
@@ -238,15 +238,16 @@ describe.runIf(ready())('the executor against the ledger', () => {
 
 	it('holds no more leases than its capacity, each run once', async () => {
 		world.witness.hold('/hold/cap-');
-		const at = drive('sin', { capacity: 1 });
+		const at = drive('9d399312d1c3ddc4', { capacity: 1 });
 		await world.open('cap-1', 'hold');
 		await world.open('cap-2', 'hold');
 		await until(
 			'one run leased',
-			async () => (await world.sql`SELECT 1 FROM leases WHERE holder = 'sin'`).length === 1,
+			async () =>
+				(await world.sql`SELECT 1 FROM leases WHERE holder = '9d399312d1c3ddc4'`).length === 1,
 		);
 		await new Promise((resolve) => setTimeout(resolve, 2_500));
-		const held = await world.sql`SELECT run FROM leases WHERE holder = 'sin'`;
+		const held = await world.sql`SELECT run FROM leases WHERE holder = '9d399312d1c3ddc4'`;
 		expect(held).toHaveLength(1);
 		world.witness.release('/hold/cap-');
 		await until(
@@ -263,7 +264,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 	it('renews a lease while its turn runs, and stops the turn once a renewal is refused', async () => {
 		const lines: string[] = [];
 		world.witness.hold('/hold/long-1');
-		drive('rdu', { renewMs: 100, log: (line) => lines.push(line) });
+		drive('d62c82b23a858876', { renewMs: 100, log: (line) => lines.push(line) });
 		await world.open('long-1', 'hold');
 		await until('the step begins', () => world.witness.count('/hold/long-1') === 1);
 		await world.sql`UPDATE leases SET expires_at = expires_at - 25000000000 WHERE run = 'long-1'`;
@@ -275,7 +276,7 @@ describe.runIf(ready())('the executor against the ledger', () => {
 		});
 		// The lease another node's, as a grant to it would make it: only the renewal can say so,
 		// since this node's polls no longer answer the turn.
-		await world.sql`UPDATE leases SET holder = 'sin' WHERE run = 'long-1'`;
+		await world.sql`UPDATE leases SET holder = '9d399312d1c3ddc4' WHERE run = 'long-1'`;
 		await until('the turn stopped', () =>
 			lines.some((line) => line.includes('its renewal was refused')),
 		);

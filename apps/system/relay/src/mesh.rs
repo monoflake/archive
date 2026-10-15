@@ -71,7 +71,8 @@ const LAST_RETRY: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
-	/// Sent first by both ends: the contract's version, who it is, and what it holds.
+	/// Sent first by both ends: the contract's version, who it is, and what it holds. Every `node`
+	/// in a message, and every key of `Versions` and `Sync`, is a node's id.
 	Hello {
 		version: u32,
 		node: String,
@@ -226,18 +227,18 @@ pub async fn keep(relay: Arc<Relay>, peer: Peer) {
 	loop {
 		match dial(&peer, relay.secret()).await {
 			Ok(socket) => {
-				eprintln!("relay: holding {}", peer.name);
+				eprintln!("relay: holding {}", peer.id);
 				let opened = Instant::now();
-				let ended = converse(relay.clone(), Some(&peer.name), Heard::new(socket)).await;
+				let ended = converse(relay.clone(), Some(&peer.id), Heard::new(socket)).await;
 				match ended {
-					Ok(()) => eprintln!("relay: {} closed", peer.name),
-					Err(error) => eprintln!("relay: lost {}: {error}", peer.name),
+					Ok(()) => eprintln!("relay: {} closed", peer.id),
+					Err(error) => eprintln!("relay: lost {}: {error}", peer.id),
 				}
 				if opened.elapsed() >= LAST_RETRY {
 					wait = FIRST_RETRY;
 				}
 			}
-			Err(error) => eprintln!("relay: dialing {} at {}: {error}", peer.name, peer.address),
+			Err(error) => eprintln!("relay: dialing {} at {}: {error}", peer.id, peer.address),
 		}
 		tokio::time::sleep(wait).await;
 		wait = (wait * 2).min(LAST_RETRY);

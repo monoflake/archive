@@ -12,14 +12,33 @@ pub(crate) const PEER: &str = "peer-s3cret";
 const ACCOUNTS: &str = "accounts-s3cret";
 const TYO: &str = "tyo-read-s3cret";
 const SIN: &str = "sin-read-s3cret";
+/// What control holds tyo, sin and rdu as.
+const TYO_ID: &str = "d132b0f553e3dcc3";
+const SIN_ID: &str = "9d399312d1c3ddc4";
+const RDU_ID: &str = "d62c82b23a858876";
+/// What control's read token is in these tests.
+const CONTROL_READ: &str = "control-read-s3cret";
 
 pub(crate) fn node_tokens() -> NodeTokens {
-	let value =
-		format!("tyo:{} sin:{}", hex::encode(tokens::digest(TYO)), hex::encode(tokens::digest(SIN)));
+	let value = format!(
+		"{TYO_ID}:{} {SIN_ID}:{}",
+		hex::encode(tokens::digest(TYO)),
+		hex::encode(tokens::digest(SIN))
+	);
 	NodeTokens::parse(&value).unwrap()
 }
 
-pub(crate) fn secrets(store: Store, seal: Arc<Seal>, registries: Vec<String>) -> Shared {
+/// The path a node reads its values at.
+fn node_path(id: &str) -> String {
+	format!("/v1/nodes/{id}/secrets")
+}
+
+/// Control at `base`, asked with the read token these tests' fakes take; no base asks nothing.
+pub(crate) fn control(base: Option<String>) -> peers::Control {
+	base.map(|base| peers::Control::new(&base, CONTROL_READ)).unwrap_or_default()
+}
+
+pub(crate) fn secrets(store: Store, seal: Arc<Seal>, control: peers::Control) -> Shared {
 	Arc::new(Secrets {
 		store,
 		seal,
@@ -32,7 +51,7 @@ pub(crate) fn secrets(store: Store, seal: Arc<Seal>, registries: Vec<String>) ->
 		peer_token: PEER.into(),
 		nodes: node_tokens(),
 		node_scopes: vec!["platform".into(), "canmi".into()],
-		registries,
+		control,
 		client: peers::client(),
 	})
 }
@@ -40,7 +59,7 @@ pub(crate) fn secrets(store: Store, seal: Arc<Seal>, registries: Vec<String>) ->
 /// A router over a database never reached, sealed, for what is refused before the store is asked.
 fn refusing() -> (Router, Arc<Seal>) {
 	let seal = Arc::new(Seal::default());
-	(routes(secrets(unreached(), seal.clone(), Vec::new())), seal)
+	(routes(secrets(unreached(), seal.clone(), control(None))), seal)
 }
 
 /// A base address on loopback where nothing listens: port 1, which no test binds.
@@ -57,22 +76,25 @@ pub(crate) async fn serve(router: Router) -> String {
 	format!("http://{address}")
 }
 
-/// A registry that places `gemini`, `shot` and `registry` on `tyo`, and `grok` and `shot` on `sin`,
-/// answering as the registry's `GET /v1/apps?node=` does.
-async fn fake_registry() -> String {
+/// Control placing `gemini`, `shot` and `registry` on tyo, and `grok` and `shot` on sin, answering
+/// as its `GET /v1/registry/apps?node=` does, and to its read token alone.
+async fn fake_control() -> peers::Control {
 	#[derive(serde::Deserialize)]
 	struct Asked {
 		node: Option<String>,
 	}
 	let placed = [
-		("gemini", ["tyo"].as_slice()),
-		("grok", &["sin"]),
-		("shot", &["tyo", "sin"]),
-		("registry", &["tyo"]),
+		("gemini", [TYO_ID].as_slice()),
+		("grok", &[SIN_ID]),
+		("shot", &[TYO_ID, SIN_ID]),
+		("registry", &[TYO_ID]),
 	];
 	let router = Router::new().route(
-		"/v1/apps",
-		get(move |Query(asked): Query<Asked>| async move {
+		"/v1/registry/apps",
+		get(move |Query(asked): Query<Asked>, headers: HeaderMap| async move {
+			if tokens::bearer(&headers) != CONTROL_READ {
+				return response::failure(StatusCode::UNAUTHORIZED, "invalid_token");
+			}
 			let items: Vec<Value> = placed
 				.iter()
 				.filter(|(_, nodes)| asked.node.as_deref().is_none_or(|node| nodes.contains(&node)))
@@ -83,7 +105,7 @@ async fn fake_registry() -> String {
 			response::success(StatusCode::OK, json!({ "items": items, "revision": 9 }))
 		}),
 	);
-	serve(router).await
+	control(Some(serve(router).await))
 }
 
 pub(crate) async fn send(
@@ -132,7 +154,7 @@ async fn every_route_that_touches_a_secret_is_unavailable_while_sealed() {
 	let answers = [
 		send(router.clone(), "GET", "/v1/secrets", Some(TOKEN), None).await,
 		send(router.clone(), "PUT", "/v1/secrets/gemini/KEY", Some(TOKEN), Some(wanted(0, "v"))).await,
-		send(router.clone(), "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await,
+		send(router.clone(), "GET", &node_path(TYO_ID), Some(TYO), None).await,
 		send(
 			router.clone(),
 			"DELETE",
@@ -156,7 +178,7 @@ async fn writes_take_the_write_token_or_a_scope_token() {
 	let closed = Secrets {
 		token: String::new(),
 		scopes: ScopeTokens::default(),
-		..Arc::into_inner(secrets(unreached(), Arc::default(), Vec::new())).unwrap()
+		..Arc::into_inner(secrets(unreached(), Arc::default(), control(None))).unwrap()
 	};
 	let closed = routes(Arc::new(closed));
 	let answer =
@@ -168,7 +190,7 @@ async fn writes_take_the_write_token_or_a_scope_token() {
 	// Without the write token, a scope's token still writes its scope.
 	let scoped_only = Secrets {
 		token: String::new(),
-		..Arc::into_inner(secrets(unreached(), Arc::default(), Vec::new())).unwrap()
+		..Arc::into_inner(secrets(unreached(), Arc::default(), control(None))).unwrap()
 	};
 	let scoped_only = routes(Arc::new(scoped_only));
 	let answer = send(scoped_only.clone(), "GET", "/v1/secrets", Some(TOKEN), None).await;
@@ -235,7 +257,7 @@ async fn a_scope_token_reaches_its_own_app_of_its_own_scope_alone() {
 async fn a_scope_token_never_writes_what_changes_how_a_process_starts() {
 	let seal = Arc::new(Seal::default());
 	seal.open(RootKey::generate());
-	let router = routes(secrets(unreached(), seal, Vec::new()));
+	let router = routes(secrets(unreached(), seal, control(None)));
 	let refused = [
 		"LD_PRELOAD",
 		"LD_LIBRARY_PATH",
@@ -277,19 +299,18 @@ async fn a_scope_token_never_writes_what_changes_how_a_process_starts() {
 async fn a_node_reads_with_its_own_token_alone() {
 	let (router, _) = refusing();
 	for (path, bearer) in [
-		("/v1/nodes/tyo/secrets", Some(SIN)),
-		("/v1/nodes/tyo/secrets", Some(TOKEN)),
-		("/v1/nodes/tyo/secrets", None),
-		("/v1/nodes/sin/secrets", Some(TYO)),
-		("/v1/nodes/rdu/secrets", Some(TYO)),
-		("/v1/nodes/rdu/secrets", Some("")),
+		(&node_path(TYO_ID), Some(SIN)),
+		(&node_path(TYO_ID), Some(TOKEN)),
+		(&node_path(TYO_ID), None),
+		(&node_path(SIN_ID), Some(TYO)),
+		(&node_path(RDU_ID), Some(TYO)),
+		(&node_path(RDU_ID), Some("")),
 	] {
 		let answer = send(router.clone(), "GET", path, bearer, None).await;
 		assert_eq!(code(&answer), (StatusCode::UNAUTHORIZED, "invalid_token"), "{path} {bearer:?}");
 	}
-	for node in ["TYO", "tyoo", "t1o"] {
-		let answer =
-			send(router.clone(), "GET", &format!("/v1/nodes/{node}/secrets"), Some(TYO), None).await;
+	for node in ["tyo", "D132B0F553E3DCC3", "d132b0f553e3dcc", "d132b0f553e3dcg3"] {
+		let answer = send(router.clone(), "GET", &node_path(node), Some(TYO), None).await;
 		assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_name"), "{node}");
 	}
 }
@@ -314,7 +335,7 @@ async fn a_share_is_given_to_the_peer_token_alone_and_only_while_held() {
 
 	let unset = Secrets {
 		peer_token: String::new(),
-		..Arc::into_inner(secrets(unreached(), seal, Vec::new())).unwrap()
+		..Arc::into_inner(secrets(unreached(), seal, control(None))).unwrap()
 	};
 	let answer = send(routes(Arc::new(unset)), "GET", "/v1/seal/share", Some(""), None).await;
 	assert_eq!(code(&answer), (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable"));
@@ -351,7 +372,7 @@ async fn the_operator_opens_a_lone_core_with_the_whole_key() {
 async fn refuses_a_secret_it_cannot_store() {
 	let seal = Arc::new(Seal::default());
 	seal.open(RootKey::generate());
-	let router = routes(secrets(unreached(), seal, Vec::new()));
+	let router = routes(secrets(unreached(), seal, control(None)));
 	let put =
 		|path: &'static str, body: Value| send(router.clone(), "PUT", path, Some(TOKEN), Some(body));
 	for path in
@@ -406,7 +427,7 @@ async fn health_says_sealed_and_fails_only_on_the_store() {
 	let answer = send(router, "GET", "/health", None, None).await;
 	assert_eq!(code(&answer), (StatusCode::SERVICE_UNAVAILABLE, "store_unavailable"));
 	let Some(store) = store().await else { return };
-	let router = routes(secrets(store, Arc::default(), Vec::new()));
+	let router = routes(secrets(store, Arc::default(), control(None)));
 	let answer = send(router, "GET", "/health", None, None).await;
 	assert_eq!(answer.0, StatusCode::OK);
 	assert_eq!(answer.1["data"], json!({ "sealed": true }));
@@ -417,8 +438,7 @@ async fn a_secret_written_is_listed_without_its_value_and_read_by_its_node() {
 	let Some(store) = store().await else { return };
 	let seal = Arc::new(Seal::default());
 	seal.open(RootKey::generate());
-	let unreachable = nobody();
-	let router = routes(secrets(store, seal, vec![unreachable, fake_registry().await]));
+	let router = routes(secrets(store, seal, fake_control().await));
 	let put =
 		|path: &'static str, body: Value| send(router.clone(), "PUT", path, Some(TOKEN), Some(body));
 
@@ -447,7 +467,7 @@ async fn a_secret_written_is_listed_without_its_value_and_read_by_its_node() {
 	);
 	assert!(items[0]["changed"].is_string());
 
-	let tyo = send(router.clone(), "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
+	let tyo = send(router.clone(), "GET", &node_path(TYO_ID), Some(TYO), None).await;
 	assert_eq!(tyo.0, StatusCode::OK, "{}", tyo.1);
 	let values: Vec<(&str, &str)> = tyo.1["data"]["items"]
 		.as_array()
@@ -459,7 +479,7 @@ async fn a_secret_written_is_listed_without_its_value_and_read_by_its_node() {
 	assert!(tyo.1["data"]["items"].as_array().unwrap().iter().all(|item| item["class"] == "secret"));
 	assert_eq!(tyo.1["data"]["revision"], listed.1["data"]["revision"]);
 
-	let sin = send(router.clone(), "GET", "/v1/nodes/sin/secrets", Some(SIN), None).await;
+	let sin = send(router.clone(), "GET", &node_path(SIN_ID), Some(SIN), None).await;
 	let names: Vec<&str> = sin.1["data"]["items"]
 		.as_array()
 		.unwrap()
@@ -467,18 +487,21 @@ async fn a_secret_written_is_listed_without_its_value_and_read_by_its_node() {
 		.map(|item| item["name"].as_str().unwrap())
 		.collect();
 	assert_eq!(names, ["SHOT_KEY", "GROK_KEY"]);
-	let refused = send(router, "GET", "/v1/nodes/sin/secrets", Some(TYO), None).await;
+	let refused = send(router, "GET", &node_path(SIN_ID), Some(TYO), None).await;
 	assert_eq!(code(&refused), (StatusCode::UNAUTHORIZED, "invalid_token"));
 }
 
 #[tokio::test]
-async fn a_node_is_told_when_no_registry_answers() {
-	let Some(store) = store().await else { return };
+async fn a_node_is_told_when_control_does_not_answer() {
 	let seal = Arc::new(Seal::default());
 	seal.open(RootKey::generate());
-	let router = routes(secrets(store, seal, vec![nobody()]));
-	let answer = send(router, "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
-	assert_eq!(code(&answer), (StatusCode::BAD_GATEWAY, "upstream_unavailable"));
+	let refusing = peers::Control::new(&fake_control().await.base, "wrong");
+	// Control is asked before the store is, so a store never reached is enough.
+	for control in [control(Some(nobody())), control(None), refusing] {
+		let router = routes(secrets(unreached(), seal.clone(), control.clone()));
+		let answer = send(router, "GET", &node_path(TYO_ID), Some(TYO), None).await;
+		assert_eq!(code(&answer), (StatusCode::BAD_GATEWAY, "upstream_unavailable"), "{control:?}");
+	}
 }
 
 #[tokio::test]
@@ -489,7 +512,7 @@ async fn a_lone_core_with_no_share_checks_the_key_against_a_secret() {
 	let sealed = envelope::seal(&key, &identity, b"v");
 	store.set(&identity, "test", 0, Wanted::Value(&sealed, Class::Secret), |_| false).await.unwrap();
 	let seal = Arc::new(Seal::default());
-	let router = routes(secrets(store, seal.clone(), Vec::new()));
+	let router = routes(secrets(store, seal.clone(), control(None)));
 	let other = json!({ "key": *RootKey::generate().to_hex() });
 	let answer = send(router.clone(), "POST", "/v1/seal", Some(TOKEN), Some(other)).await;
 	assert_eq!(code(&answer), (StatusCode::BAD_REQUEST, "invalid_body"));
@@ -503,7 +526,7 @@ async fn opened() -> Option<(Router, Shared)> {
 	let store = store().await?;
 	let seal = Arc::new(Seal::default());
 	seal.open(RootKey::generate());
-	let shared = secrets(store, seal, vec![fake_registry().await]);
+	let shared = secrets(store, seal, fake_control().await);
 	Some((routes(shared.clone()), shared))
 }
 
@@ -554,7 +577,7 @@ async fn a_config_is_read_whole_and_a_secret_never() {
 	assert_eq!(code(&missing), (StatusCode::NOT_FOUND, "no_such_resource"));
 
 	// The node it is placed on is answered both, each with its class.
-	let tyo = send(router, "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
+	let tyo = send(router, "GET", &node_path(TYO_ID), Some(TYO), None).await;
 	let given: Vec<(&str, &str, &str)> = tyo.1["data"]["items"]
 		.as_array()
 		.unwrap()
@@ -745,7 +768,7 @@ async fn a_held_scope_is_never_given_to_a_node_whatever_app_it_names() {
 	seal.open(RootKey::generate());
 	let shared = Secrets {
 		node_scopes: node_scopes("").unwrap(),
-		..Arc::into_inner(secrets(store, seal, vec![fake_registry().await])).unwrap()
+		..Arc::into_inner(secrets(store, seal, fake_control().await)).unwrap()
 	};
 	let router = routes(Arc::new(shared));
 	// `registry` is placed on tyo, and its account identities are kept under `accounts`.
@@ -755,7 +778,7 @@ async fn a_held_scope_is_never_given_to_a_node_whatever_app_it_names() {
 	revision_of(&put(&router, canmi, TOKEN, wanted(0, "canmi-s3cret")).await);
 	revision_of(&put(&router, "/v1/secrets/shot/SHOT_KEY", TOKEN, wanted(0, "shot")).await);
 
-	let tyo = send(router, "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
+	let tyo = send(router, "GET", &node_path(TYO_ID), Some(TYO), None).await;
 	assert_eq!(tyo.0, StatusCode::OK, "{}", tyo.1);
 	assert!(!tyo.1.to_string().contains("identity-s3cret"), "{}", tyo.1);
 	let given: Vec<(&str, &str)> = tyo.1["data"]["items"]
@@ -812,7 +835,7 @@ async fn a_value_deleted_is_told_to_its_node_by_name_and_revision() {
 	let read = send(router.clone(), "GET", path, Some(TOKEN), None).await;
 	assert_eq!(code(&read), (StatusCode::NOT_FOUND, "no_such_resource"));
 
-	let tyo = send(router.clone(), "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
+	let tyo = send(router.clone(), "GET", &node_path(TYO_ID), Some(TYO), None).await;
 	assert_eq!(tyo.0, StatusCode::OK, "{}", tyo.1);
 	let data = &tyo.1["data"];
 	let names: Vec<&str> =
@@ -825,12 +848,12 @@ async fn a_value_deleted_is_told_to_its_node_by_name_and_revision() {
 	assert_eq!(data["apps"], json!(["gemini", "shot", "registry"]));
 	assert_eq!(data["revision"], removed);
 	// sin runs no gemini, so it is told nothing of it.
-	let sin = send(router.clone(), "GET", "/v1/nodes/sin/secrets", Some(SIN), None).await;
+	let sin = send(router.clone(), "GET", &node_path(SIN_ID), Some(SIN), None).await;
 	assert_eq!(sin.1["data"]["removed"], json!([]));
 	assert_eq!(sin.1["data"]["apps"], json!(["grok", "shot"]));
 
 	// Written again from nothing, it is a value and no longer a removal.
 	revision_of(&put(&router, path, TOKEN, wanted(0, "again")).await);
-	let tyo = send(router, "GET", "/v1/nodes/tyo/secrets", Some(TYO), None).await;
+	let tyo = send(router, "GET", &node_path(TYO_ID), Some(TYO), None).await;
 	assert_eq!(tyo.1["data"]["removed"], json!([]));
 }

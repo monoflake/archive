@@ -17,7 +17,7 @@ const STOPPING_MS = 15_000;
 
 const config = configOf(process.env);
 if (!config.node) {
-	console.log('executor: NODE is not set; host sets it on every container');
+	console.log('executor: NODE_ID is not set; host sets it on every container');
 	process.exit(1);
 }
 const node = config.node;

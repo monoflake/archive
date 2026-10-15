@@ -6,6 +6,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -169,7 +170,7 @@ class Grant(unittest.TestCase):
 	def run_grant(self, app, dry, placements):
 		out = io.StringIO()
 		with (
-			mock.patch.object(database, "manifest_of", return_value={"placements": placements}),
+			mock.patch.object(database, "placed_on", return_value=placements),
 			mock.patch.object(database, "placements", return_value=NODES),
 			mock.patch.object(database, "stored_secret", return_value="hunter2"),
 			mock.patch.object(
@@ -206,6 +207,62 @@ class Grant(unittest.TestCase):
 			self.assertIn(
 				f"config.env on {node}: PATRONI_PRIMARY_URL=http://{address}:8008/primary", printed
 			)
+
+
+
+class Placed(unittest.TestCase):
+	"""Which nodes an app is placed on, asked of control by id and answered by name."""
+
+	IDS = {"tyo": "d132b0f553e3dcc3", "sin": "9d399312d1c3ddc4", "rdu": "d62c82b23a858876"}
+
+	def setUp(self):
+		self.scratch = tempfile.TemporaryDirectory()
+		self.addCleanup(self.scratch.cleanup)
+		nodes = Path(self.scratch.name) / "nodes.toml"
+		nodes.write_text("".join(f'[{name}]\nid = "{node}"\n' for name, node in self.IDS.items()))
+		patches = [
+			mock.patch.object(database, "NODES", nodes),
+			mock.patch.dict(database.os.environ, {database.READ_TOKEN: "read-s3cret"}),
+		]
+		for patch in patches:
+			patch.start()
+			self.addCleanup(patch.stop)
+
+	def answering(self, placements):
+		sent = []
+
+		def urlopen(request, timeout):
+			sent.append(request)
+			spec = {"placements": placements}
+			return Answer({"status": "success", "data": {"name": "database", "revision": 3, "spec": spec}})
+
+		return sent, mock.patch.object(database.urllib.request, "urlopen", side_effect=urlopen)
+
+	def test_names_each_node_control_places_it_on_in_its_order(self):
+		sent, urlopen = self.answering([self.IDS["sin"], self.IDS["tyo"]])
+		with urlopen:
+			self.assertEqual(database.placed_on("database"), ["sin", "tyo"])
+		(request,) = sent
+		self.assertEqual(request.full_url, f"{database.CONTROL}/v1/registry/apps/database")
+		self.assertEqual(request.get_header("Authorization"), "Bearer read-s3cret")
+
+	def test_a_worker_is_placed_on_none(self):
+		_, urlopen = self.answering([])
+		with urlopen:
+			self.assertEqual(database.placed_on("site"), [])
+
+	def test_an_id_nodes_toml_does_not_name_or_no_token_fails(self):
+		_, urlopen = self.answering(["0000000000000000"])
+		with urlopen, self.assertRaises(SystemExit) as stopped:
+			database.placed_on("database")
+		self.assertIn("0000000000000000", str(stopped.exception))
+		with (
+			mock.patch.dict(database.os.environ, {database.READ_TOKEN: ""}),
+			mock.patch.object(database.urllib.request, "urlopen") as urlopen,
+			self.assertRaises(SystemExit),
+		):
+			database.placed_on("database")
+		urlopen.assert_not_called()
 
 
 if __name__ == "__main__":

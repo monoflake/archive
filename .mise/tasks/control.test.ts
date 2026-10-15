@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { body } from './control.ts';
+import { UPSERT, body, deploySources, widened } from './control.ts';
 
 const NODE = 'aaaaaaaaaaaaaaaa';
 const OTHER = 'bbbbbbbbbbbbbbbb';
@@ -47,5 +49,23 @@ describe("control's import", () => {
 
 	it('imports at the newest revision any list answered', () => {
 		expect(body(nodes, apps, { items: [], revision: 11 }, declared).revision).toBe(11);
+	});
+});
+
+describe("control's writers", () => {
+	it('reads the sources host deploys from out of host_env.py, without running it', () => {
+		const text = 'X = 1\nDEPLOY_SOURCES = "monoflake/infra=infra canmi21/cue=canmi"\n';
+		expect(deploySources(text)).toEqual(['monoflake/infra', 'canmi21/cue']);
+		expect(deploySources('DEPLOY_SOURCES = SOMETHING\n')).toBeUndefined();
+	});
+
+	it("widens a writer's sources, keeping its own first and each once", () => {
+		expect(widened(' a/b  c/d a/b', ['c/d', 'e/f'])).toBe('a/b c/d e/f');
+		expect(widened('', ['e/f'])).toBe('e/f');
+	});
+
+	it("writes an app's env as the database task does, byte for byte", () => {
+		const task = readFileSync(join(import.meta.dirname, 'database'), 'utf8');
+		expect(/^UPSERT = r"""([\s\S]*?)"""/m.exec(task)?.[1]).toBe(UPSERT);
 	});
 });

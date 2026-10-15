@@ -31,9 +31,9 @@ function turn(run: string, workflow: string): Turn {
 
 function start(heapMb?: number) {
 	return threads({
-		node: 'tyo',
+		node: 'd132b0f553e3dcc3',
 		ledger: `${ledger.base}/ledger`,
-		bindings: { REGISTRY: `${ledger.base}/registry` },
+		bindings: { SERVICE: `${ledger.base}/service` },
 		workflows: {
 			...WORKFLOWS,
 			counter: fixture('Counter'),
@@ -56,7 +56,11 @@ describe('a turn in a thread', () => {
 			ended: 'done',
 			output: { echoed: { hello: 'node' }, at: '2026-10-14T12:00:00.000Z' },
 		});
-		expect(outcomeOf('echo-1')).toMatchObject({ node: 'tyo', fence: 1, outcome: 'done' });
+		expect(outcomeOf('echo-1')).toMatchObject({
+			node: 'd132b0f553e3dcc3',
+			fence: 1,
+			outcome: 'done',
+		});
 	});
 
 	it('says when its steps are asking the ledger, for the stall clock', async () => {
@@ -91,7 +95,7 @@ describe('a turn in a thread', () => {
 		const ended = await start()(turn('bound-1', 'bound')).ended;
 		expect(ended).toEqual({
 			ended: 'done',
-			output: { status: 'success', data: { placements: ['rdu', 'buf'] } },
+			output: { status: 'success', data: { id: 'one' } },
 		});
 	});
 

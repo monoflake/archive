@@ -1,23 +1,20 @@
 /**
- * Each app's release, written to the platform's registry: every app a run the deployer takes built
+ * Each app's release, written to the platform's control: every app a run the deployer takes built
  * an artifact of, an image for host or a Worker, recorded as `{repository, run, commit}` on the
- * app's record, RFC jln34. A release only moves forward, the registry unreachable stops no deploy,
- * and a write not made is made on a later pass. See spec/architecture/deployer.md and
- * spec/architecture/registry.md.
+ * app's record, RFC jln34. A release only moves forward, control unreachable stops no deploy, and a
+ * write not made is made on a later pass. See spec/architecture/deployer.md and
+ * spec/architecture/control.md, "It takes writes as the old registry did".
  */
 import { unwrap } from '@canmi/response';
 import type { Store } from './store.ts';
 
-/** One registry's time to answer before the next is asked, as host gives it. */
-const PATIENCE_MS = 3000;
+/** Control's time to answer, over HTTPS to another account's Worker. */
+const PATIENCE_MS = 10_000;
 
-/** What the registry refuses of a release itself, never of the moment it was sent in. */
+/** What control refuses of a release itself, never of the moment it was sent in. */
 const FINAL = new Set(['invalid_body', 'forbidden_field', 'invalid_name']);
 
-/** The code of a refusal outside the envelope, by its status: `http_405`. */
-const UNENVELOPED = 'http_';
-
-/** Who the registry records as having written a release. */
+/** Who control records as having written a release. */
 const BY = 'deployer';
 
 /** What an app runs: the run of a repository that built it, and the commit it built. */
@@ -37,7 +34,7 @@ interface App {
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** A registry that answered, refusing: an answer, never a reason to ask the next. */
+/** Control answered, refusing in its envelope: an answer about this release, not about control. */
 class Refused extends Error {
 	override name = 'Refused';
 	readonly code: string;
@@ -54,7 +51,7 @@ export function newer(release: Release, recorded: Partial<Release> | undefined):
 	return release.run > recorded.run;
 }
 
-/** `text` as JSON, or undefined where it is none, as an answer from no route of the registry's. */
+/** `text` as JSON, or undefined where it is none, as an answer from in front of control. */
 function parsed(text: string): unknown {
 	try {
 		return JSON.parse(text);
@@ -63,73 +60,51 @@ function parsed(text: string): unknown {
 	}
 }
 
-/**
- * The registry's `/v1/apps`, asked of each core in turn, the one that answered last first: one
- * that cannot be reached, is too slow or fails on its own side passes the question on.
- */
-export class Registry {
-	private readonly cores: readonly string[];
+/** Control's `/v1/registry/apps`, at `CONTROL`, written with `CONTROL_WRITE_TOKEN`. */
+export class Control {
+	private readonly base: string | undefined;
 	private readonly token: string | undefined;
 	private readonly fetch: Fetch;
-	private last: string | undefined;
 
 	constructor(
-		cores: readonly string[],
+		base: string | undefined,
 		token: string | undefined,
 		fetch: Fetch = globalThis.fetch,
 	) {
-		this.cores = cores;
+		this.base = base?.replace(/\/+$/, '');
 		this.token = token;
 		this.fetch = fetch;
 	}
 
-	/** Whether it can write at all: a core to ask and a token to write with. */
+	/** Whether it can write at all: an address to ask and a token to write with. */
 	get configured(): boolean {
-		return this.cores.length > 0 && this.token !== undefined;
+		return Boolean(this.base) && this.token !== undefined;
 	}
 
 	private async ask<T>(path: string, init: RequestInit = {}): Promise<T> {
-		const order = this.last
-			? [this.last, ...this.cores.filter((at) => at !== this.last)]
-			: this.cores;
 		const headers = { authorization: `Bearer ${this.token}`, ...init.headers };
-		let why = 'no registry is configured';
-		for (const at of order) {
-			let answer: Response;
-			let text: string;
-			try {
-				// oxlint-disable-next-line no-await-in-loop -- each core only once the last failed
-				answer = await this.fetch(`http://${at}${path}`, {
-					...init,
-					headers,
-					signal: AbortSignal.timeout(PATIENCE_MS),
-				});
-				// oxlint-disable-next-line no-await-in-loop -- the same
-				text = await answer.text();
-			} catch (error) {
-				why = `${at}: ${error instanceof Error ? error.message : String(error)}`;
-				continue;
-			}
-			if (answer.status >= 500) {
-				why = `${at}: it answered ${answer.status}`;
-				continue;
-			}
-			this.last = at;
-			const body = parsed(text);
-			if (answer.ok) return unwrap<T>(body, `the registry at ${at}`);
-			const { code, message = '' } = (body ?? {}) as { code?: unknown; message?: unknown };
-			if (typeof code === 'string') {
-				throw new Refused(code, `the registry at ${at} answered ${code}: ${String(message)}`);
-			}
-			// Not the envelope: a route the registry does not have, as a 405 says before PATCH is
-			// deployed. Every core runs the same build, so it is the answer, not a core to pass over.
-			const said = text.trim() ? `: ${text.trim().slice(0, 120)}` : ', with no body';
-			throw new Refused(
-				`${UNENVELOPED}${answer.status}`,
-				`the registry at ${at} answered ${answer.status}${said}`,
-			);
+		let answer: Response;
+		let text: string;
+		try {
+			answer = await this.fetch(`${this.base}${path}`, {
+				...init,
+				headers,
+				signal: AbortSignal.timeout(PATIENCE_MS),
+			});
+			text = await answer.text();
+		} catch (error) {
+			const why = error instanceof Error ? error.message : String(error);
+			throw new Error(`control did not answer: ${why}`, { cause: error });
 		}
-		throw new Error(`no registry answered: ${why}`);
+		const body = parsed(text);
+		if (answer.ok) return unwrap<T>(body, 'control');
+		const { code, message = '' } = (body ?? {}) as { code?: unknown; message?: unknown };
+		// Its own side failing, or an answer from in front of it, is about control, so the rest wait.
+		if (answer.status >= 500 || typeof code !== 'string') {
+			const said = typeof code === 'string' ? ` ${code}` : '';
+			throw new Error(`control answered ${answer.status}${said}`);
+		}
+		throw new Refused(code, `control answered ${code}: ${String(message)}`);
 	}
 
 	/**
@@ -137,7 +112,7 @@ export class Registry {
 	 * read. A write another change got in before is read again and tried once more.
 	 */
 	async release(app: string, release: Release): Promise<Outcome> {
-		const path = `/v1/apps/${encodeURIComponent(app)}`;
+		const path = `/v1/registry/apps/${encodeURIComponent(app)}`;
 		for (let attempt = 0; ; attempt++) {
 			let read: App;
 			try {
@@ -166,7 +141,7 @@ export class Registry {
 
 export interface Parts {
 	readonly store: Pick<Store, 'unwritten' | 'written'>;
-	readonly registry: Pick<Registry, 'configured' | 'release'>;
+	readonly control: Pick<Control, 'configured' | 'release'>;
 	readonly log?: (line: string) => void;
 }
 
@@ -212,8 +187,8 @@ export class Releases {
 	}
 
 	private async writeAll(): Promise<void> {
-		const { store, registry } = this.parts;
-		if (!registry.configured) return;
+		const { store, control } = this.parts;
+		if (!control.configured) return;
 		for (const unwritten of store.unwritten()) {
 			const of = `${unwritten.app}'s release from run ${unwritten.run} of ${unwritten.repository}`;
 			if (!unwritten.commit) {
@@ -229,24 +204,24 @@ export class Releases {
 			let outcome: Outcome;
 			try {
 				// oxlint-disable-next-line no-await-in-loop -- one write at a time, oldest first
-				outcome = await registry.release(unwritten.app, release);
+				outcome = await control.release(unwritten.app, release);
 			} catch (error) {
-				// Left unwritten, for the next flush: a notice's or the next pass's. A registry that did
-				// not answer, or lacks the route, answers the next the same, so the rest wait with it.
+				// Left unwritten, for the next flush: a notice's or the next pass's. Control not
+				// answering answers the next the same, so the rest wait with it.
 				const why = error instanceof Error ? error.message : String(error);
-				// A body the registry refuses is refused again however often it is sent.
+				// A body control refuses is refused again however often it is sent.
 				if (error instanceof Refused && FINAL.has(error.code)) {
 					store.written(unwritten, `refused: ${error.code}`);
 					this.log(`${of} is not recorded: ${why}`);
 					continue;
 				}
 				this.log(`${of} is not written yet: ${why}`);
-				if (error instanceof Refused && !error.code.startsWith(UNENVELOPED)) continue;
+				if (error instanceof Refused) continue;
 				return;
 			}
 			store.written(unwritten, outcome);
 			if (outcome === 'no such app')
-				this.log(`${of} is not recorded: the registry has no ${unwritten.app}`);
+				this.log(`${of} is not recorded: control has no ${unwritten.app}`);
 			if (outcome === 'written') this.log(`${of} is recorded`);
 		}
 	}

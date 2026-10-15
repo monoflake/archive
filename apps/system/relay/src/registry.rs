@@ -1,16 +1,20 @@
-//! Where a relay's peers come from while it runs: the platform's node registry, `GET /v1/nodes`,
-//! asked every `EVERY`. `RELAY_PEERS` is the seed a relay starts from, and `registry.json` every
-//! node the registry has listed, kept for the next start. A node leaves by being listed `retired`,
-//! never by going missing from an answer -- RFC qcyb3. See spec/architecture/registry.md.
+//! Where a relay's peers come from while it runs: the platform's control,
+//! `GET {CONTROL}/v1/registry/nodes`, asked every `EVERY`, which knows every node by its id.
+//! `RELAY_PEERS` is the seed a relay starts from, and `registry.json` every node control has
+//! listed, kept for the next start. A node leaves by being listed `retired`, never by going missing
+//! from an answer -- RFC qcyb3. See spec/architecture/control.md, "Who reads it, and with what",
+//! and RFC o7eir.
 
-use crate::config::{self, Peer};
+use crate::config::{self, Control, Peer};
+use crate::egress::{self, Egress};
 use crate::mesh::keep;
 use crate::relay::Relay;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty};
 use hyper::Request;
+use hyper::header::{AUTHORIZATION, USER_AGENT};
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,69 +23,49 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-/// The registry's port on each core node's tailnet address. Its `service.toml` states it, and a
-/// test in `main.rs` holds the two together.
-pub const PORT: u16 = 12013;
+/// How often control is asked, and so about how long a node written into it waits to be dialed;
+/// spec/architecture/control.md holds every reader's interval to the free plan's quota.
+pub const EVERY: Duration = Duration::from_secs(300);
 
-/// How often the registry is asked, and so about how long a node written into it waits to be
-/// dialed.
-pub const EVERY: Duration = Duration::from_secs(30);
+/// Where control lists every node, under its `registry` scope.
+const NODES: &str = "/v1/registry/nodes";
 
-/// One registry's time to answer before the next is asked; a node that runs none may drop the
-/// request rather than refuse it, and a round asks several within `EVERY`.
-const PATIENCE: Duration = Duration::from_secs(3);
+/// Control's time to answer, through a proxy where the node has one.
+const PATIENCE: Duration = Duration::from_secs(10);
 
 /// The last answer taken, in the data directory beside the runs.
 pub const FILE: &str = "registry.json";
 
 /// The version of `registry.json`, read first; workspace spec/json.md, "A contract has a version,
-/// and it is the first thing read". Version 1 held the last answer of `GET /nodes`, and is still
-/// read, once, and carried over; see `cached`.
-const VERSION: u32 = 2;
+/// and it is the first thing read". Versions 1 and 2 held nodes by name, and are passed over.
+const VERSION: u32 = 3;
 
-/// A node's spec as the registry lists it, with what a relay reads of it; its other keys are
-/// passed over.
+/// A node's spec as control lists it, with what a relay reads of it; its other keys are passed
+/// over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
 	/// Its tailnet IPv4.
 	pub address: String,
-	/// `compute`, `storage` and `core`, as words; absent from a node written before them, whose
-	/// `core` says instead. See spec/architecture/registry.md, "Nodes and apps, as resources of a
-	/// kind".
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub roles: Option<Vec<String>>,
-	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
-	pub core: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub retired: bool,
 }
 
-impl Node {
-	/// Whether it is a core node: by `roles` where it has them, `core` ignored, and by `core` where
-	/// it has none.
-	pub fn is_core(&self) -> bool {
-		match &self.roles {
-			Some(roles) => roles.iter().any(|role| role == "core"),
-			None => self.core,
-		}
-	}
-}
-
-/// One node of `GET /v1/nodes`; its `kind` and `revision` are passed over.
+/// One node of `GET /v1/registry/nodes`; its `kind`, `name` and `revision` are passed over.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Item {
-	pub name: String,
+	pub id: String,
 	pub spec: Node,
 }
 
-/// What `GET /v1/nodes` answers: every node by name, and the newest change written, 0 when none.
+/// What `GET /v1/registry/nodes` answers: every node by id, and the newest change written, 0 when
+/// none.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Answer {
 	pub items: Vec<Item>,
 	pub revision: i64,
 }
 
-/// Every node the registry has listed, as last listed, and the revision of the answer that last
+/// Every node control has listed, by id, as last listed, and the revision of the answer that last
 /// changed it. A node missing from an answer stays as it was: what `registry.json` keeps.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Taken {
@@ -92,7 +76,7 @@ pub struct Taken {
 impl Taken {
 	/// The nodes held as retired, whose relays are refused.
 	pub fn retired(&self) -> BTreeSet<String> {
-		self.nodes.iter().filter(|(_, node)| node.retired).map(|(name, _)| name.clone()).collect()
+		self.nodes.iter().filter(|(_, node)| node.retired).map(|(id, _)| id.clone()).collect()
 	}
 }
 
@@ -100,85 +84,67 @@ impl Taken {
 fn fold(taken: Option<&Taken>, answer: &Answer) -> Taken {
 	let mut nodes = taken.map(|taken| taken.nodes.clone()).unwrap_or_default();
 	for item in &answer.items {
-		nodes.insert(item.name.clone(), item.spec.clone());
+		nodes.insert(item.id.clone(), item.spec.clone());
 	}
 	Taken { nodes, revision: answer.revision }
 }
 
-fn peer(name: &str, node: &Node) -> Peer {
-	Peer { name: name.to_owned(), address: format!("{}:{}", node.address, config::PORT) }
+fn peer(id: &str, node: &Node) -> Peer {
+	Peer { id: id.to_owned(), address: format!("{}:{}", node.address, config::PORT) }
 }
 
 /// The peers `answer` leaves `node` holding after `held`, or none where it is not taken: an answer
-/// not listing this node is a registry broken or emptied. Otherwise a node it lists retired is
+/// not listing this node is control broken or emptied. Otherwise a node it lists retired is
 /// dropped, one it lists otherwise is held at the address listed, on the relay's own port, and one
 /// it does not list stays as held -- RFC qcyb3's policy C.
 pub fn next_peers(held: &BTreeMap<String, Peer>, answer: &Answer, node: &str) -> Option<Vec<Peer>> {
-	if !answer.items.iter().any(|item| item.name == node) {
+	if !answer.items.iter().any(|item| item.id == node) {
 		return None;
 	}
 	let mut next = held.clone();
-	for item in answer.items.iter().filter(|item| item.name != node) {
+	for item in answer.items.iter().filter(|item| item.id != node) {
 		if item.spec.retired {
-			next.remove(&item.name);
+			next.remove(&item.id);
 		} else {
-			next.insert(item.name.clone(), peer(&item.name, &item.spec));
+			next.insert(item.id.clone(), peer(&item.id, &item.spec));
 		}
 	}
 	Some(next.into_values().collect())
 }
 
-/// The peers a relay starts from: `given`, from `RELAY_PEERS`, with every node the registry has
-/// listed over it, at the address listed, and none it holds as retired.
+/// The peers a relay starts from: `given`, from `RELAY_PEERS`, with every node control has listed
+/// over it, at the address listed, and none it holds as retired.
 pub fn seeded(given: &[Peer], taken: Option<&Taken>, node: &str) -> Vec<Peer> {
 	let mut peers: BTreeMap<String, Peer> =
-		given.iter().map(|peer| (peer.name.clone(), peer.clone())).collect();
-	for (name, listed) in taken.into_iter().flat_map(|taken| &taken.nodes) {
+		given.iter().map(|peer| (peer.id.clone(), peer.clone())).collect();
+	for (id, listed) in taken.into_iter().flat_map(|taken| &taken.nodes) {
 		if listed.retired {
-			peers.remove(name);
-		} else if name != node {
-			peers.insert(name.clone(), peer(name, listed));
+			peers.remove(id);
+		} else if id != node {
+			peers.insert(id.clone(), peer(id, listed));
 		}
 	}
 	peers.into_values().collect()
 }
 
-/// What changes from `held` to `next`: the peers to dial, and the names to stop dialing. A peer
-/// whose address changed is in both, so it is dialed again at the new one.
+/// What changes from `held` to `next`: the peers to dial, and the ids to stop dialing. A peer whose
+/// address changed is in both, so it is dialed again at the new one.
 fn changed(held: &BTreeMap<String, Peer>, next: &[Peer]) -> (Vec<Peer>, Vec<String>) {
-	let named: BTreeMap<&str, &Peer> = next.iter().map(|peer| (peer.name.as_str(), peer)).collect();
-	let dialed = next.iter().filter(|peer| held.get(&peer.name) != Some(*peer)).cloned().collect();
+	let by_id: BTreeMap<&str, &Peer> = next.iter().map(|peer| (peer.id.as_str(), peer)).collect();
+	let dialed = next.iter().filter(|peer| held.get(&peer.id) != Some(*peer)).cloned().collect();
 	let stopped = held
 		.values()
-		.filter(|peer| named.get(peer.name.as_str()) != Some(peer))
-		.map(|peer| peer.name.clone())
+		.filter(|peer| by_id.get(peer.id.as_str()) != Some(peer))
+		.map(|peer| peer.id.clone())
 		.collect();
 	(dialed, stopped)
-}
-
-/// The registries to ask, by node and host, in order: every core node listed and not retired, then
-/// every other peer held.
-fn candidates(taken: Option<&Taken>, held: &BTreeMap<String, Peer>) -> Vec<(String, String)> {
-	let core = taken
-		.into_iter()
-		.flat_map(|taken| &taken.nodes)
-		.filter(|(_, listed)| listed.is_core() && !listed.retired)
-		.map(|(name, listed)| (name.clone(), listed.address.clone()));
-	let mut asked: Vec<(String, String)> = core.collect();
-	for peer in held.values() {
-		if !asked.iter().any(|(name, _)| *name == peer.name) {
-			let host = peer.address.rsplit_once(':').map_or(peer.address.as_str(), |(host, _)| host);
-			asked.push((peer.name.clone(), host.to_owned()));
-		}
-	}
-	asked
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum AskError {
 	#[error("the request could not be formed: {0}")]
 	Unformed(#[from] hyper::http::Error),
-	#[error("it did not answer: {0}")]
+	#[error("it did not answer: {}", egress::chain(.0))]
 	Unreachable(#[from] hyper_util::client::legacy::Error),
 	#[error("its answer broke off: {0}")]
 	Broken(#[from] hyper::Error),
@@ -190,17 +156,30 @@ pub enum AskError {
 	Malformed(#[from] serde_json::Error),
 }
 
-struct Registry {
-	client: Client<HttpConnector, Empty<Bytes>>,
+/// Control, asked over TLS with roots compiled in rather than read from the system, as host asks
+/// it: an image built from scratch has none.
+struct Reader {
+	client: Client<HttpsConnector<Egress>, Empty<Bytes>>,
+	url: String,
+	token: String,
 }
 
-impl Registry {
-	fn new() -> Self {
-		Self { client: Client::builder(TokioExecutor::new()).build(HttpConnector::new()) }
+impl Reader {
+	fn new(control: Control) -> Self {
+		let https = hyper_rustls::HttpsConnectorBuilder::new()
+			.with_webpki_roots()
+			.https_only()
+			.enable_http1()
+			.wrap_connector(Egress::new(control.proxies));
+		let client = Client::builder(TokioExecutor::new()).build(https);
+		Self { client, url: control.url, token: control.token }
 	}
 
-	async fn ask(&self, host: &str) -> Result<Answer, AskError> {
-		let request = Request::get(format!("http://{host}:{PORT}/v1/nodes")).body(Empty::new())?;
+	async fn ask(&self) -> Result<Answer, AskError> {
+		let request = Request::get(nodes(&self.url))
+			.header(USER_AGENT, "canmi-relay")
+			.header(AUTHORIZATION, format!("Bearer {}", self.token))
+			.body(Empty::new())?;
 		let asked = async {
 			let answer = self.client.request(request).await?;
 			Ok::<_, AskError>(answer.into_body().collect().await?.to_bytes())
@@ -212,22 +191,11 @@ impl Registry {
 			.into_result()
 			.map_err(|response::Failure { code, message }| AskError::Refused { code, message })
 	}
+}
 
-	/// The first answer among `candidates`, asked in turn, and the node that gave it; or the last
-	/// refusal, none where there was nobody to ask.
-	async fn first(
-		&self,
-		candidates: &[(String, String)],
-	) -> Result<(String, Answer), Option<AskError>> {
-		let mut last = None;
-		for (node, host) in candidates {
-			match self.ask(host).await {
-				Ok(answer) => return Ok((node.clone(), answer)),
-				Err(error) => last = Some(error),
-			}
-		}
-		Err(last)
-	}
+/// The nodes' address on control at `url`, `CONTROL` without a trailing slash.
+fn nodes(url: &str) -> String {
+	format!("{url}{NODES}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -236,7 +204,7 @@ pub enum CacheError {
 	Io(#[from] std::io::Error),
 	#[error("it cannot be read: {0}")]
 	Malformed(#[from] serde_json::Error),
-	#[error("it is version {0}, neither 1 nor {VERSION}")]
+	#[error("it is version {0}, not {VERSION}, and is passed over")]
 	Version(u32),
 }
 
@@ -252,14 +220,8 @@ struct Cached {
 	revision: i64,
 }
 
-/// Version 1, the last answer of `GET /nodes`; its `change` is passed over.
-#[derive(Deserialize)]
-struct CachedOne {
-	nodes: BTreeMap<String, Node>,
-}
-
-/// What was last taken, from `data`; none before the first. A version-1 file is carried over at
-/// revision 0, so the first answer is taken whatever its revision, and is written as version 2.
+/// What was last taken, from `data`; none before the first. A file of another version is refused,
+/// and the first answer taken writes over it.
 pub fn cached(data: &Path) -> Result<Option<Taken>, CacheError> {
 	let bytes = match std::fs::read(data.join(FILE)) {
 		Ok(bytes) => bytes,
@@ -267,17 +229,11 @@ pub fn cached(data: &Path) -> Result<Option<Taken>, CacheError> {
 		Err(error) => return Err(error.into()),
 	};
 	let Versioned { version } = serde_json::from_slice(&bytes)?;
-	match version {
-		1 => {
-			let CachedOne { nodes } = serde_json::from_slice(&bytes)?;
-			Ok(Some(Taken { nodes, revision: 0 }))
-		}
-		VERSION => {
-			let Cached { nodes, revision, .. } = serde_json::from_slice(&bytes)?;
-			Ok(Some(Taken { nodes, revision }))
-		}
-		other => Err(CacheError::Version(other)),
+	if version != VERSION {
+		return Err(CacheError::Version(version));
 	}
+	let Cached { nodes, revision, .. } = serde_json::from_slice(&bytes)?;
+	Ok(Some(Taken { nodes, revision }))
 }
 
 /// `taken` written to `data` whole or not at all: a relay stopped mid-write starts from the last.
@@ -289,11 +245,17 @@ fn cache(data: &Path, taken: &Taken) -> Result<(), CacheError> {
 	Ok(())
 }
 
-/// Holds a socket to each of `seed`, and asks the registry every `EVERY` for as long as the relay
+/// Holds a socket to each of `seed`, and asks `control` every `EVERY` for as long as the relay
 /// runs, taking each answer with a revision other than the one taken. `taken` is what the seed was
 /// read from, if anything.
-pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken: Option<Taken>) {
-	let registry = Registry::new();
+pub async fn follow(
+	relay: Arc<Relay>,
+	control: Control,
+	data: PathBuf,
+	seed: Vec<Peer>,
+	mut taken: Option<Taken>,
+) {
+	let reader = Reader::new(control);
 	let mut held = BTreeMap::new();
 	let mut tasks = BTreeMap::new();
 	dial(&relay, seed, &mut held, &mut tasks);
@@ -303,12 +265,11 @@ pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken
 	ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	loop {
 		ticks.tick().await;
-		let (from, answer) = match registry.first(&candidates(taken.as_ref(), &held)).await {
-			Ok(answered) => answered,
+		let answer = match reader.ask().await {
+			Ok(answer) => answer,
 			Err(error) => {
 				if !failing {
-					let why = error.map(|error| format!(", the last: {error}")).unwrap_or_default();
-					eprintln!("relay: no registry answered{why}");
+					eprintln!("relay: control did not answer: {error}");
 					failing = true;
 				}
 				continue;
@@ -320,7 +281,11 @@ pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken
 		}
 		let Some(next) = next_peers(&held, &answer, relay.node()) else {
 			if refused != Some(answer.revision) {
-				eprintln!("relay: not taking revision {} from {from}'s registry", answer.revision);
+				eprintln!(
+					"relay: not taking revision {} from control, which lists no {}",
+					answer.revision,
+					relay.node()
+				);
 				refused = Some(answer.revision);
 			}
 			continue;
@@ -331,22 +296,22 @@ pub async fn follow(relay: Arc<Relay>, data: PathBuf, seed: Vec<Peer>, mut taken
 		}
 		relay.set_retired(folded.retired());
 		let (dialed, stopped) = changed(&held, &next);
-		let added = dialed.iter().filter(|peer| !held.contains_key(&peer.name));
-		let added: Vec<&str> = added.map(|peer| peer.name.as_str()).collect();
-		let removed = stopped.iter().filter(|name| !next.iter().any(|peer| peer.name == **name));
+		let added = dialed.iter().filter(|peer| !held.contains_key(&peer.id));
+		let added: Vec<&str> = added.map(|peer| peer.id.as_str()).collect();
+		let removed = stopped.iter().filter(|id| !next.iter().any(|peer| peer.id == **id));
 		let removed: Vec<&str> = removed.map(String::as_str).collect();
-		let moved = dialed.iter().filter(|peer| held.contains_key(&peer.name));
-		let moved: Vec<&str> = moved.map(|peer| peer.name.as_str()).collect();
+		let moved = dialed.iter().filter(|peer| held.contains_key(&peer.id));
+		let moved: Vec<&str> = moved.map(|peer| peer.id.as_str()).collect();
 		eprintln!(
-			"relay: took revision {} from {from}'s registry, adding [{}], removing [{}], moving [{}]",
+			"relay: took revision {} from control, adding [{}], removing [{}], moving [{}]",
 			answer.revision,
 			added.join(" "),
 			removed.join(" "),
 			moved.join(" ")
 		);
-		for name in &stopped {
-			held.remove(name);
-			if let Some(task) = tasks.remove(name) {
+		for id in &stopped {
+			held.remove(id);
+			if let Some(task) = tasks.remove(id) {
 				task.abort();
 			}
 		}
@@ -364,8 +329,8 @@ fn dial(
 	tasks: &mut BTreeMap<String, JoinHandle<()>>,
 ) {
 	for peer in peers {
-		tasks.insert(peer.name.clone(), tokio::spawn(keep(relay.clone(), peer.clone())));
-		held.insert(peer.name.clone(), peer);
+		tasks.insert(peer.id.clone(), tokio::spawn(keep(relay.clone(), peer.clone())));
+		held.insert(peer.id.clone(), peer);
 	}
 }
 

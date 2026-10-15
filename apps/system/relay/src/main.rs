@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
 		None
 	});
 	let seed = relay::registry::seeded(&config.peers, cached.as_ref(), &config.node);
-	let peers = seed.iter().map(|peer| peer.name.clone()).collect();
+	let peers = seed.iter().map(|peer| peer.id.clone()).collect();
 	let relay = Relay::new(config.node.clone(), config.secret.clone(), peers, store)?;
 	relay.set_retired(cached.as_ref().map(relay::registry::Taken::retired).unwrap_or_default());
 
@@ -31,11 +31,12 @@ async fn main() -> anyhow::Result<()> {
 	tokio::spawn(recall(relay.clone(), host.clone()));
 	tokio::spawn(write(relay.clone(), relay::runs::WRITE));
 	tokio::spawn(sweep(relay.clone(), relay::presence::SWEEP));
-	let named: Vec<String> = seed.iter().map(|peer| peer.name.clone()).collect();
-	tokio::spawn(relay::registry::follow(relay.clone(), config.data.clone(), seed, cached));
+	let holding: Vec<String> = seed.iter().map(|peer| peer.id.clone()).collect();
+	let following = relay::registry::follow(relay.clone(), config.control, config.data, seed, cached);
+	tokio::spawn(following);
 
 	let listener = relay::mesh::accepting(tokio::net::TcpListener::bind(&config.listen).await?);
-	eprintln!("relay: {} listening on {}, holding {}", config.node, config.listen, named.join(" "));
+	eprintln!("relay: {} listening on {}, holding {}", config.node, config.listen, holding.join(" "));
 	let routes = relay::api::routes(relay.clone());
 	// Said while the mesh and the routes still run; see spec/architecture/relay.md, "A node says
 	// it is leaving before it goes".
@@ -75,13 +76,6 @@ mod tests {
 	fn the_port_is_the_one_the_declaration_states() {
 		let declaration = include_str!("../service.toml");
 		let port = relay::config::PORT;
-		assert!(declaration.lines().any(|line| line.trim() == format!("port = {port}")));
-	}
-
-	#[test]
-	fn the_registry_is_asked_on_the_port_its_declaration_states() {
-		let declaration = include_str!("../../../data/registry/service.toml");
-		let port = relay::registry::PORT;
 		assert!(declaration.lines().any(|line| line.trim() == format!("port = {port}")));
 	}
 }

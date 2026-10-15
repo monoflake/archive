@@ -1,7 +1,9 @@
 /**
- * The command line, the console's other face: every kind the registry holds, read off a catalog
- * held to its generated reader, a secret typed in and never taken from an argument. See
- * spec/architecture/registry.md, "The command line is the console's other face", and RFC cpc2b.
+ * The command line, the console's other face: every kind control holds, read off a catalog held to
+ * its generated reader, a secret typed in and never taken from an argument. A node is given by its
+ * id or by its name, which nodes.toml turns into the id here, at the edge. See
+ * spec/architecture/registry.md, "The command line is the console's other face",
+ * spec/architecture/control.md, and RFC cpc2b.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -10,7 +12,8 @@ import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { parse } from 'smol-toml';
 import * as v from 'valibot';
-import { Catalog, type Description, type Field } from './catalog.gen.ts';
+import { URLS } from '../../../../libs/sdk/src/index.ts';
+import { Catalog, type Description, type Field } from '../../../control/control/src/catalog.gen.ts';
 import { Failure, fail } from './failure.ts';
 import {
 	PORT as SECRET_PORT,
@@ -32,15 +35,20 @@ const SHORT = 8;
 const PREFIX = /^[0-9a-f]{8,15}$/;
 /** What `list` and `get` print for a value the catalog marks `masked`, until `--reveal`. */
 const MASK = '••••••••';
-const TOKEN = 'REGISTRY_TOKEN';
-export const PORT = 12013;
+/** What control is read and written with, from secrets.json; see spec/architecture/control.md. */
+export const READ_TOKEN = 'CONTROL_READ_TOKEN';
+export const WRITE_TOKEN = 'CONTROL_WRITE_TOKEN';
+/** infra's nodes.toml, beside this repository: each node's id by its name. */
+const NODES = join(import.meta.dirname, '../../../../../infra/nodes/nodes.toml');
 const TIMEOUT_MS = 10_000;
+/** Where control serves what the old registry held. */
+const API = '/v1/registry';
 const VERBS = ['list', 'get', 'create', 'patch'] as const;
 type Verb = (typeof VERBS)[number];
 /** The options every write takes, which no item's option may be named. */
 const WRITE_OPTIONS = ['set', 'json', 'unset', 'dry-run', 'help'];
 
-/** A resource as `/v1` answers it -- RFC cpc2b. */
+/** A resource as `/v1/registry` answers it -- RFC cpc2b. */
 interface Resource {
 	kind: string;
 	id: string;
@@ -58,20 +66,25 @@ interface Envelope {
 	message?: string;
 }
 
+/** What reaching control takes. */
+type Reach = Pick<World, 'control' | 'readToken' | 'writeToken'>;
+
 /** What the task reaches outside itself, replaced whole by the test. */
 export interface World {
-	/** The registry's cores, by name, in order. */
-	placements(): string[];
-	/** A core's address on the tailnet. */
-	address(node: string): string;
-	port: number;
-	token(): string | undefined;
+	/** Control's base URL, `URLS.control`. */
+	control: string;
+	/** What control is read with: `CONTROL_READ_TOKEN`. */
+	readToken(): string | undefined;
+	/** What control is written with: `CONTROL_WRITE_TOKEN`. */
+	writeToken(): string | undefined;
+	/** Each node's id by its name, as nodes.toml holds them. */
+	nodes(): Map<string, string>;
 	/** A secret typed in on the terminal, never echoed. */
 	typedIn(prompt: string): Promise<string>;
 	print(text: string): void;
 }
 
-/** 16 lowercase hexadecimal digits: what the registry reads as an id, never a name -- RFC 2kuvi. */
+/** 16 lowercase hexadecimal digits: what control reads as an id, never a name -- RFC 2kuvi. */
 export function isId(key: string): boolean {
 	return /^[0-9a-f]{16}$/.test(key);
 }
@@ -111,7 +124,7 @@ function listed(kinds: readonly Description[]): string {
 /** The kind `word` names, by its name or its plural. */
 function kindNamed(kinds: readonly Description[], word: string): Description {
 	const kind = kinds.find((one) => word === one.name || word === one.plural);
-	return kind ?? fail(`${word} is no kind the registry holds; it holds ${listed(kinds)}`);
+	return kind ?? fail(`${word} is no kind control holds; it holds ${listed(kinds)}`);
 }
 
 const marks = (field: Field) =>
@@ -119,10 +132,12 @@ const marks = (field: Field) =>
 
 /** The kind's fields, one a line, as `--help` shows them. */
 export function described(kind: Description): string {
-	const lines = [`${kind.name}'s fields, from the registry's catalog:`];
+	const lines = [`${kind.name}'s fields, from control's catalog:`];
 	for (const field of kind.fields) {
 		const facts: string[] = [field.type];
-		if (field.kind) facts.push(`of a ${field.kind}, by id, its first ${SHORT} digits or a name`);
+		const each = field.type === 'list' ? 'each ' : '';
+		if (field.kind)
+			facts.push(`${each}of a ${field.kind}, by id, its first ${SHORT} digits or a name`);
 		if (field.choices?.length) facts.push(`one of ${field.choices.join('|')}`);
 		facts.push(...marks(field));
 		if (!isEditable(field)) facts.push('not editable');
@@ -249,6 +264,14 @@ async function typed(field: Field, text: string, resolve: Resolve): Promise<unkn
 				.split(',')
 				.map((value) => value.trim())
 				.filter(Boolean);
+			if (field.kind) {
+				const kind = field.kind;
+				const ids = await Promise.all(
+					values.map((value) => (isId(value) ? value : resolve(kind, value))),
+				);
+				if (new Set(ids).size !== ids.length) fail(`${name} names each ${kind} once`);
+				return ids;
+			}
 			if (choices.length > 0) {
 				const wrong = values.filter((value) => !choices.includes(value));
 				if (wrong.length > 0) {
@@ -317,7 +340,7 @@ async function items(
 				);
 			}
 			if (isSecret(inner)) fail(`${name} is secret, ${NEVER_FROM_ARGUMENTS}`);
-			if (!isEditable(inner)) fail(`${name} is not editable; the registry writes it`);
+			if (!isEditable(inner)) fail(`${name} is not editable; control writes it`);
 			if (!equals) fail(`${option} takes ${name}=VALUE`);
 			item[name] = await typed(inner, raw, resolve);
 		}
@@ -431,50 +454,31 @@ export async function changes(
 	return spec;
 }
 
-/** The registry's envelope at `address`; undefined when it did not answer at all. */
-async function call(
-	world: World,
-	address: string,
-	method: string,
-	path: string,
-	body?: unknown,
-	secret?: string,
-): Promise<Envelope | undefined> {
-	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-	if (secret) headers.Authorization = `Bearer ${secret}`;
+/**
+ * Control's envelope for `method path`, a refusal's as much as a success's: a read with the read
+ * token, a write with the write token. Anything that is not the envelope fails.
+ */
+async function ask(world: Reach, method: string, path: string, body?: unknown): Promise<Envelope> {
+	const [name, secret] =
+		method === 'GET' ? [READ_TOKEN, world.readToken()] : [WRITE_TOKEN, world.writeToken()];
+	if (!secret) fail(`secrets.json has no ${name}; \`mise run control token\` draws it`);
 	let answer: Response;
 	try {
-		answer = await fetch(`http://${address}:${world.port}${path}`, {
+		answer = await fetch(`${world.control}${path}`, {
 			method,
-			headers,
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
 			body: body === undefined ? undefined : JSON.stringify(body),
 			signal: AbortSignal.timeout(TIMEOUT_MS),
 		});
-	} catch {
-		return undefined;
+	} catch (error) {
+		fail(`control did not answer ${method} ${path}: ${(error as Error).message}`);
 	}
 	const text = await answer.text();
 	try {
 		return JSON.parse(text) as Envelope;
 	} catch {
-		if (answer.ok) return undefined;
-		fail(`${method} ${path}: refused: ${answer.status} ${text.trim()}`);
+		fail(`${method} ${path}: control answered ${answer.status}: ${text.trim().slice(0, 120)}`);
 	}
-}
-
-/** The envelope of the first core to answer, in order, each found only when asked. */
-async function ask(
-	world: World,
-	method: string,
-	path: string,
-	body?: unknown,
-	secret?: string,
-): Promise<Envelope> {
-	for (const node of world.placements()) {
-		const answer = await call(world, world.address(node), method, path, body, secret);
-		if (answer !== undefined) return answer;
-	}
-	fail(`no registry answered ${method} ${path}`);
 }
 
 /** The `data` of a success; a refusal fails, with its code and message. */
@@ -485,11 +489,11 @@ function dataOf(answer: Envelope, what: string): unknown {
 
 /** The catalog, held to the reader generated from catalog.schema.json before anything reads it. */
 async function catalog(world: World): Promise<Description[]> {
-	const data = dataOf(await ask(world, 'GET', '/v1/kinds'), 'GET /v1/kinds');
+	const data = dataOf(await ask(world, 'GET', `${API}/kinds`), `GET ${API}/kinds`);
 	const read = v.safeParse(Catalog, data);
 	if (!read.success) {
 		fail(
-			`the registry's catalog is not what catalog.schema.json describes:\n${v.summarize(read.issues)}`,
+			`control's catalog is not what catalog.schema.json describes:\n${v.summarize(read.issues)}`,
 		);
 	}
 	return read.output.items;
@@ -581,16 +585,11 @@ async function write(
 	dry: boolean,
 ): Promise<void> {
 	if (dry) {
-		world.print(
-			`${APP}: would ${method} ${path}, to the first of ${world.placements().join(', ')} whose` +
-				` registry answers on ${world.port}, as Bearer <redacted>:`,
-		);
+		world.print(`${APP}: would ${method} ${path}, to ${world.control}, as Bearer <redacted>:`);
 		world.print(JSON.stringify(body, null, 2));
 		return;
 	}
-	const secret = world.token();
-	if (!secret) fail(`secrets.json has no ${TOKEN}; \`registry token\` makes it`);
-	const data = dataOf(await ask(world, method, path, body, secret), what);
+	const data = dataOf(await ask(world, method, path, body), what);
 	if (isObject(data) && 'task' in data) {
 		const made = typeof data.id === 'string' ? `, id ${data.id}` : '';
 		world.print(`${APP}: ${what}: written${made}, revision ${data.revision}, task ${data.task}`);
@@ -628,7 +627,7 @@ export async function run(world: World, args: readonly string[]): Promise<void> 
 	}
 	const plural = kind.plural;
 	if (verb === 'list') {
-		const found = dataOf(await ask(world, 'GET', `/v1/${plural}`), `GET /v1/${plural}`);
+		const found = dataOf(await ask(world, 'GET', `${API}/${plural}`), `GET ${API}/${plural}`);
 		const resources = (found as { items: Resource[] }).items;
 		world.print(
 			options.raw ? JSON.stringify(resources, null, 2) : table(kind, resources, options.reveal),
@@ -648,14 +647,14 @@ export async function run(world: World, args: readonly string[]): Promise<void> 
 		const spec = await changes(world, kind, options, undefined, resolve);
 		const body = { by: BY, revision: 0, spec };
 		if (!kind.named) {
-			await write(world, 'POST', `/v1/${plural}`, body, `new ${kind.name}`, options.dry);
+			await write(world, 'POST', `${API}/${plural}`, body, `new ${kind.name}`, options.dry);
 			return;
 		}
 		if (isId(options.key) || PREFIX.test(options.key)) {
 			fail(`${options.key} has an id's shape, which is read as an id, never a name`);
 		}
 		const what = `${kind.name} ${options.key}`;
-		await write(world, 'PUT', `/v1/${plural}/${options.key}`, body, what, options.dry);
+		await write(world, 'PUT', `${API}/${plural}/${options.key}`, body, what, options.dry);
 		return;
 	}
 	const resource = await found(world, kind, options.key);
@@ -665,20 +664,25 @@ export async function run(world: World, args: readonly string[]): Promise<void> 
 	}
 	const body = { by: BY, revision: resource.revision, spec };
 	const what = `${kind.name} ${resource.name ?? resource.id.slice(0, SHORT)}`;
-	await write(world, 'PATCH', `/v1/${plural}/${resource.id}`, body, what, options.dry);
+	await write(world, 'PATCH', `${API}/${plural}/${resource.id}`, body, what, options.dry);
 }
 
 /**
  * The resource `key` names: an id whole, the start of exactly one id, at least eight of its digits,
- * or, for a named kind, its name. A start more than one id shares is refused, naming them.
+ * for a named kind its name, or for a node the name nodes.toml gives it. A start more than one id
+ * shares is refused, naming them.
  */
-async function found(world: World, kind: Description, key: string): Promise<Resource> {
-	const what = `${kind.name} ${key}`;
+async function found(world: World, kind: Description, named: string): Promise<Resource> {
+	const what = `${kind.name} ${named}`;
+	const key = (kind.name === 'node' && world.nodes().get(named)) || named;
 	const one = async () =>
-		dataOf(await ask(world, 'GET', `/v1/${kind.plural}/${key}`), what) as Resource;
+		dataOf(await ask(world, 'GET', `${API}/${kind.plural}/${key}`), what) as Resource;
 	if (isId(key)) return one();
 	if (PREFIX.test(key)) {
-		const listed = dataOf(await ask(world, 'GET', `/v1/${kind.plural}`), `GET /v1/${kind.plural}`);
+		const listed = dataOf(
+			await ask(world, 'GET', `${API}/${kind.plural}`),
+			`GET ${API}/${kind.plural}`,
+		);
 		const starting = (listed as { items: Resource[] }).items.filter((it) => it.id.startsWith(key));
 		const [only, ...more] = starting;
 		if (only !== undefined && more.length === 0) return only;
@@ -687,6 +691,11 @@ async function found(world: World, kind: Description, key: string): Promise<Reso
 			fail(`${what} begins ${starting.length} ids, ${ids}; give more of the one meant`);
 		}
 		if (!kind.named) fail(`${what}: no ${kind.name} has an id beginning so`);
+	}
+	if (kind.name === 'node') {
+		fail(
+			`${what}: nodes.toml names no such node; give its name, its id, or its first ${SHORT} digits`,
+		);
 	}
 	if (!kind.named) {
 		fail(`${what}: ${kind.plural} have no name; give the id, or its first ${SHORT} digits or more`);
@@ -735,7 +744,10 @@ async function typedIn(prompt: string): Promise<string> {
 	});
 }
 
-/** The nodes the service declared in `directory`'s service.toml runs on: the registry's cores. */
+/**
+ * The nodes the service declared in `directory`'s service.toml runs on: the old registry's cores,
+ * which `control import` reads until the cut.
+ */
 export function placements(directory = '..'): string[] {
 	const path = join(import.meta.dirname, directory, 'service.toml');
 	const declared = parse(readFileSync(path, 'utf8'));
@@ -757,27 +769,66 @@ export function address(node: string): string {
 	return found.split(/\s+/)[0] || fail(`tailscale has no IPv4 for ${node}`);
 }
 
+/** Each node's id by its name, nodes.toml's `id`: where a name is turned into an id. */
+export function nodeIds(text = readFileSync(NODES, 'utf8')): Map<string, string> {
+	const ids = new Map<string, string>();
+	for (const [name, declared] of Object.entries(parse(text))) {
+		const id = isObject(declared) ? declared.id : undefined;
+		if (typeof id !== 'string' || !isId(id)) {
+			fail(`nodes.toml's [${name}] has no id of 16 hexadecimal digits`);
+		}
+		ids.set(name, id);
+	}
+	return ids;
+}
+
+/**
+ * The names of the nodes control places `app` on, in its order; none for a Worker. Control holds a
+ * node by its id, and an operator reaches it by its name.
+ */
+export async function placedOn(
+	app: string,
+	world: Reach & Pick<World, 'nodes'> = WORLD,
+): Promise<string[]> {
+	const what = `GET ${API}/apps/${app}`;
+	const resource = dataOf(await ask(world, 'GET', `${API}/apps/${app}`), what) as Resource;
+	const placed = resource.spec?.placements;
+	const names = new Map([...world.nodes()].map(([name, id]) => [id, name]));
+	return (Array.isArray(placed) ? placed : []).map(
+		(id) =>
+			names.get(String(id)) ??
+			fail(`control places ${app} on ${id}, which nodes.toml names no node`),
+	);
+}
+
+let ids: Map<string, string> | undefined;
+
 const WORLD: World = {
-	placements: () => placements(),
-	address,
-	port: PORT,
-	token: () => process.env[TOKEN],
+	control: URLS.control,
+	readToken: () => process.env[READ_TOKEN],
+	writeToken: () => process.env[WRITE_TOKEN],
+	nodes: () => (ids ??= nodeIds()),
 	typedIn,
 	print: (text) => console.log(text),
 };
 
-/** The secret service, on the cores its own service.toml names. */
-const SECRET_WORLD: SecretWorld = {
-	...WORLD,
-	placements: () => placements('../../secrets'),
-	port: SECRET_PORT,
-	token: () => process.env[SECRET_TOKEN],
-};
+/** The secret service, on the cores control places it on. */
+async function secretWorld(): Promise<SecretWorld> {
+	const cores = await placedOn('secrets');
+	return {
+		placements: () => cores,
+		address,
+		port: SECRET_PORT,
+		token: () => process.env[SECRET_TOKEN],
+		typedIn,
+		print: WORLD.print,
+	};
+}
 
 if (import.meta.main) {
 	try {
 		const args = process.argv.slice(2);
-		if (args[0] === 'secret') await runSecret(SECRET_WORLD, args.slice(1));
+		if (args[0] === 'secret') await runSecret(await secretWorld(), args.slice(1));
 		else await run(WORLD, args);
 	} catch (error) {
 		if (!(error instanceof Failure)) throw error;

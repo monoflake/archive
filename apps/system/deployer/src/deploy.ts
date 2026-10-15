@@ -179,7 +179,7 @@ export class Deployer {
 			// oxlint-disable-next-line no-await-in-loop -- one deploy at a time, by design
 			else await this.deploy(repository, run, commit, artifact);
 		}
-		// Not waited on: the registry never holds up the next deploy. See releases.ts.
+		// Not waited on: control never holds up the next deploy. See releases.ts.
 		void this.parts.releases?.flush();
 	}
 

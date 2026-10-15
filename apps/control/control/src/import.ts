@@ -1,17 +1,11 @@
 /**
- * What `PUT /v1/import` reads: every resource the old registry holds, each keeping its id and its
- * revision, and the registry's newest change. Checked whole before anything is written. See RFC
- * o7eir.
+ * What `PUT /v1/registry/import` reads: every resource the old registry holds, each keeping its
+ * id and its revision, and the registry's newest change. Checked whole before anything is
+ * written. See RFC o7eir.
  */
 import * as v from 'valibot';
-import type { Kind, Row } from './store.ts';
-
-const ID = /^[0-9a-f]{16}$/;
-
-/** 16 lowercase hexadecimal digits, as every resource's id is. */
-export function isId(key: string): boolean {
-	return ID.test(key);
-}
+import { account as accountRefusal, ID, identities, isId, LABEL } from './specs.ts';
+import type { Kind, Owned, Row } from './store.ts';
 
 const Id = v.pipe(v.string(), v.regex(ID, 'is not 16 lowercase hexadecimal digits'));
 
@@ -24,7 +18,7 @@ const Revision = v.pipe(
 /** One DNS label, and never an id's shape, which a route would read as an id. */
 const Label = v.pipe(
 	v.string(),
-	v.regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, 'is not one DNS label'),
+	v.regex(LABEL, 'is not one DNS label'),
 	v.check((name) => !isId(name), 'has the shape of an id'),
 );
 
@@ -53,7 +47,7 @@ const Body = v.strictObject({
 });
 
 /** An import as it is written, or why it is not. */
-export type Imported = { revision: number; rows: Row[] } | { refusal: string };
+export type Imported = { revision: number; rows: Row[]; identities: Owned[] } | { refusal: string };
 
 /** `value` as JSON with every object's keys sorted, so equal specs are equal text. */
 export function canonical(value: unknown): string {
@@ -104,5 +98,18 @@ export function imported(body: unknown): Imported {
 			placed.add(placement);
 		}
 	}
-	return { revision, rows };
+	const held = new Map<string, string>();
+	const owned: Owned[] = [];
+	for (const { id, spec } of accounts) {
+		// An account the old registry held but would refuse now keeps no identity to compare.
+		if (accountRefusal(spec) !== undefined) continue;
+		for (const identity of identities(spec)) {
+			const key = JSON.stringify([identity.provider, identity.kind, identity.value]);
+			const other = held.get(key);
+			if (other !== undefined) return { refusal: `${other} and ${id} hold one ${identity.kind}` };
+			held.set(key, id);
+			owned.push({ ...identity, account: id });
+		}
+	}
+	return { revision, rows, identities: owned };
 }

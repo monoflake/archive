@@ -354,6 +354,9 @@ class Task(unittest.TestCase):
 HOST = "host-s3cret"
 READ = "e427d2347bcf34900e081847095ac6d30609ba546b08e680d5f8f4ee8c389116"
 DIGEST = "d0cd53f06568c9cdf0be664afcf1aa86acef7179e1840e1377afe84c902ba564"
+# Each node's id, as nodes.toml holds it and the service keys its token by.
+IDS = {"tyo": "d132b0f553e3dcc3", "sin": "9d399312d1c3ddc4", "rdu": "d62c82b23a858876", "buf": "e38f403f033d87f7"}
+CONTROL_READ = "control-read-value"
 
 
 class Token(unittest.TestCase):
@@ -362,7 +365,7 @@ class Token(unittest.TestCase):
 	def setUp(self):
 		self.scratch = tempfile.TemporaryDirectory()
 		nodes = Path(self.scratch.name) / "nodes.toml"
-		nodes.write_text("[tyo]\n[sin]\n[rdu]\n[buf]\n")
+		nodes.write_text("".join(f'[{name}]\nid = "{node}"\n' for name, node in IDS.items()))
 		hosts = {"tyo": "tyo-host", "sin": "sin-host", "rdu": HOST}
 		addresses = {"tyo": "100.64.0.1", "sin": "100.64.0.2", "rdu": "100.64.0.3"}
 		stored = {seal.TOKEN: "write-value", seal.PEER_TOKEN: "peer-value"}
@@ -372,6 +375,7 @@ class Token(unittest.TestCase):
 			mock.patch.object(seal, "host_token", hosts.get),
 			mock.patch.object(seal.database, "tailnet_ipv4", addresses.__getitem__),
 			mock.patch.object(seal.database, "stored_secret", lambda key, dry: stored[key]),
+			mock.patch.dict(seal.os.environ, {seal.database.READ_TOKEN: CONTROL_READ}),
 			# Nothing here may reach sops or a real secrets.json.
 			mock.patch.object(seal.subprocess, "run", mock.Mock(side_effect=AssertionError("ran a program"))),
 		]
@@ -390,11 +394,12 @@ class Token(unittest.TestCase):
 
 	def test_a_node_token_is_the_hmac_of_its_host_token(self):
 		self.assertEqual(seal.node_token(HOST), READ)
-		pairs, missing = seal.node_tokens(["rdu", "buf"], {"rdu": HOST}.get)
-		self.assertEqual(pairs, f"rdu:{DIGEST}")
+		ids = {"rdu": IDS["rdu"], "buf": IDS["buf"]}
+		pairs, missing = seal.node_tokens(ids, {"rdu": HOST}.get)
+		self.assertEqual(pairs, f"{IDS['rdu']}:{DIGEST}")
 		self.assertEqual(missing, ["buf"])
 
-	def test_every_core_is_given_the_tokens_and_the_cores(self):
+	def test_every_core_is_given_the_tokens_the_cores_and_control(self):
 		with mock.patch.object(seal.database, "upsert", return_value=True) as wrote:
 			said = self.quietly()
 		calls = [call.args for call in wrote.call_args_list]
@@ -406,14 +411,20 @@ class Token(unittest.TestCase):
 		secret = calls[0][3]
 		self.assertEqual(secret[seal.TOKEN], "write-value")
 		self.assertEqual(secret[seal.PEER_TOKEN], "peer-value")
+		self.assertEqual(secret["CONTROL_READ_TOKEN"], CONTROL_READ)
 		nodes = secret["SECRETS_NODE_TOKENS"].split()
-		self.assertEqual([pair.split(":")[0] for pair in nodes], ["rdu", "sin", "tyo"])
-		self.assertIn(f"rdu:{DIGEST}", nodes)
+		self.assertEqual([pair.split(":")[0] for pair in nodes], [IDS["rdu"], IDS["sin"], IDS["tyo"]])
+		self.assertIn(f"{IDS['rdu']}:{DIGEST}", nodes)
 		self.assertEqual(
-			calls[1][3], {"CORES": "100.64.0.1 100.64.0.2 100.64.0.3", "SECRETS_NODE_SCOPES": "platform"}
+			calls[1][3],
+			{
+				"CORES": "100.64.0.1 100.64.0.2 100.64.0.3",
+				"SECRETS_NODE_SCOPES": "platform",
+				"CONTROL": seal.database.CONTROL,
+			},
 		)
 		self.assertIn("buf has no HOST_TOKEN_BUF", said)
-		for value in ["write-value", "peer-value", HOST, READ, DIGEST]:
+		for value in ["write-value", "peer-value", CONTROL_READ, HOST, READ, DIGEST]:
 			self.assertNotIn(value, said)
 
 	def test_a_dry_run_reaches_no_core_and_prints_no_secret(self):
@@ -423,8 +434,19 @@ class Token(unittest.TestCase):
 		self.assertIn("would set", said)
 		self.assertIn("CORES=100.64.0.1 100.64.0.2 100.64.0.3", said)
 		self.assertIn("SECRETS_NODE_SCOPES=platform", said)
-		for value in ["write-value", "peer-value", HOST, READ, DIGEST]:
+		self.assertIn(f"CONTROL={seal.database.CONTROL}", said)
+		self.assertIn("CONTROL_READ_TOKEN=<redacted>", said)
+		for value in ["write-value", "peer-value", CONTROL_READ, HOST, READ, DIGEST]:
 			self.assertNotIn(value, said)
+
+	def test_without_control_s_read_token_nothing_is_written(self):
+		with (
+			mock.patch.dict(seal.os.environ, {seal.database.READ_TOKEN: ""}),
+			mock.patch.object(seal.database, "upsert") as wrote,
+			self.assertRaises(SystemExit),
+		):
+			self.quietly()
+		wrote.assert_not_called()
 
 	def test_it_takes_nothing_and_stops_at_a_core_it_cannot_write(self):
 		with mock.patch.object(seal.database, "upsert") as wrote, self.assertRaises(SystemExit):
@@ -444,12 +466,12 @@ class Scope(unittest.TestCase):
 			self.made[key] = dry
 			return None if dry else f"made-{key}"
 
-		manifests = {"registry": {"placements": ["tyo", "sin", "rdu"]}, "site": {"placements": ["workers"]}}
+		placed = {"registry": ["tyo", "sin", "rdu"], "site": []}
 		addresses = {"tyo": "100.64.0.1", "sin": "100.64.0.2", "rdu": "100.64.0.3"}
 		patches = [
 			mock.patch.object(seal, "cores", lambda: ["tyo", "sin", "rdu"]),
 			mock.patch.object(seal.database, "stored_secret", stored),
-			mock.patch.object(seal.database, "manifest_of", manifests.__getitem__),
+			mock.patch.object(seal.database, "placed_on", placed.__getitem__),
 			mock.patch.object(seal.database, "tailnet_ipv4", addresses.__getitem__),
 			mock.patch.dict(
 				seal.os.environ,

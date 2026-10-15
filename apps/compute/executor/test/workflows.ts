@@ -26,13 +26,11 @@ export class Hang extends WorkflowEntrypoint {
 	}
 }
 
-/** Reaches the registry through its binding, as a workflow reaches any service. */
+/** Reaches a service through its binding, as a workflow reaches any. */
 export class Bound extends WorkflowEntrypoint<{
-	REGISTRY: { fetch(path: string): Promise<Response> };
+	SERVICE: { fetch(path: string): Promise<Response> };
 }> {
 	override async run(_: unknown, step: WorkflowStep) {
-		return step.do('placements', async () =>
-			(await this.env.REGISTRY.fetch('/v1/apps/store')).json(),
-		);
+		return step.do('thing', async () => (await this.env.SERVICE.fetch('/v1/things/one')).json());
 	}
 }

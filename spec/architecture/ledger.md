@@ -156,9 +156,9 @@ own.
 ### How a node gets a turn
 
 **A grant is pushed and found by poll.** The round that grants a turn posts it to the executor's
-`push_url` only when that executor is on the ledger's own node, `NODE`, which host sets on every
+`push_url` only when that executor is on the ledger's own node, `NODE_ID`, which host sets on every
 container: the private side reaches no other node's executor, since a scope placed on several nodes
-goes to any of them, and a ledger without `NODE` pushes nothing. The post has a two second timeout,
+goes to any of them, and a ledger without `NODE_ID` pushes nothing. The post has a two second timeout,
 and a failure is logged and nothing more. **A push is a doorbell**: the executor polls for the turn
 it rings for, so a forged push can steer nothing -- RFC 23wgz. Every executor polls every 15 to 30
 seconds -- `POST /v1/executors/{node}/polls` with its `capacity`, `push_url` and `workflows` -- which

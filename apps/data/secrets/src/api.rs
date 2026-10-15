@@ -35,8 +35,8 @@ pub struct Secrets {
 	pub nodes: NodeTokens,
 	/// The scopes a node is given values of; any other scope's are held, given to no node.
 	pub node_scopes: Vec<String>,
-	/// Where the registry is asked which apps a node runs.
-	pub registries: Vec<String>,
+	/// Where control is asked which apps a node runs.
+	pub control: peers::Control,
 	pub client: reqwest::Client,
 }
 
@@ -71,9 +71,10 @@ pub fn node_scopes(value: &str) -> Result<Vec<String>, String> {
 	Ok(if scopes.is_empty() { vec![SCOPE.to_owned()] } else { scopes })
 }
 
-/// Three lowercase letters, an IATA code, as the registry holds a node's name.
-pub fn node_name_is_valid(name: &str) -> bool {
-	name.len() == 3 && name.bytes().all(|b| b.is_ascii_lowercase())
+/// 16 lowercase hexadecimal digits, as control holds a node's id. See
+/// spec/architecture/control.md, "Who reads it, and with what".
+pub fn node_id_is_valid(id: &str) -> bool {
+	id.len() == 16 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// One DNS label, as every service's and every scope's name is.
@@ -171,8 +172,8 @@ const STARTUP_NAMES: &[&str] = &[
 	"SSL_CERT_DIR",
 ];
 
-/// The apps the service needs running before it can answer a node -- its database and the
-/// registry it asks which apps a node runs -- and itself. None takes a value from the service, or a
+/// The apps the service needs running before it can answer a node -- its database, and the old
+/// registry while it still runs -- and itself. None takes a value from the service, or a
 /// platform rebuilt from nothing could not start them: no token writes one in a scope a node is
 /// given. See spec/architecture/secrets.md, "Who reads what".
 const STARTS_THE_SERVICE: &[&str] =
@@ -712,20 +713,20 @@ impl Drop for Opened {
 	}
 }
 
-/// The values of every app the registry places on `node`, in the scopes a node is given alone, to
-/// that node's own token alone; those removed, by name and revision, so a node takes away only
-/// what was deleted; and the apps it looked at, so a node can tell an app it was not answered for
-/// from one with nothing kept.
+/// The values of every app control places on `node`, a node's id, in the scopes a node is given
+/// alone, to that node's own token alone; those removed, by name and revision, so a node takes
+/// away only what was deleted; and the apps it looked at, so a node can tell an app it was not
+/// answered for from one with nothing kept.
 async fn node_secrets(
 	Path(node): Path<String>,
 	State(secrets): State<Shared>,
 	headers: HeaderMap,
 ) -> Response {
-	if !node_name_is_valid(&node) {
+	if !node_id_is_valid(&node) {
 		return response::failure_with(
 			StatusCode::BAD_REQUEST,
 			"invalid_name",
-			"A node's name is three lowercase letters, an IATA code",
+			"A node is its id, 16 lowercase hexadecimal digits",
 		);
 	}
 	if !secrets.nodes.admits(&node, tokens::bearer(&headers)) {
@@ -734,11 +735,11 @@ async fn node_secrets(
 	if secrets.seal.is_sealed() {
 		return sealed();
 	}
-	let Some(apps) = peers::placed_apps(&secrets.client, &secrets.registries, &node).await else {
+	let Some(apps) = peers::placed_apps(&secrets.client, &secrets.control, &node).await else {
 		return response::failure_with(
 			StatusCode::BAD_GATEWAY,
 			"upstream_unavailable",
-			"No registry answered which apps this node runs",
+			"Control did not answer which apps this node runs",
 		);
 	};
 	let (kept, removed, revision) = match secrets.store.of_apps(&apps, &secrets.node_scopes).await {

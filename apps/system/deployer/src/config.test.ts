@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { URLS } from '@monoflake/sdk';
 import { describe, expect, it } from 'vitest';
 import { PORT, configOf, isDry, pairs, sources, tokenFor } from './config.ts';
 
@@ -40,11 +41,24 @@ describe('the configuration', () => {
 		expect(declaration).toMatch(new RegExp(`^port = ${PORT}$`, 'm'));
 	});
 
+	it('writes releases to control, by its address and its write token', () => {
+		const config = configOf({
+			CONTROL: ` ${URLS.control} `,
+			CONTROL_WRITE_TOKEN: 'write',
+			REGISTRY: '100.64.0.1',
+			REGISTRY_TOKEN: 'old',
+		});
+		expect(config.control).toBe(URLS.control);
+		expect(config.controlToken).toBe('write');
+	});
+
 	it('starts with nothing configured, on its own port, with its data in /data', () => {
 		const config = configOf({});
 		expect(config.sources).toEqual([]);
 		expect(config.owners.size).toBe(0);
 		expect(config.readToken).toBeUndefined();
+		expect(config.control).toBeUndefined();
+		expect(config.controlToken).toBeUndefined();
 		expect(config.port).toBe(12020);
 		expect(config.data).toBe('/data');
 	});

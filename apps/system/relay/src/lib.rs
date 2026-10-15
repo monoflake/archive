@@ -7,6 +7,7 @@ pub mod cluster;
 pub mod compression;
 pub mod config;
 pub mod delta;
+pub mod egress;
 pub mod history;
 pub mod host;
 pub mod leaving;

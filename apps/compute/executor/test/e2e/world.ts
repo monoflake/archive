@@ -12,7 +12,7 @@ import type { AddressInfo } from 'node:net';
 import postgres from 'postgres';
 
 /** The node the ledger runs on, so a grant to an executor named so is pushed. */
-export const LEDGER_NODE = 'tyo';
+export const LEDGER_NODE = 'd132b0f553e3dcc3';
 
 /** Whether this run has what the tests need; said once, and refused in CI. */
 export function ready(): boolean {
@@ -133,7 +133,7 @@ export class World {
 				DATABASE_URL: own.href,
 				PATRONI_PRIMARY_URL: `http://localhost:${patroni}/primary`,
 				LISTEN: `127.0.0.1:${port}`,
-				NODE: LEDGER_NODE,
+				NODE_ID: LEDGER_NODE,
 			},
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});

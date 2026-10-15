@@ -33,16 +33,16 @@ other Workers left as they are, unless a newer run built it, when it is passed o
 for any other reason stays failed: this recovers faults of the moment, not failed deploys. The
 console of web's run 38404197087 was lost to a storage 503 on 2026-10-13.
 
-**Each app's release is written to the registry by the deployer** -- RFC jln34. Every run it takes,
+**Each app's release is written to control by the deployer** -- RFC jln34. Every run it takes,
 by notice or by catching up, records each app it has an artifact of -- an image for host,
 `deploy-<app>-<arch>`, or a Worker, `worker-<app>` -- in its `deployer.db` before any deploy, and
 writes each as `release: {repository, run, commit}` by `PATCH /v1/apps/{name}`, held to the revision
-it read, as `deployer`, with `REGISTRY_TOKEN`. A release only moves forward: one the registry records
+it read, as `deployer`, with `CONTROL_WRITE_TOKEN` -- [control.md](control.md). A release only moves forward: one control records
 from the same repository at the same or a newer run is left as it is, and a write refused `409` is
-read again and tried once more. An app the registry does not hold is logged and
+read again and tried once more. An app control does not hold is logged and
 left. A Worker is held, placed on no node -- RFC 17b3o -- so its release is written as any other's,
-and host, wanting only what is placed on its own node, never runs it. It asks the cores in `REGISTRY`, the one that answered last first, three seconds each. The
-registry unreachable stops no deploy: a release not written stays in `deployer.db` and is written by
+and host, wanting only what is placed on its own node, never runs it. It asks `CONTROL`, ten seconds each time; an
+answer that is not control's envelope counts as no answer. Control unreachable stops no deploy: a release not written stays in `deployer.db` and is written by
 the next deploy or the next catch-up pass, oldest run first. An app declared `rollout = "manual"` -- the database, the
 quorum -- is given no release by a run: the deployer reads the run's `declarations` artifact, each
 image's `service.toml`, and settles such an app's release as `manual`, so `release` keeps meaning
@@ -145,7 +145,7 @@ monoflake organization does not own is fetched with a token of that owner's** --
 `GITHUB_ACTIONS_TOKEN_CANMI21`, read access to Actions on `canmi21/web` and `canmi21/cue` -- picked by the
 source's owner, here and in host. **The bucket's key reads and lists it, nothing more**, and sits in the
 deployer's `secret.env`, as `ARTIFACTS_READ_KEY_ID` and `ARTIFACTS_READ_SECRET` in the platform's
-sops file; `mise run registry token` writes them, and the bucket's endpoint, region and name into its
+sops file; `mise run control writers` writes them, and the bucket's endpoint, region and name into its
 `config.env`.
 
 ## Admitting a repository

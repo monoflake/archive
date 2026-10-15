@@ -312,7 +312,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_relay_back_within_the_minute_it_left_in_keeps_its_word_of_leaving() {
 		let store = shared(Store::memory().unwrap());
-		let book = Book::open("rdu".into(), store.clone()).unwrap();
+		let book = Book::open("d62c82b23a858876".into(), store.clone()).unwrap();
 		book.round(&reading(true), &RoundTrips::new(), None, at(3));
 		let left = book.leave(Reason::Upgrade, at(10));
 		assert_eq!(left.rows.len(), 1);
@@ -322,7 +322,7 @@ mod tests {
 		);
 		book.write(at(10)).await.unwrap();
 
-		let book = Book::open("rdu".into(), store).unwrap();
+		let book = Book::open("d62c82b23a858876".into(), store).unwrap();
 		assert!(book.round(&reading(false), &RoundTrips::new(), None, at(20)).is_none());
 		let ended = book.round(&reading(true), &RoundTrips::new(), None, at(61)).unwrap();
 		assert!(ended.above >= left.version && ended.version > left.version);
@@ -335,7 +335,7 @@ mod tests {
 	#[tokio::test]
 	async fn history_reads_the_file_and_the_window_together() {
 		let store = shared(Store::memory().unwrap());
-		let book = Book::open("rdu".into(), store).unwrap();
+		let book = Book::open("d62c82b23a858876".into(), store).unwrap();
 		for second in (0..180).step_by(3) {
 			book.round(&reading(true), &RoundTrips::new(), None, at(second));
 		}
@@ -343,7 +343,7 @@ mod tests {
 		book.write(at(120)).await.unwrap();
 		book.round(&reading(true), &RoundTrips::new(), None, at(181));
 		let tyo = Batch {
-			node: "tyo".into(),
+			node: "d132b0f553e3dcc3".into(),
 			above: 0,
 			version: 4,
 			rows: vec![Row { version: 4, minute: Minute { beats: 7, ..ended(0) } }],
@@ -351,11 +351,11 @@ mod tests {
 		assert!(book.merge(tyo));
 
 		let asked = answer::Asked::new(3600, 3600).unwrap();
-		let history = book.history("rdu".into(), asked, vec![], at(300)).await.unwrap();
-		let slot = &history.nodes["rdu"][0];
+		let history = book.history("d62c82b23a858876".into(), asked, vec![], at(300)).await.unwrap();
+		let slot = &history.nodes["d62c82b23a858876"][0];
 		// Minutes 0 to 2 held, and minute 3, due by now, never ended.
 		assert_eq!((slot.beats, slot.due, slot.missing), (Some(3 * 20), Some(4 * 20), 1));
-		assert_eq!(history.nodes["tyo"][0].beats, Some(7));
+		assert_eq!(history.nodes["d132b0f553e3dcc3"][0].beats, Some(7));
 	}
 
 	fn ended(minute: i64) -> Minute {
@@ -372,7 +372,7 @@ mod tests {
 
 	#[test]
 	fn a_minute_carries_the_meters_readings_of_it_and_no_other_minutes() {
-		let book = Book::open("rdu".into(), shared(Store::memory().unwrap())).unwrap();
+		let book = Book::open("d62c82b23a858876".into(), shared(Store::memory().unwrap())).unwrap();
 		book.round(&reading(true), &RoundTrips::new(), None, at(3));
 		let cpu = Readings::from([("cpu.usage".into(), Gauge { mean: 12.5, max: 40.0 })]);
 		// Readings of another minute are not this one's.
@@ -383,7 +383,7 @@ mod tests {
 			book.round(&reading(true), &RoundTrips::new(), Some((minute, cpu.clone())), at(121));
 		let ended = &ended.unwrap().rows[0].minute;
 		assert_eq!(ended.readings, cpu);
-		assert_eq!(book.latest("rdu").map(|minute| minute.readings), Some(cpu));
-		assert!(book.latest("tyo").is_none());
+		assert_eq!(book.latest("d62c82b23a858876").map(|minute| minute.readings), Some(cpu));
+		assert!(book.latest("d132b0f553e3dcc3").is_none());
 	}
 }

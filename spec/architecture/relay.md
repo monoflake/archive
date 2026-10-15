@@ -66,9 +66,10 @@ error correction: a frame arrives whole or the socket drops. With a neighbor tha
 `sync`, the two-second comparison stands.
 
 **The mesh is `/mesh`, a WebSocket each relay dials on every other**, admitted by a secret the
-relays share, `RELAY_SECRET`. The peers are every node the registry has listed and not marked `retired`, followed while the
-relay runs and kept on its disk -- [registry.md](registry.md), "Every relay follows it" -- with
-`RELAY_PEERS`, `name=address:port` by tailnet address, the seed a relay starts from; a relay skips
+relays share, `RELAY_SECRET`. The peers are every node control lists and has not marked `retired`, by id, followed every five
+minutes with `GET {CONTROL}/v1/registry/nodes` and kept on its disk -- [control.md](control.md), RFC o7eir --
+with `RELAY_PEERS`, `id=address:port` by tailnet address, the seed a relay starts from; a node is
+its `NODE_ID` everywhere in the mesh, and a relay speaking another contract version is refused; a relay skips
 its own, and refuses a neighbor it holds as retired. Each stream's first message
 carries the contract's version, and a neighbor speaking another is dropped. Both ends ping every
 three seconds -- the round trip below. **Each socket is read by its conversation and written by a

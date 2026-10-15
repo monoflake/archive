@@ -1,18 +1,34 @@
 /**
- * control's routes, apart from the Worker so a test can stand a database in: `/health`, the
- * resources under `/v1` as the old registry answers them, and the import that copies them across.
- * Every route but `/health` takes a bearer. See RFC o7eir.
+ * control's routes, apart from the Worker so a test can stand a database in: `/health`, and the
+ * `registry` scope at `/v1/registry`: the resources read and written as the old registry answers
+ * them, the catalog of their kinds, and the import that copies them across. Every route but
+ * `/health` takes a bearer. See RFC o7eir and spec/architecture/control.md.
  */
 import { failure, success } from '@canmi/response';
 import { envelopeErrors } from '@canmi/response/hono';
-import { Hono, type MiddlewareHandler } from 'hono';
+import { type Context, Hono, type MiddlewareHandler } from 'hono';
 import { admitted } from './auth.ts';
-import { imported, isId } from './import.ts';
-import { answers, type Database, found, type Kind, listed, replaced } from './store.ts';
+import { canonical, imported } from './import.ts';
+import { CATALOG } from './kinds.ts';
+import { identities, isId, isLabel, isObject, type Refusal, type Spec } from './specs.ts';
+import {
+	answers,
+	type Change,
+	clashed,
+	committed,
+	type Database,
+	found,
+	type Kind,
+	listed,
+	replaced,
+	type Resource,
+} from './store.ts';
+import { checked, clash, merged, type Written, written } from './write.ts';
 
 export interface Env {
 	readonly DB: Database;
 	readonly CONTROL_READ_TOKEN?: string;
+	readonly CONTROL_WRITE_TOKEN?: string;
 	readonly CONTROL_IMPORT_TOKEN?: string;
 }
 
@@ -24,17 +40,31 @@ const KINDS = new Map<string, Kind>([
 	['accounts', 'account'],
 ]);
 
-/** The bearer `token` names, or a refusal: closed while it is not set. */
-function bearer(token: 'CONTROL_READ_TOKEN' | 'CONTROL_IMPORT_TOKEN'): MiddlewareHandler<App> {
+/** What a kind's collection and each of its members take, as `Allow` says it. */
+const ALLOWED: Record<Kind, { list: string; one: string }> = {
+	node: { list: 'GET, POST', one: 'GET, PATCH' },
+	app: { list: 'GET', one: 'GET, PUT, PATCH' },
+	account: { list: 'GET, POST', one: 'GET, PATCH' },
+};
+
+const A: Record<Kind, string> = { node: 'A node', app: 'An app', account: 'An account' };
+
+type Token = 'CONTROL_READ_TOKEN' | 'CONTROL_WRITE_TOKEN' | 'CONTROL_IMPORT_TOKEN';
+
+/**
+ * A bearer one of `tokens` names, or a refusal: closed while none of them is set. Each set token is
+ * compared, whichever matches, so the timing says nothing of which one a bearer is.
+ */
+function bearer(...tokens: Token[]): MiddlewareHandler<App> {
 	return async (c, next) => {
-		const expected = c.env[token];
-		if (!expected) {
-			const message = `This route is closed: control has no ${token} set`;
+		const expected = tokens.map((token) => c.env[token]).filter((token) => !!token) as string[];
+		if (expected.length === 0) {
+			const message = `This route is closed: control has no ${tokens.join(' or ')} set`;
 			return failure(503, 'service_unavailable', { message });
 		}
-		if (!(await admitted(c.req.header('Authorization') ?? null, expected))) {
-			return failure(401, 'invalid_token');
-		}
+		const given = c.req.header('Authorization') ?? null;
+		const matched = await Promise.all(expected.map((token) => admitted(given, token)));
+		if (!matched.includes(true)) return failure(401, 'invalid_token');
 		await next();
 	};
 }
@@ -57,6 +87,21 @@ function absent(kind: Kind): Response {
 	return failure(404, kind === 'node' ? 'no_such_node' : 'no_such_resource');
 }
 
+function refused({ status, code, message }: Refusal): Response {
+	return failure(status, code, { message });
+}
+
+/** What a name answers where a kind has none: refused, saying the id is what names one. */
+function unnamed(kind: Kind): Response {
+	const message = `${A[kind]} has no name: it is its id, made by POST /v1/registry/${kind}s`;
+	return failure(400, 'invalid_name', { message });
+}
+
+/** The body sent, or nothing where it is not JSON, which `written` refuses. */
+async function sent(c: Context<App>): Promise<unknown> {
+	return c.req.json().catch(() => undefined);
+}
+
 export const app = new Hono<App>();
 
 app.get('/health', async (c) => {
@@ -70,39 +115,45 @@ app.get('/health', async (c) => {
 });
 app.all('/health', invalidMethod('GET'));
 
-// Ahead of the reads, so `import` is never taken for a kind.
-app.put('/v1/import', bearer('CONTROL_IMPORT_TOKEN'), async (c) => {
+// The write token reads too: a writer reads what it is about to hold its write to.
+const read = bearer('CONTROL_READ_TOKEN', 'CONTROL_WRITE_TOKEN');
+const write = bearer('CONTROL_WRITE_TOKEN');
+/** The `registry` scope: the nodes, the apps and the accounts, and their catalog. */
+const registry = new Hono<App>();
+
+// Ahead of the kinds, so `import` is never taken for one.
+registry.put('/import', bearer('CONTROL_IMPORT_TOKEN'), async (c) => {
 	let body: unknown;
 	try {
 		body = await c.req.json();
 	} catch {
 		return failure(400, 'invalid_body');
 	}
-	const checked = imported(body);
-	if ('refusal' in checked) return failure(400, 'invalid_body', { message: checked.refusal });
+	const taken = imported(body);
+	if ('refusal' in taken) return failure(400, 'invalid_body', { message: taken.refusal });
 	const at = new Date().toISOString();
 	return held(async () => {
-		const revision = await replaced(c.env.DB, checked.rows, checked.revision, at);
-		if (revision !== checked.revision) {
-			const message = `control holds revision ${revision}, past the ${checked.revision} given`;
+		const { rows, identities: owned, revision: given } = taken;
+		const revision = await replaced(c.env.DB, rows, owned, given, at);
+		if (revision !== given) {
+			const message = `control holds revision ${revision}, past the ${given} given`;
 			return failure(409, 'invalid_revision', { message });
 		}
 		return success({ revision });
 	});
 });
-app.all('/v1/import', invalidMethod('PUT'));
+registry.all('/import', invalidMethod('PUT'));
 
-const reads = new Hono<App>();
-reads.use('*', bearer('CONTROL_READ_TOKEN'));
+registry.get('/kinds', read, () => success(CATALOG));
+registry.all('/kinds', invalidMethod('GET'));
 
-reads.get('/:plural', (c) => {
+registry.get('/:plural', read, (c) => {
 	const kind = KINDS.get(c.req.param('plural'));
 	if (!kind) return failure(404, 'no_such_kind');
 	const name = c.req.query('name');
 	const node = c.req.query('node');
 	if (name !== undefined && kind !== 'app') {
-		const message = `${kind === 'node' ? 'A node' : 'An account'} has no name: it is its id`;
-		return failure(400, 'invalid_name', { message });
+		return failure(400, 'invalid_name', { message: `${A[kind]} has no name: it is its id` });
 	}
 	if (node !== undefined && kind !== 'app') {
 		return failure(400, 'forbidden_parameter', { message: 'Only an app is placed on a node' });
@@ -113,8 +164,32 @@ reads.get('/:plural', (c) => {
 	return held(async () => success(await listed(c.env.DB, kind, { name, node })));
 });
 
+/** Makes a node or an account at revision 0, its id drawn by control and answered. */
+registry.post('/:plural', write, async (c) => {
+	const kind = KINDS.get(c.req.param('plural'));
+	if (!kind) return failure(404, 'no_such_kind');
+	if (kind === 'app') {
+		const message = 'An app is made by PUT /v1/registry/apps/<name>';
+		return failure(405, 'invalid_method', { message, headers: { Allow: ALLOWED.app.list } });
+	}
+	const asked = written(kind, await sent(c));
+	if ('code' in asked) return refused(asked);
+	return held(async () => {
+		const refusal = await checked(c.env.DB, kind, asked.spec, undefined);
+		if (refusal) return refused(refusal);
+		if (asked.revision !== 0) return failure(409, 'invalid_revision');
+		return landed(c.env.DB, change(kind, asked, undefined), true);
+	});
+});
+
+registry.all('/:plural', (c) => {
+	const kind = KINDS.get(c.req.param('plural'));
+	if (!kind) return failure(404, 'no_such_kind');
+	return invalidMethod(ALLOWED[kind].list)();
+});
+
 /** A key of an id's shape is an id; any other is a name, which only an app has. */
-reads.get('/:plural/:key', (c) => {
+registry.get('/:plural/:key', read, (c) => {
 	const kind = KINDS.get(c.req.param('plural'));
 	if (!kind) return failure(404, 'no_such_kind');
 	const key = c.req.param('key');
@@ -124,9 +199,128 @@ reads.get('/:plural/:key', (c) => {
 		return resource ? success(resource) : absent(kind);
 	});
 });
-reads.all('/:plural', invalidMethod('GET'));
-reads.all('/:plural/:key', invalidMethod('GET'));
 
-app.route('/v1', reads);
+/** Sets an app's whole spec, held to the revision read; at revision 0, by a name, makes it. */
+registry.put('/:plural/:key', write, async (c) => {
+	const kind = KINDS.get(c.req.param('plural'));
+	if (!kind) return failure(404, 'no_such_kind');
+	if (kind !== 'app') {
+		const message = `${A[kind]} is changed by PATCH /v1/registry/${kind}s/<id>`;
+		return failure(405, 'invalid_method', { message, headers: { Allow: ALLOWED[kind].one } });
+	}
+	const key = c.req.param('key');
+	if (!isId(key) && !isLabel(key)) {
+		const message = 'A name is one DNS label, and never 16 hexadecimal digits, which is an id';
+		return failure(400, 'invalid_name', { message });
+	}
+	const asked = written(kind, await sent(c));
+	if ('code' in asked) return refused(asked);
+	return held(async () => {
+		const kept = await found(c.env.DB, kind, isId(key) ? { id: key } : { name: key });
+		if (!kept && isId(key)) return absent(kind);
+		const refusal = await checked(c.env.DB, kind, asked.spec, kept);
+		if (refusal) return refused(refusal);
+		if (asked.revision !== (kept?.revision ?? 0)) return failure(409, 'invalid_revision');
+		if (kept && canonical(asked.spec) === canonical(kept.spec)) return success({});
+		return landed(c.env.DB, change(kind, asked, kept ?? key), false);
+	});
+});
+
+/**
+ * Lays `spec` over the one kept as a merge patch, held to the revision read as `PUT` is: an app's
+ * release written by a machine and its placements by a person, or a node's `retired` by an
+ * operator and the rest by the import, never erase each other.
+ */
+registry.patch('/:plural/:key', write, async (c) => {
+	const kind = KINDS.get(c.req.param('plural'));
+	if (!kind) return failure(404, 'no_such_kind');
+	const key = c.req.param('key');
+	if (!isId(key) && kind !== 'app') return unnamed(kind);
+	if (!isId(key) && !isLabel(key)) {
+		const message = 'A name is one DNS label, and never 16 hexadecimal digits, which is an id';
+		return failure(400, 'invalid_name', { message });
+	}
+	const asked = written(kind, await sent(c));
+	if ('code' in asked) return refused(asked);
+	if (!isObject(asked.spec)) {
+		return failure(400, 'invalid_body', { message: '`spec` is an object of the fields changed' });
+	}
+	const patch = asked.spec;
+	return held(async () => {
+		const kept = await found(c.env.DB, kind, isId(key) ? { id: key } : { name: key });
+		if (!kept) return absent(kind);
+		if (kept.revision !== asked.revision) return failure(409, 'invalid_revision');
+		const spec = merged(kept.spec, patch);
+		const refusal = await checked(c.env.DB, kind, spec, kept);
+		if (refusal) return refused(refusal);
+		if (canonical(spec) === canonical(kept.spec)) return success({});
+		return landed(c.env.DB, change(kind, { ...asked, spec }, kept), false);
+	});
+});
+
+registry.all('/:plural/:key', (c) => {
+	const kind = KINDS.get(c.req.param('plural'));
+	if (!kind) return failure(404, 'no_such_kind');
+	return invalidMethod(ALLOWED[kind].one)();
+});
+
+app.route('/v1/registry', registry);
+
+/** Every scope under `/v1`: a path one does not take is no route, and any other scope none. */
+const SCOPES = new Set(['registry']);
+
+const unscoped = (c: Context<App>) =>
+	SCOPES.has(c.req.param('scope') ?? '')
+		? failure(404, 'no_such_route')
+		: failure(404, 'no_such_scope');
+app.all('/v1/:scope', unscoped);
+app.all('/v1/:scope/*', unscoped);
+
+/**
+ * The write `asked` makes of `target`: the resource kept, an app's name no app holds yet, or, for
+ * none, a resource of a kind with no name, its id drawn as it is written.
+ */
+function change(
+	kind: Kind,
+	asked: Written,
+	target: Resource | string | undefined,
+): Omit<Change, 'id'> & { id?: string } {
+	const spec = asked.spec as Spec;
+	const kept = typeof target === 'object' ? target : undefined;
+	return {
+		kind,
+		...(kept ? { id: kept.id } : {}),
+		name: kept ? kept.name : typeof target === 'string' ? target : null,
+		made: kept === undefined,
+		revision: kept?.revision ?? 0,
+		spec: canonical(spec),
+		by: asked.by,
+		at: new Date().toISOString(),
+		...(kind === 'account' ? { identities: identities(spec) } : {}),
+	};
+}
+
+/**
+ * A write's answer: `202` with the revision it made and its task, and the id of what a `POST`
+ * made; and a conflict when the resource changed after the revision given was read. An identity
+ * another account came to hold between the check and the batch is refused as the check refuses it.
+ */
+async function landed(
+	db: Database,
+	asked: Omit<Change, 'id'> & { id?: string },
+	post: boolean,
+): Promise<Response> {
+	try {
+		const wrote = await committed(db, asked);
+		if (!wrote) return failure(409, 'invalid_revision');
+		const { id, revision, task } = wrote;
+		return success(post ? { id, revision, task } : { revision, task }, { status: 202 });
+	} catch (error) {
+		if (!clashed(error)) throw error;
+		const refusal = await clash(db, JSON.parse(asked.spec) as Spec, asked.id ?? null);
+		if (refusal) return refused(refusal);
+		throw error;
+	}
+}
 
 envelopeErrors(app);

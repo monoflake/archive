@@ -86,9 +86,10 @@ impl Store {
 	}
 }
 
-/// The arrangement `/topology` answers: each service's placements, its scope and its schedules,
-/// drawn from `services.json` alone -- nothing here asks the meter or the ledger. See
-/// spec/architecture/telemetry.md, "The API".
+/// The arrangement `/topology` answers: each service's container, its scope and its schedules,
+/// drawn from `services.json` alone -- nothing here asks the meter or the ledger. Where a service
+/// runs is control's, never its declaration's, so a declaration's `placements` is passed over --
+/// spec/architecture/control.md. See spec/architecture/telemetry.md, "The API".
 pub fn topology(services: &Services) -> Value {
 	let services: Vec<Value> = services
 		.apps
@@ -97,7 +98,6 @@ pub fn topology(services: &Services) -> Value {
 			let declaration = &service.declaration;
 			serde_json::json!({
 				"name": service.name,
-				"placements": declaration.get("placements").cloned().unwrap_or(Value::Null),
 				"container": declaration.get("container").cloned().unwrap_or(Value::Null),
 				"api": declaration.get("api").cloned().unwrap_or(Value::Null),
 				"interface": declaration.get("interface").cloned().unwrap_or(Value::Null),
@@ -171,11 +171,13 @@ mod tests {
 	}
 
 	#[test]
-	fn topology_carries_placements_and_schedules_and_nothing_the_meter_or_ledger_knows() {
+	fn topology_carries_schedules_and_nothing_the_meter_ledger_or_a_placement_knows() {
 		let services: Services = serde_json::from_str(EXAMPLE).unwrap();
 		let drawn = topology(&services);
 		assert_eq!(drawn["services"][0]["name"], "geo");
-		assert_eq!(drawn["services"][0]["placements"], serde_json::json!(["home"]));
+		assert_eq!(drawn["services"][0]["schedules"], serde_json::json!([]));
+		// A declaration written before control still names its nodes; none of them is told.
+		assert!(drawn["services"][0].get("placements").is_none());
 		assert_eq!(drawn["services"][1]["container"], Value::Null);
 	}
 }

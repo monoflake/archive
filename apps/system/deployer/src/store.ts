@@ -52,7 +52,7 @@ export interface Taken {
 	readonly transient?: boolean;
 }
 
-/** An app's release a run built, not yet written to the registry. */
+/** An app's release a run built, not yet written to control. */
 export interface Unwritten {
 	readonly repository: string;
 	readonly run: number;
