@@ -1,0 +1,13 @@
+# See spec/architecture/firewall.md. Control's own zone, in its own account -- RFC o7eir.
+
+[[rules]]
+name = "Block Probes"
+phase = "http_request_firewall_custom"
+action = "block"
+expression = "../all/block-probes.txt"
+
+[[rules]]
+name = "Control Paths Only"
+phase = "http_request_firewall_custom"
+action = "block"
+expression = "control-only.txt"

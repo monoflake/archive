@@ -34,6 +34,10 @@ ZONES = sorted(p.name for p in RULES.iterdir() if p.is_dir() and p.name != "all"
 # spec/architecture/gateway.md.
 PLACEHOLDERS = {"PROBE_TOKEN", "INTERNAL_TOKEN"}
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
+# The token a zone is synced with, where it is not the platform's account's: control's zone is in an
+# account of its own -- RFC o7eir.
+CREDENTIALS = {"monoflake.net": "CLOUDFLARE_CONTROL_TOKEN"}
+DEFAULT_CREDENTIAL = "CLOUDFLARE_ZONES_TOKEN"
 
 
 def placeholders_of(text):
@@ -284,27 +288,37 @@ def sync(zone_arg, dry_run):
 			print(f"sync: no rules/{zone}/zone.toml", file=sys.stderr)
 			return 1
 
-	token = os.environ.get("CLOUDFLARE_ZONES_TOKEN")
-	if not token and not dry_run:
-		print(
-			"sync: CLOUDFLARE_ZONES_TOKEN is not set. It must come from the repository's encrypted "
-			"secrets.json (see the workspace's spec/toolchain.md, \"Secrets\"), decrypted by mise on entering the "
-			"directory, like HOST_TOKEN. Refusing rather than falling back to cf's own login.",
-			file=sys.stderr,
-		)
-		return 1
+	for zone in zones:
+		credential = CREDENTIALS.get(zone, DEFAULT_CREDENTIAL)
+		if not os.environ.get(credential) and not dry_run:
+			print(
+				f"sync: {credential}, which {zone} is synced with, is not set. It must come from the "
+				"repository's encrypted secrets.json (see the workspace's spec/toolchain.md, \"Secrets\"), "
+				"decrypted by mise on entering the directory, like HOST_TOKEN. Refusing rather than falling "
+				"back to cf's own login.",
+				file=sys.stderr,
+			)
+			return 1
 
-	env = dict(os.environ)
-	if token:
-		# cf reads CLOUDFLARE_API_TOKEN before any stored OAuth profile, so setting it here is
-		# what keeps the account's own login out of a script's reach.
-		env["CLOUDFLARE_API_TOKEN"] = token
+	def zone_env(zone):
+		"""The environment cf runs in for `zone`: its account's token as CLOUDFLARE_API_TOKEN, which
+		cf reads before any stored OAuth profile, so the account's own login stays out of reach."""
+		env = dict(os.environ)
+		if zone in CREDENTIALS:
+			# Another account's zone: the platform account's id and token left in the environment
+			# would send cf looking for the zone there.
+			env = {name: value for name, value in env.items() if not name.startswith(("CLOUDFLARE_", "CF_"))}
+		token = os.environ.get(CREDENTIALS.get(zone, DEFAULT_CREDENTIAL))
+		if token:
+			env["CLOUDFLARE_API_TOKEN"] = token
+		return env
 
 	def command(phase, zone, body_path, validate_only):
 		base = ["cf", "rulesets", "account-rulesets", "phases", "update", phase, "-z", zone, "--body", f"@{body_path}"]
 		return base + ["--validate-only"] if validate_only else base
 
 	for zone in zones:
+		env = zone_env(zone)
 		try:
 			bodies = phase_bodies(zone, env, mask=dry_run)
 		except ValueError as error:

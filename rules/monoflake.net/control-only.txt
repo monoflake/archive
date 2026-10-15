@@ -1,0 +1,9 @@
+http.host ne "monoflake.net"
+and not (
+	http.host eq "control.monoflake.net"
+	and (
+		http.request.uri.path wildcard "/v*/*"
+		or http.request.uri.path eq "/robots.txt"
+		or starts_with(http.request.uri.path, "/.well-known/")
+	)
+)
