@@ -1,0 +1,22 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// Control's own Cloudflare account, never the platform's: `mise run deploy-control` deploys it,
+	// naming the account. No service.toml, so neither CI nor the deployer lists it. RFC o7eir.
+	"name": "control",
+	"main": "src/worker.ts",
+	"compatibility_date": "2026-07-29",
+
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "control",
+			"database_id": "b985205f-ab63-40f0-9212-2148a5e5a2d8",
+			"migrations_dir": "migrations",
+		},
+	],
+
+	"observability": { "logs": { "enabled": true } },
+	"placement": { "mode": "smart" },
+	"workers_dev": false,
+	"preview_urls": false,
+}

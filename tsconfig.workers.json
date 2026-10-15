@@ -15,6 +15,8 @@
 	// so checking them elsewhere drags the whole worker into a program with the browser's
 	// globals. Tried, and that is what happened. `scripts/` is the node program and stays out.
 	"include": [
+		"apps/control/control/src/**/*.ts",
+		"apps/control/control/*.d.ts",
 		"apps/delivery/cdn/src/**/*.ts",
 		"apps/delivery/cdn/*.d.ts",
 		"apps/delivery/aka/src/**/*.ts",
