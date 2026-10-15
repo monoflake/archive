@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import { DEPLOY_SOURCES } from '@monoflake/sdk';
 import { describe, expect, it, vi } from 'vitest';
 import { WORKFLOW } from './github.ts';
-import { bindingOf, DEPLOYER, type Node, RECEIVERS } from './hook.ts';
+import { DEPLOYER, RECEIVERS } from './hook.ts';
 import { app, type Env } from './index.ts';
+import { bindingOf, type Node } from './nodes.ts';
 import type { Database } from './store.ts';
 import { imported, ORIGIN, refused, SIN, Sqlite, TYO, WRITE } from './testing.ts';
 

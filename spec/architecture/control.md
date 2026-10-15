@@ -75,7 +75,8 @@ was given and keeps the answer that came with it; nothing it holds outlives the 
 
 **It takes writes as the old registry did**, each with `Authorization: Bearer CONTROL_WRITE_TOKEN`
 and a body `{by, revision, spec}` held to the revision read, answered `202 {revision, task}` or,
-when nothing changed, `200 {}`; a write that lands adds a `changes` row naming `by`:
+when nothing changed, `200 {}`; a write that lands adds a `changes` row naming `by`, and is told
+to host on every bound node after its answer, which never waits on it:
 
 - `PUT /v1/registry/apps/{name}`: revision `0` creates the app, any other replaces its spec.
 - `PATCH /v1/registry/{nodes,apps,accounts}/{key}`: an RFC 7386 merge of `spec` over the one held, `null`
@@ -105,16 +106,26 @@ engine read; host, the secret service and every operator task read control's alo
 
 | Reader                            | Asks                                                      | Every    | Is given                                                                    |
 | --------------------------------- | --------------------------------------------------------- | -------- | --------------------------------------------------------------------------- |
-| host                              | `GET /v1/registry/apps?node={NODE_ID}`                    | 60 s     | `NODE` (hostname), `NODE_ID`, `CONTROL`, `CONTROL_READ_TOKEN`               |
-| the secret service                | `GET /v1/registry/apps?node={id}`, for the node asking it | 60 s     | `CONTROL`, `CONTROL_READ_TOKEN`; node tokens keyed by id                    |
+| host                              | `GET /v1/registry/apps?node={NODE_ID}`                    | notice   | `NODE` (hostname), `NODE_ID`, `CONTROL`, `CONTROL_READ_TOKEN`               |
+| the secret service                | `GET /v1/registry/apps?node={id}`, for the node asking it | per read | `CONTROL`, `CONTROL_READ_TOKEN`; node tokens keyed by id                    |
 | relay                             | `GET /v1/registry/nodes`, its mesh keyed by id            | 300 s    | `NODE_ID`, `CONTROL`, `CONTROL_READ_TOKEN`, `RELAY_PEERS` as `id=host:port` |
 | the deployer, `node deploy --app` | `PATCH /v1/registry/apps/{name}` with a release           | per run  | `CONTROL`, `CONTROL_WRITE_TOKEN`                                            |
 | the console                       | everything, over its binding to `Console`                 | per page | nothing: the binding is its proof                                           |
 
 **Every app is told `NODE_ID` beside `NODE`**: what keys data by its node -- relay, the ledger, the
 executor, the probe -- keys it by `NODE_ID`; `NODE` stays the hostname, which Patroni names its
-members by. Together the readers ask about 29,000 times a day, inside the free plan's 100,000;
-RFC o7eir's one speaker for the cluster brings it lower.
+members by.
+
+**Nothing asks control on a timer; it tells the nodes when something changed.** A node's host asks
+at start, when told, before it acts on a run, and once an hour unasked in case a notice was lost while
+the node was out of reach -- infra's `spec/architecture/host.md`. A change notice is `POST /notice`
+to the `infra` receiver on every bound node, over its binding as a run's notice goes:
+`{"changed":"registry","revision":n}` after every write that lands, and `{"changed":"secrets"}` when
+the operator says so. **The `notice` scope is the operator's word**: `POST /v1/notice` with
+`CONTROL_WRITE_TOKEN` and `{"changed":"registry"}` or `{"changed":"secrets"}`, told to every node and
+awaited, answered `202 {reached}` with each node and whether it took it; `secret set` and `delete`
+send the second after each value written -- [secrets.md](secrets.md). A node that misses a notice is
+logged and never fails what sent it.
 
 **An import, `PUT /v1/registry/import` with `CONTROL_IMPORT_TOKEN`, replaces every resource in one
 batch and continues the old registry's revisions**, also rebuilding the identities table, so

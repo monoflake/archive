@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { body, ORIGIN, READ, shown, Sqlite } from './testing.ts';
+import { body, context, ORIGIN, READ, shown, Sqlite } from './testing.ts';
 
 // workerd's base class, which the runner's stand-in for `cloudflare:workers` does not carry.
 vi.mock('cloudflare:workers', () => ({
@@ -30,13 +30,21 @@ function asked(method: string, path: string, sent?: unknown) {
 
 describe('the Console entrypoint', () => {
 	it('admits the console to read and write with no bearer', async () => {
-		const entry = new Console({} as never, bindings());
+		const entry = new Console(context().ctx as never, bindings());
 		expect((await entry.fetch(asked('GET', '/v1/registry/nodes'))).status).toBe(200);
 		const spec = shown('100.64.0.9', 'Tokyo', 'JP');
 		const made = await entry.fetch(
 			asked('POST', '/v1/registry/nodes', { by: 'console', revision: 0, spec }),
 		);
 		expect(made.status).toBe(202);
+	});
+
+	it("hands a write's change notice to the context it was given", async () => {
+		const { ctx, waited } = context();
+		const entry = new Console(ctx as never, bindings());
+		const spec = shown('100.64.0.9', 'Tokyo', 'JP');
+		await entry.fetch(asked('POST', '/v1/registry/nodes', { by: 'console', revision: 0, spec }));
+		expect(waited).toHaveLength(1);
 	});
 
 	it('does not admit the console to the import', async () => {
@@ -48,8 +56,24 @@ describe('the Console entrypoint', () => {
 
 describe('the default export', () => {
 	it('still refuses a caller with no bearer', async () => {
-		const answer = await worker.fetch(asked('GET', '/v1/registry/nodes') as never, bindings());
+		const answer = await worker.fetch(
+			asked('GET', '/v1/registry/nodes') as never,
+			bindings(),
+			context().ctx as never,
+		);
 		expect(answer.status).toBe(401);
 		expect(await answer.json()).toMatchObject({ code: 'invalid_token' });
+	});
+
+	it("hands a write's change notice to the context it was given", async () => {
+		const { ctx, waited } = context();
+		const spec = shown('100.64.0.9', 'Tokyo', 'JP');
+		const request = new Request(new URL('/v1/registry/nodes', ORIGIN), {
+			method: 'POST',
+			headers: { Authorization: 'Bearer write-token' },
+			body: JSON.stringify({ by: 'test', revision: 0, spec }),
+		});
+		expect((await worker.fetch(request as never, bindings(), ctx as never)).status).toBe(202);
+		expect(waited).toHaveLength(1);
 	});
 });

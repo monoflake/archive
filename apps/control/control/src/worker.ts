@@ -3,8 +3,8 @@
  * for the console through `Console`. See RFC o7eir.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { Binding } from './hook.ts';
 import { app, CONSOLE } from './index.ts';
+import type { Binding } from './nodes.ts';
 
 interface Env {
 	readonly DB: D1Database;
@@ -18,10 +18,10 @@ interface Env {
 // Only a same-account Worker can bind a named entrypoint, so the binding proves the caller.
 export class Console extends WorkerEntrypoint<Env> {
 	override fetch(request: Request): Response | Promise<Response> {
-		return app.fetch(request, { ...this.env, [CONSOLE]: true });
+		return app.fetch(request, { ...this.env, [CONSOLE]: true }, this.ctx);
 	}
 }
 
 export default {
-	fetch: (request, env) => app.fetch(request, env),
+	fetch: (request, env, ctx) => app.fetch(request, env, ctx),
 } satisfies ExportedHandler<Env>;

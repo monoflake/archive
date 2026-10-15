@@ -1,9 +1,10 @@
 /**
  * control's routes, apart from the Worker so a test can stand a database in: `/v1/health`; the
  * `registry` scope at `/v1/registry`: the resources read and written as the old registry answers
- * them, the catalog of their kinds, and the import that copies them across; and the `hook` scope,
- * GitHub's deploy runs passed on to the nodes. Every route but `/v1/health` and the hook takes a
- * bearer, or the console by its binding. See RFC o7eir and spec/architecture/control.md.
+ * them, the catalog of their kinds, and the import that copies them across; the `hook` scope,
+ * GitHub's deploy runs passed on to the nodes; and the `notice` scope, a change told to every
+ * node's host. Every route but `/v1/health` and the hook takes a bearer, or the console by its
+ * binding. See RFC o7eir and spec/architecture/control.md.
  */
 import { failure, success } from '@canmi/response';
 import { envelopeErrors } from '@canmi/response/hono';
@@ -13,6 +14,7 @@ import { admitted } from './auth.ts';
 import { delivered, type Env as Hooked } from './hook.ts';
 import { canonical, imported } from './import.ts';
 import { CATALOG } from './kinds.ts';
+import { announced, asked as noticed, type Changed } from './notice.ts';
 import { identities, isId, isLabel, isObject, type Refusal, type Spec } from './specs.ts';
 import {
 	answers,
@@ -226,7 +228,7 @@ registry.post('/:plural', write, async (c) => {
 		const refusal = await checked(c.env.DB, kind, asked.spec, undefined);
 		if (refusal) return refused(refusal);
 		if (asked.revision !== 0) return failure(409, 'invalid_revision');
-		return landed(c.env.DB, change(kind, asked, undefined), true);
+		return landed(c, change(kind, asked, undefined), true);
 	});
 });
 
@@ -270,7 +272,7 @@ registry.put('/:plural/:key', write, async (c) => {
 		if (refusal) return refused(refusal);
 		if (asked.revision !== (kept?.revision ?? 0)) return failure(409, 'invalid_revision');
 		if (kept && canonical(asked.spec) === canonical(kept.spec)) return success({});
-		return landed(c.env.DB, change(kind, asked, kept ?? key), false);
+		return landed(c, change(kind, asked, kept ?? key), false);
 	});
 });
 
@@ -302,7 +304,7 @@ registry.patch('/:plural/:key', write, async (c) => {
 		const refusal = await checked(c.env.DB, kind, spec, kept);
 		if (refusal) return refused(refusal);
 		if (canonical(spec) === canonical(kept.spec)) return success({});
-		return landed(c.env.DB, change(kind, { ...asked, spec }, kept), false);
+		return landed(c, change(kind, { ...asked, spec }, kept), false);
 	});
 });
 
@@ -318,8 +320,28 @@ app.route('/v1/registry', registry);
 app.post('/v1/hook/github', (c) => delivered(c.req.raw, c.env));
 app.all('/v1/hook/github', invalidMethod('POST'));
 
+/**
+ * The `notice` scope: the operator's word that something host serves has changed, told to every
+ * bound node and awaited. A node that missed it is listed, never a failure. See notice.ts.
+ */
+app.post('/v1/notice', bearer('CONTROL_WRITE_TOKEN'), async (c) => {
+	const changed = noticed(await sent(c));
+	if (changed === undefined) {
+		const message = 'The body is {"changed": "registry"} or {"changed": "secrets"}';
+		return failure(400, 'invalid_body', { message });
+	}
+	return held(async () => {
+		const notice: Changed =
+			changed === 'registry' ? { changed, revision: await revised(c.env.DB) } : { changed };
+		const reached = await announced(c.env, notice);
+		const each = reached.map(({ node, status, ok }) => ({ node, status, ok }));
+		return success({ reached: each }, { status: 202 });
+	});
+});
+app.all('/v1/notice', invalidMethod('POST'));
+
 /** Every scope under `/v1`: a path one does not take is no route, and any other scope none. */
-const SCOPES = new Set(['health', 'registry', 'hook']);
+const SCOPES = new Set(['health', 'registry', 'hook', 'notice']);
 
 const unscoped = (c: Context<App>) =>
 	SCOPES.has(c.req.param('scope') ?? '')
@@ -356,16 +378,19 @@ function change(
  * A write's answer: `202` with the revision it made and its task, and the id of what a `POST`
  * made; and a conflict when the resource changed after the revision given was read. An identity
  * another account came to hold between the check and the batch is refused as the check refuses it.
+ * A write that lands is told to every node's host after the answer, which never waits on it.
  */
 async function landed(
-	db: Database,
+	c: Context<App>,
 	asked: Omit<Change, 'id'> & { id?: string },
 	post: boolean,
 ): Promise<Response> {
+	const db = c.env.DB;
 	try {
 		const wrote = await committed(db, asked);
 		if (!wrote) return failure(409, 'invalid_revision');
 		const { id, revision, task } = wrote;
+		c.executionCtx.waitUntil(announced(c.env, { changed: 'registry', revision }));
 		return success(post ? { id, revision, task } : { revision, task }, { status: 202 });
 	} catch (error) {
 		if (!clashed(error)) throw error;

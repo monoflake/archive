@@ -6,6 +6,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import type { ExecutionContext } from 'hono';
 import { expect } from 'vitest';
 import { app, type Env } from './index.ts';
 import type { Database, Statement } from './store.ts';
@@ -129,7 +130,22 @@ export interface Answer {
 	body: Record<string, unknown>;
 }
 
-export function control(db: Database = new Sqlite(), tokens: Partial<Env> = {}) {
+/** A Worker's execution context, keeping what each answer gave `waitUntil` for a test to await. */
+export function context() {
+	const waited: Promise<unknown>[] = [];
+	const ctx: ExecutionContext = {
+		waitUntil: (promise) => void waited.push(promise),
+		passThroughOnException: () => {},
+		props: {},
+	};
+	return { ctx, waited };
+}
+
+export function control(
+	db: Database = new Sqlite(),
+	tokens: Partial<Env> = {},
+	{ ctx } = context(),
+) {
 	const env: Env = {
 		DB: db,
 		CONTROL_READ_TOKEN: READ,
@@ -148,6 +164,7 @@ export function control(db: Database = new Sqlite(), tokens: Partial<Env> = {}) 
 		const response = await app.fetch(
 			new Request(new URL(path, ORIGIN), { method, headers, body: sent }),
 			env,
+			ctx,
 		);
 		return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 	};
