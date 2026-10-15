@@ -30,17 +30,18 @@ The VPS and the machine at home run the same node -- what it is made of is infra
 Neither opens an inbound port; public traffic reaches each through its own tunnel, and the nodes
 reach each other on the tailnet. Each node's host deploys only what is placed on it.
 
-A finished build reaches every node through one Worker, `hook`, answering the `hook` scope of the
-public API host. GitHub's webhook for workflow runs calls it when a run ends, signed with a secret
-the two share; it checks the signature, keeps only a successful run of the deploy workflow on
+A finished build reaches every node through control's `hook` scope, `POST
+control.monoflake.net/v1/hook/github` -- [control.md](control.md), RFC o7eir. GitHub's webhook for
+workflow runs calls it when a run ends, signed with a secret the two share; it checks the signature, keeps only a successful run of the deploy workflow on
 `main` of a repository in `DEPLOY_SOURCES` -- infra's or this one -- and passes the run's number
 and its repository over Workers VPC to each node's host, and to keeper, which
 alone deploys host. Workers VPC dials the node's Caddy by name and sends the fetch's hostname as the
 `Host`, so one VPC service reaches every name Caddy answers. What the Worker forwards is only a
 hint: each program asks GitHub about the run itself before it runs anything.
 
-**Every node a VPC binding names is told, and each on its own.** The nodes are the hook's
-`vpc_services` and nowhere in its code; one node down does not keep the others from hearing. The
+**Every node a VPC binding names is told, and each on its own.** The nodes are control's
+`vpc_services`, one a node named `NODE_<id>`, through each node's tunnel in control's account; the
+deployer is told on the nodes control places it on; one node down does not keep the others from hearing. The
 hook answers GitHub with success only when every node took the run, so a node that missed it shows
 as a failed delivery, which can be sent again -- harmless to the nodes that took it, since each
 takes a run once. A node offline when a run ended takes it once it is back, asking GitHub itself --

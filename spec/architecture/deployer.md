@@ -13,10 +13,10 @@ serving, as host's control plane going down is not an outage -- infra's
 `spec/architecture/host.md`. It is TypeScript on Node, because wrangler is, and it deploys one
 Worker at a time.
 
-**It learns of a run from the hook, as a third receiver beside host and keeper.** The hook posts the
-same `{run, repository}` to `deployer.<suffix>/notice` through the bindings of the nodes the
-deployer's `service.toml` places it on, a list generated into the hook from that declaration as the
-gateway's table is from its services.
+**It learns of a run from the hook, as a third receiver beside host and keeper.** Control's hook
+scope posts the same `{run, repository}` to `deployer.<suffix>/notice` through the bindings of the
+nodes control places the deployer on, read from control's own database on each delivery --
+[control.md](control.md).
 
 **A run GitHub did not give for a reason of the moment is not taken.** GitHub not reached, its rate
 limit spent, or a 5xx leaves the run's row marked transient: it dates what the deployer holds of the
@@ -135,7 +135,8 @@ with nothing but a log line to say so.
 ## Credentials
 
 **`CLOUDFLARE_WORKERS_TOKEN`, a token of the author's user, is in the platform's sops file and the
-deployer's `secret.env` on its node, and never in GitHub.** It carries Workers Scripts Edit and
+deployer's `secret.env` on its node, and never in GitHub.** It is granted both accounts, the
+platform's and control's, and carries Workers Scripts Edit and
 Connectivity Directory Bind and Read; Workers Routes Edit on the gateway's zones joins it when the
 gateway moves. It is the user's and not the account's because binding a VPC service is checked
 against the user behind the token, and an account-owned token has none: its first real deploy, the
@@ -164,8 +165,16 @@ nothing; then the Worker's Git integration is disconnected and its name joins `W
 order: the console, web's, then `aka`, `cdn` and `quota`, then the gateway, and the site last, after its
 D1 moves to Postgres.
 
-**`hook` stays on Cloudflare's Git integration.** It carries the deployer's own notices, and a hook
-the deployer broke the deployer could not mend -- host never updates itself either; keeper does.
+**The hook is never the deployer's to deploy.** It carries the deployer's own notices, and a hook
+the deployer broke the deployer could not mend -- host never updates itself either; keeper does. It
+is control's `hook` scope, and control is deployed by hand -- [control.md](control.md).
+
+**A Worker is deployed into its own account.** `WORKER_ACCOUNTS` names a Worker's account where it is
+not the default one: `console=monoflake`, control's account, since the console binds control and
+the nodes' VPC services there -- RFC o7eir. An account's id is `CLOUDFLARE_ACCOUNT_ID_<NAME>`, and its
+token `CLOUDFLARE_WORKERS_TOKEN_<NAME>` where one is set, else `CLOUDFLARE_WORKERS_TOKEN`, one user
+token granted both accounts. A Worker whose account has no id is refused by name, and the rest of
+the run goes on.
 
 **Rolling back** is `wrangler rollback`, any of the last hundred versions, offered as host offers
 it. A broken pipeline is mended by reconnecting the Worker's Git integration and removing its name

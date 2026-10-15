@@ -16,10 +16,14 @@ with Smart Placement beside it.
 **It answers at `control.monoflake.net`**, `URLS.control` in `libs/sdk`, a custom domain attached
 in the dashboard; `wrangler.jsonc` declares no route and no `workers.dev` host. The console takes the
 apex of `monoflake.net` behind Cloudflare Access; control is outside Access, since what calls it
-proves itself by a bearer now and a node's key later.
+proves itself another way: a node or a writer by a bearer now and a node's key later, GitHub by its
+signature on the hook, and the console by its binding to the `Console` entrypoint, which only a
+Worker in the same account can hold.
 
 **Neither CI nor the deployer deploys it**: it has no `service.toml`, so no list of the platform's
-apps names it, and the deployer's token reaches only the other account.
+apps names it, and the deployer refuses a Worker no owner in `WORKER_OWNERS` names. The deployer's
+token reaches this account too, for the console, so that refusal is what keeps control off it: a
+hook the deployer broke the deployer could not mend.
 
 ## One task, four verbs
 
@@ -34,7 +38,11 @@ apps names it, and the deployer's token reaches only the other account.
   empty one of that name. A route whose token is not set answers `503`.
 - **`writers`** gives the writers what they write with: the deployer's `CONTROL` and
   `CONTROL_WRITE_TOKEN`, with the GitHub token, its sources and the artifact bucket, on its node,
-  and both tokens to the console Worker as secrets -- what `registry token` did before the cut.
+  this account's id and `WORKER_ACCOUNTS=console=monoflake`, and `HOST_READ_TOKEN` to the console
+  Worker -- what `registry token` did before the cut. A console not deployed yet is said so, to be
+  given its token on the next run.
+- **`hook`** puts `WEBHOOK_SECRET`, the secret GitHub signs its webhooks with, on the Worker. It is
+  copied, never drawn: the four repositories' webhooks keep it.
 - **`import`** copied the old registry into control whole. The cut ended it on 2026-10-15: the cores'
   registry stopped, and `CONTROL_IMPORT_TOKEN` was deleted from the Worker and `secrets.json`, so the
   route answers `503`.
@@ -94,7 +102,7 @@ engine read; host, the secret service and every operator task read control's alo
 | the secret service                | `GET /v1/registry/apps?node={id}`, for the node asking it | 60 s     | `CONTROL`, `CONTROL_READ_TOKEN`; node tokens keyed by id                    |
 | relay                             | `GET /v1/registry/nodes`, its mesh keyed by id            | 300 s    | `NODE_ID`, `CONTROL`, `CONTROL_READ_TOKEN`, `RELAY_PEERS` as `id=host:port` |
 | the deployer, `node deploy --app` | `PATCH /v1/registry/apps/{name}` with a release           | per run  | `CONTROL`, `CONTROL_WRITE_TOKEN`                                            |
-| the console                       | everything                                                | per page | `CONTROL_READ_TOKEN`, `CONTROL_WRITE_TOKEN` as Worker secrets               |
+| the console                       | everything, over its binding to `Console`                 | per page | nothing: the binding is its proof                                           |
 
 **Every app is told `NODE_ID` beside `NODE`**: what keys data by its node -- relay, the ledger, the
 executor, the probe -- keys it by `NODE_ID`; `NODE` stays the hostname, which Patroni names its
