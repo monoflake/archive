@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { URLS } from '@monoflake/sdk';
 import { describe, expect, it } from 'vitest';
-import { PORT, configOf, isDry, pairs, sources, tokenFor } from './config.ts';
+import { PORT, accountOf, configOf, isDry, pairs, sources, tokenFor } from './config.ts';
 
 describe('the configuration', () => {
 	it('reads the sources as host does, owner and name pairs alone', () => {
@@ -69,6 +69,52 @@ describe('the configuration', () => {
 		expect(isDry(some, 'gateway')).toBe(true);
 		expect(isDry(some, 'aka')).toBe(false);
 		expect(isDry(configOf({ DEPLOYER_DRY: '0' }), 'console')).toBe(false);
+	});
+});
+
+describe('the account a Worker deploys to', () => {
+	const env = {
+		CLOUDFLARE_ACCOUNT_ID: 'canmi-id',
+		CLOUDFLARE_WORKERS_TOKEN: 'user-token',
+		CLOUDFLARE_ACCOUNT_ID_MONOFLAKE: 'monoflake-id',
+		WORKER_ACCOUNTS: 'console=monoflake',
+	};
+
+	it('is the default for a Worker not named', () => {
+		expect(accountOf(configOf(env), 'gateway')).toEqual({
+			name: undefined,
+			cloudflare: { account: 'canmi-id', token: 'user-token' },
+			missing: [],
+		});
+	});
+
+	it("is the named account's id, with the one user token that covers both", () => {
+		expect(accountOf(configOf(env), 'console')).toEqual({
+			name: 'monoflake',
+			cloudflare: { account: 'monoflake-id', token: 'user-token' },
+			missing: [],
+		});
+	});
+
+	it("is the named account's own token where it has one", () => {
+		const own = configOf({ ...env, CLOUDFLARE_WORKERS_TOKEN_MONOFLAKE: 'monoflake-token' });
+		expect(accountOf(own, 'console').cloudflare).toEqual({
+			account: 'monoflake-id',
+			token: 'monoflake-token',
+		});
+		expect(accountOf(own, 'gateway').cloudflare.token).toBe('user-token');
+	});
+
+	it('names what a named account lacks, and never falls back to the default id', () => {
+		const { CLOUDFLARE_ACCOUNT_ID_MONOFLAKE: _, ...without } = env;
+		expect(accountOf(configOf(without), 'console')).toMatchObject({
+			name: 'monoflake',
+			cloudflare: { account: undefined },
+			missing: ['CLOUDFLARE_ACCOUNT_ID_MONOFLAKE'],
+		});
+		expect(
+			accountOf(configOf({ WORKER_ACCOUNTS: 'console=monoflake' }), 'console').missing,
+		).toEqual(['CLOUDFLARE_ACCOUNT_ID_MONOFLAKE', 'CLOUDFLARE_WORKERS_TOKEN']);
 	});
 });
 

@@ -37,7 +37,7 @@ async function setup(
 		artifacts?: Artifact[];
 		wrangler?: Runner;
 		zip?: Buffer;
-		download?: () => Promise<void>;
+		download?: Parts['github']['download'];
 		/** GitHub itself, in place of the run that built the console. */
 		github?: Parts['github'];
 	} = {},
@@ -249,6 +249,49 @@ describe('the deployer', () => {
 		expect(logs.some((line) => line.includes('failed to roll back'))).toBe(true);
 	});
 
+	it("deploys a Worker named to another account with that account's id", async () => {
+		const { invoked, deliver } = await setup({
+			env: { WORKER_ACCOUNTS: 'console=monoflake', CLOUDFLARE_ACCOUNT_ID_MONOFLAKE: 'mono' },
+		});
+		await deliver(7);
+		expect(invoked[0]!.env).toMatchObject({
+			CLOUDFLARE_ACCOUNT_ID: 'mono',
+			CLOUDFLARE_API_TOKEN: 'token',
+		});
+	});
+
+	it('refuses a Worker whose account has no id, by name, and deploys the rest', async () => {
+		const { store, invoked, logs, deliver } = await setup({
+			env: {
+				WORKER_OWNERS: 'console=canmi21/web, site=canmi21/web',
+				WORKER_ACCOUNTS: 'console=monoflake',
+			},
+			artifacts: [ARTIFACT, { app: 'site', id: 2, digest: 'sha256:00' }],
+			download: async (_repository, _run, artifact, zip) => {
+				await writeFile(zip, artifactOf(declared({ name: artifact.app })));
+			},
+		});
+		await deliver(7);
+		expect(invoked).toHaveLength(1);
+		expect(invoked[0]!.env.CLOUDFLARE_ACCOUNT_ID).toBe('account');
+		const [site, refused] = store.list();
+		expect(site).toMatchObject({ worker: 'site', stage: 'deployed' });
+		expect(refused).toMatchObject({ worker: 'console', stage: 'failed', failed_in: 'admitting' });
+		expect(refused!.error).toBe(
+			'console: its account, monoflake, has no CLOUDFLARE_ACCOUNT_ID_MONOFLAKE',
+		);
+		expect(logs.some((line) => line.includes('CLOUDFLARE_ACCOUNT_ID_MONOFLAKE'))).toBe(true);
+	});
+
+	it('runs a Worker dry whose account has no id, since a dry run needs none', async () => {
+		const { store, invoked, deliver } = await setup({
+			env: { WORKER_ACCOUNTS: 'console=monoflake', DRY_WORKERS: 'console' },
+		});
+		await deliver(7);
+		expect(invoked[0]!.args).toContain('--dry-run');
+		expect(store.list()).toMatchObject([{ stage: 'deployed', dry: true }]);
+	});
+
 	it('deploys one Worker at a time, in the order the notices came', async () => {
 		let running = 0;
 		let most = 0;
@@ -341,6 +384,21 @@ describe('a rollback', () => {
 			version: ID,
 		});
 		expect(store.lastRun('console')).toBe(9);
+	});
+
+	it("runs in the Worker's own account, and is refused where that account has no id", async () => {
+		const mono = { WORKER_ACCOUNTS: 'console=monoflake', CLOUDFLARE_ACCOUNT_ID_MONOFLAKE: 'mono' };
+		const { invoked, deployer } = await setup({ env: mono });
+		deployer.rollback({ worker: 'console', version: ID });
+		await deployer.idle();
+		expect(invoked[0]!.env.CLOUDFLARE_ACCOUNT_ID).toBe('mono');
+
+		const refused = await setup({ env: { WORKER_ACCOUNTS: 'console=monoflake' } });
+		refused.deployer.rollback({ worker: 'console', version: ID });
+		await refused.deployer.idle();
+		expect(refused.invoked).toEqual([]);
+		expect(refused.store.list()[0]).toMatchObject({ action: 'rollback', stage: 'failed' });
+		expect(refused.store.list()[0]!.error).toMatch(/CLOUDFLARE_ACCOUNT_ID_MONOFLAKE/);
 	});
 });
 

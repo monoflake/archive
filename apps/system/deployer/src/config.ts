@@ -28,8 +28,19 @@ export interface Config {
 	readonly token: string | undefined;
 	/** What `GET /api/*` asks for, as host's `HOST_READ_TOKEN`; none refuses every read. */
 	readonly readToken: string | undefined;
-	/** The account and its token, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_WORKERS_TOKEN`. */
-	readonly cloudflare: { readonly account: string | undefined; readonly token: string | undefined };
+	/** The default account and its token, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_WORKERS_TOKEN`. */
+	readonly cloudflare: Account;
+	/**
+	 * The Workers that deploy to another account, by that account's name: `WORKER_ACCOUNTS`,
+	 * `console=monoflake`. A Worker not named goes to the default.
+	 */
+	readonly workerAccounts: ReadonlyMap<string, string>;
+	/**
+	 * Each account `WORKER_ACCOUNTS` names: its id from `CLOUDFLARE_ACCOUNT_ID_<NAME>`, and its token
+	 * from `CLOUDFLARE_WORKERS_TOKEN_<NAME>`, or else the default's, since one user token can cover
+	 * every account.
+	 */
+	readonly accounts: ReadonlyMap<string, Account>;
 	/**
 	 * Where each app's release is written: `CONTROL`, control's base URL. See releases.ts and
 	 * spec/architecture/control.md, "Who reads it, and with what".
@@ -45,6 +56,12 @@ export interface Config {
 	readonly artifacts: BucketAccess | undefined;
 	readonly data: string;
 	readonly port: number;
+}
+
+/** A Cloudflare account and the token that deploys Workers to it. */
+export interface Account {
+	readonly account: string | undefined;
+	readonly token: string | undefined;
 }
 
 /** How the bucket is reached, by the S3 API alone; see bucket.ts. */
@@ -102,8 +119,27 @@ export function pairs(text: string): [string, string][] {
 	});
 }
 
+/** The variables an account named `name` is read from: its id's and its token's. */
+export function accountVariables(name: string): [string, string] {
+	const suffix = name.toUpperCase().replaceAll('-', '_');
+	return [`CLOUDFLARE_ACCOUNT_ID_${suffix}`, `CLOUDFLARE_WORKERS_TOKEN_${suffix}`];
+}
+
 export function configOf(env: Env): Config {
 	const dryWorkers = (value(env, 'DRY_WORKERS') ?? '').split(',').map((name) => name.trim());
+	const workerAccounts = new Map(
+		pairs(value(env, 'WORKER_ACCOUNTS') ?? '').filter(([, name]) => /^[a-z0-9-]+$/.test(name)),
+	);
+	const cloudflare = {
+		account: value(env, 'CLOUDFLARE_ACCOUNT_ID'),
+		token: value(env, 'CLOUDFLARE_WORKERS_TOKEN'),
+	};
+	const accounts = new Map(
+		[...new Set(workerAccounts.values())].map((name) => {
+			const [account, token] = accountVariables(name).map((key) => value(env, key));
+			return [name, { account, token: token ?? cloudflare.token }] as const;
+		}),
+	);
 	return {
 		sources: sources(value(env, 'DEPLOY_SOURCES') ?? ''),
 		owners: new Map(pairs(value(env, 'WORKER_OWNERS') ?? '')),
@@ -120,16 +156,35 @@ export function configOf(env: Env): Config {
 		dryWorkers: new Set(dryWorkers.filter(Boolean)),
 		token: value(env, 'DEPLOYER_TOKEN'),
 		readToken: value(env, 'DEPLOYER_READ_TOKEN'),
-		cloudflare: {
-			account: value(env, 'CLOUDFLARE_ACCOUNT_ID'),
-			token: value(env, 'CLOUDFLARE_WORKERS_TOKEN'),
-		},
+		cloudflare,
+		workerAccounts,
+		accounts,
 		control: value(env, 'CONTROL'),
 		controlToken: value(env, 'CONTROL_WRITE_TOKEN'),
 		artifacts: bucketOf(env),
 		data: value(env, 'DEPLOYER_DATA') ?? '/data',
 		port: Number(value(env, 'PORT') ?? PORT),
 	};
+}
+
+/**
+ * The account `worker` deploys to and its credentials: the one `WORKER_ACCOUNTS` names, or the
+ * default. `missing` names each variable its credentials need and the environment lacks.
+ */
+export function accountOf(
+	config: Config,
+	worker: string,
+): { name: string | undefined; cloudflare: Account; missing: string[] } {
+	const name = config.workerAccounts.get(worker);
+	const cloudflare =
+		name === undefined
+			? config.cloudflare
+			: (config.accounts.get(name) ?? { account: undefined, token: undefined });
+	const missing = [
+		...(cloudflare.account ? [] : [name ? accountVariables(name)[0] : 'CLOUDFLARE_ACCOUNT_ID']),
+		...(cloudflare.token ? [] : ['CLOUDFLARE_WORKERS_TOKEN']),
+	];
+	return { name, cloudflare, missing };
 }
 
 /** Whether `worker` runs dry: everything does under `DEPLOYER_DRY`, or the names listed. */

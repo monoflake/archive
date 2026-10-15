@@ -248,6 +248,23 @@ describe("a resource outside the platform's own repositories", () => {
 		expect(as(own)).toBeUndefined();
 	});
 
+	it("passes the console's binding to control's entrypoint, and its nodes, when given", () => {
+		const bound = {
+			...CONSOLE,
+			routes: [{ pattern: 'monoflake.net', custom_domain: true }],
+			services: [{ binding: 'CONTROL', service: 'control', entrypoint: 'Console' }],
+			vpc_services: [{ binding: 'TYO', service_id: 'tyo-vpc', remote: true }],
+		};
+		const policy: Policy = {
+			...POLICY,
+			zones: new Map([['canmi21/web', ['canmi.app', 'monoflake.net']]]),
+			resources: new Map([['canmi21/web', ['service:control', 'vpc:tyo-vpc']]]),
+		};
+		expect(() => admit('console', 'canmi21/web', bound, policy)).not.toThrow();
+		const nodesAlone = { ...policy, resources: new Map([['canmi21/web', ['vpc:tyo-vpc']]]) };
+		expect(() => admit('console', 'canmi21/web', bound, nodesAlone)).toThrow(/`service` control/);
+	});
+
 	it("refuses a node's VPC service it is not given, and passes one it is", () => {
 		const other = [{ binding: 'TYO', service_id: 'tyo-caddy' }];
 		expect(as({ vpc_services: other })).toMatch(/`service_id` tyo-caddy/);

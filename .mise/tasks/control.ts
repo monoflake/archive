@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-//MISE description="Control in its own Cloudflare account: `control deploy|token|writers|import [--dry-run]`"
+//MISE description="Control in its own Cloudflare account: `control deploy|token|hook|writers|import [--dry-run]`"
 /**
- * The one way `apps/control/control` is deployed, given its tokens, its writers given theirs, and
- * filled from the old registry. Its account is not the platform's, so wrangler is handed control's
- * token and the one account it reaches, in its own environment alone, every other Cloudflare
- * variable left out. No token and no account id is printed. See RFC o7eir and
- * spec/architecture/control.md.
+ * The one way `apps/control/control` is deployed, given its tokens and GitHub's webhook secret, its
+ * writers given theirs, and filled from the old registry. Its account is not the platform's, so
+ * wrangler is handed control's token and the one account it reaches, in its own environment
+ * alone, every other Cloudflare variable left out. No token and no account id is printed. See RFC
+ * o7eir and spec/architecture/control.md.
  */
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -20,6 +20,7 @@ import {
 	placedOn,
 	placements,
 } from '../../apps/data/registry/scripts/platform.ts';
+import { accountVariables } from '../../apps/system/deployer/src/config.ts';
 import { URLS } from '../../libs/sdk/src/index.ts';
 import { ROOT } from './workspace.ts';
 
@@ -28,6 +29,8 @@ const WORKER = 'control';
 const READ = 'CONTROL_READ_TOKEN';
 const WRITE = 'CONTROL_WRITE_TOKEN';
 const IMPORT = 'CONTROL_IMPORT_TOKEN';
+/** What the hook scope checks GitHub's deliveries against; the repositories' webhooks keep it. */
+const WEBHOOK = 'WEBHOOK_SECRET';
 /** The tokens infra holds too: hosts read control, and an operator's deploy by hand writes it. */
 const SHARED = new Set([READ, WRITE]);
 /** The old registry's port on each of its cores, which `import` reads until the cut. */
@@ -102,6 +105,25 @@ async function wranglerEnv(): Promise<{ env: NodeJS.ProcessEnv; account: string;
 	};
 }
 
+/**
+ * Whether the Worker `worker` is deployed in the account `id`, its status when it is not: a secret
+ * is put only on one that is, since `wrangler secret put` without one makes an empty Worker.
+ */
+async function deployed(worker: string, id: string, credential: string): Promise<true | number> {
+	const script = await fetch(
+		`${URLS.external.cloudflare.api}/accounts/${id}/workers/scripts/${worker}/settings`,
+		{ headers: { Authorization: `Bearer ${credential}` } },
+	);
+	return script.ok || script.status;
+}
+
+/** Fails unless control is deployed in its account `id`. */
+async function controlDeployed(id: string, credential: string): Promise<void> {
+	const status = await deployed(WORKER, id, credential);
+	if (status !== true)
+		fail(`the Worker ${WORKER} is not deployed (${status}); run \`control deploy\` first`);
+}
+
 /** Runs `command` with `stdin`, failing by `what` without echoing what it was given. */
 function run(
 	command: string[],
@@ -150,12 +172,7 @@ async function token(dry: boolean): Promise<void> {
 		return;
 	}
 	const { env, account: id, token: credential } = await wranglerEnv();
-	const script = await fetch(
-		`${URLS.external.cloudflare.api}/accounts/${id}/workers/scripts/${WORKER}/settings`,
-		{ headers: { Authorization: `Bearer ${credential}` } },
-	);
-	if (!script.ok)
-		fail(`the Worker ${WORKER} is not deployed (${script.status}); run \`control deploy\` first`);
+	await controlDeployed(id, credential);
 	for (const name of [READ, WRITE, IMPORT]) {
 		const value = randomBytes(32).toString('base64url');
 		run(['pnpm', 'exec', 'wrangler', 'secret', 'put', name, '--name', WORKER], `putting ${name}`, {
@@ -175,6 +192,32 @@ async function token(dry: boolean): Promise<void> {
 }
 
 /**
+ * `WEBHOOK_SECRET` from secrets.json put on control, on stdin, for its hook scope. Its own verb
+ * rather than part of `token`: the secret is copied, never drawn, so putting it rotates nothing.
+ */
+async function hook(dry: boolean): Promise<void> {
+	const secret = process.env[WEBHOOK];
+	if (dry) {
+		const set = secret ? 'set' : 'not set, so a run would stop';
+		console.log(`would check the Worker ${WORKER} is there, then put ${WEBHOOK} (${set}) on it`);
+		return;
+	}
+	if (!secret) fail(`secrets.json has no ${WEBHOOK}`);
+	const { env, account: id, token: credential } = await wranglerEnv();
+	await controlDeployed(id, credential);
+	run(
+		['pnpm', 'exec', 'wrangler', 'secret', 'put', WEBHOOK, '--name', WORKER],
+		`putting ${WEBHOOK}`,
+		{
+			cwd: APP,
+			env,
+			input: secret,
+		},
+	);
+	console.log(`control: ${WEBHOOK} put on ${WORKER}, read by its next request`);
+}
+
+/**
  * The app that writes control while it runs: the deployer, recording each app's release -- RFC
  * jln34. It is given where control is and the write token, and with them every source host deploys
  * from added to its own `DEPLOY_SOURCES`, so no app host runs is left without a release;
@@ -191,9 +234,17 @@ const ARTIFACTS: Record<string, string> = {
 	ARTIFACTS_BUCKET: 'artifact',
 };
 const ARTIFACTS_KEY = ['ARTIFACTS_READ_KEY_ID', 'ARTIFACTS_READ_SECRET'];
-/** The console reads and writes control with both bearers, as Worker secrets of its own. */
+/**
+ * The console, which the deployer deploys into control's account and which reaches control by its
+ * service binding, holding no control token: only the read token every node's host takes, from
+ * infra's secrets.json. See spec/architecture/control.md.
+ */
 const CONSOLE = 'console';
-const CONSOLE_DIRECTORY = join(ROOT, '../web/apps/console');
+const HOST_READ = 'HOST_READ_TOKEN';
+/** Control's account, as the deployer names it: `WORKER_ACCOUNTS` sends the console there. */
+const ACCOUNT = 'monoflake';
+const [ACCOUNT_ID] = accountVariables(ACCOUNT);
+const ACCOUNTS = { WORKER_ACCOUNTS: `${CONSOLE}=${ACCOUNT}` };
 const SSH = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 
 /**
@@ -282,19 +333,32 @@ function hostSources(): string[] {
 	return deploySources(shown.stdout) ?? fail(`infra's ${file} holds no DEPLOY_SOURCES string`);
 }
 
-/** wrangler in the console's app, as its own pnpm has it, given `input` on stdin. */
-function consoleWrangler(args: string[], input?: string) {
-	return spawnSync('pnpm', ['exec', 'wrangler', ...args], {
-		cwd: CONSOLE_DIRECTORY,
-		input,
+/** `name` from infra's secrets.json, by sops on a pipe as infra's own tasks read one. */
+function infraSecret(name: string): string | undefined {
+	const read = spawnSync('sops', ['decrypt', '--extract', JSON.stringify([name]), 'secrets.json'], {
+		cwd: INFRA,
 		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'ignore'],
 	});
+	return read.status === 0 && read.stdout.trim() ? read.stdout.trim() : undefined;
 }
 
 /**
- * The deployer, on each node control places it on, and the console Worker given what they write
- * control with, as the old registry's writers were by `registry token`. The console Worker must be
- * there first: `wrangler secret put` without one makes it.
+ * What the deployer's `secret.env` and `config.env` are given, besides the sources it already
+ * names; `id` is control's account id, which sends the console there. Exported for the test.
+ */
+export function writerEnv(secrets: Record<string, string>, id: string) {
+	return {
+		secret: { ...secrets, [ACCOUNT_ID]: id },
+		config: { CONTROL: URLS.control, ...ARTIFACTS, ...ACCOUNTS },
+	};
+}
+
+/**
+ * The deployer, on each node control places it on, given what it writes control with and control's
+ * account, and the console Worker given the read token hosts take, as the old registry's writers
+ * were by `registry token`. The console must be in control's account first: `wrangler secret put`
+ * without one makes it.
  */
 async function writers(dry: boolean): Promise<void> {
 	const [reading, writing, github] = [READ, WRITE, GITHUB].map((name) => process.env[name]);
@@ -304,6 +368,7 @@ async function writers(dry: boolean): Promise<void> {
 		...(writing ? [] : [WRITE]),
 		...(github ? [] : [GITHUB]),
 		...ARTIFACTS_KEY.filter((name) => !key[name]),
+		...(process.env.CLOUDFLARE_CONTROL_TOKEN ? [] : ['CLOUDFLARE_CONTROL_TOKEN']),
 	];
 	if (missing.length > 0) {
 		const said = `secrets.json has no ${missing.join(', ')}; \`control token\` draws control's`;
@@ -313,34 +378,45 @@ async function writers(dry: boolean): Promise<void> {
 	const nodes = reading ? await placedOn(WRITER) : [];
 	if (reading && nodes.length === 0) fail(`control places ${WRITER} on no node`);
 	const sources = hostSources();
-	const config = { CONTROL: URLS.control, ...ARTIFACTS };
 	if (dry) {
 		const where = reading ? nodes.join(', ') : `the nodes control places ${WRITER} on`;
-		const secrets = [WRITE, GITHUB, ...ARTIFACTS_KEY].map((name) => `${name}=<redacted>`);
+		const secrets = [WRITE, GITHUB, ...ARTIFACTS_KEY, ACCOUNT_ID].map(
+			(name) => `${name}=<redacted>`,
+		);
+		console.log(`would ask Cloudflare for the one account CLOUDFLARE_CONTROL_TOKEN reaches`);
 		console.log(`would, on ${where}, set in /data/apps/${WRITER}/secret.env: ${secrets.join(' ')}`);
-		const told = Object.entries(config).map(([name, value]) => `${name}=${value}`);
+		const told = Object.entries(writerEnv({}, '').config).map(
+			([name, value]) => `${name}=${value}`,
+		);
 		console.log(`would set in /data/apps/${WRITER}/config.env: ${told.join(' ')}`);
 		console.log(`would add to its ${SOURCES} each of ${sources.join(' ')} it does not name`);
 		console.log(
-			`would check the Worker ${CONSOLE} is there, then put ${READ} and ${WRITE} on it, from` +
-				` ${CONSOLE_DIRECTORY}, on stdin`,
+			`would put ${HOST_READ}, read from infra's secrets.json, on the Worker ${CONSOLE} on stdin` +
+				` if it is in that account, and say to run this again if not`,
 		);
 		return;
 	}
-	const listed = consoleWrangler(['deployments', 'list', '--name', CONSOLE, '--json']);
-	if (listed.status !== 0) fail(`the Worker ${CONSOLE} is not there, or wrangler cannot read it`);
+	const hostRead = infraSecret(HOST_READ) ?? fail(`infra's secrets.json has no ${HOST_READ}`);
+	const { env, account: id, token: credential } = await wranglerEnv();
+	const { secret, config } = writerEnv({ [WRITE]: writing!, [GITHUB]: github!, ...key }, id);
 	for (const node of nodes) {
 		const current = configured(node, WRITER, SOURCES);
-		upsert(node, WRITER, 'secret.env', { [WRITE]: writing!, [GITHUB]: github!, ...key });
+		upsert(node, WRITER, 'secret.env', secret);
 		upsert(node, WRITER, 'config.env', { ...config, [SOURCES]: widened(current, sources) });
 	}
-	for (const [name, value] of [
-		[READ, reading!],
-		[WRITE, writing!],
-	] as const) {
-		const put = consoleWrangler(['secret', 'put', name, '--name', CONSOLE], value);
-		if (put.status !== 0) fail(`putting ${name} on the Worker ${CONSOLE} failed`);
-		console.log(`control: ${CONSOLE}: ${name} put as a Worker secret, read by its next request`);
+	// The deployer puts the console in control's account only once it holds that account's id.
+	const status = await deployed(CONSOLE, id, credential);
+	if (status === true) {
+		const put = ['pnpm', 'exec', 'wrangler', 'secret', 'put', HOST_READ, '--name', CONSOLE];
+		run(put, `putting ${HOST_READ}`, { cwd: APP, env, input: hostRead });
+		console.log(
+			`control: ${CONSOLE}: ${HOST_READ} put as a Worker secret, read by its next request`,
+		);
+	} else {
+		console.log(
+			`control: ${CONSOLE} is not in control's account yet (${status}), so ${HOST_READ} is not` +
+				` put; run \`control writers\` again once the deployer has deployed it`,
+		);
 	}
 	console.log(
 		`control: ${WRITER} reads them on its next deploy;` +
@@ -457,9 +533,10 @@ if (import.meta.main) {
 	try {
 		if (verb === 'deploy') await deploy(dry);
 		else if (verb === 'token') await token(dry);
+		else if (verb === 'hook') await hook(dry);
 		else if (verb === 'writers') await writers(dry);
 		else if (verb === 'import') await load(dry);
-		else fail('usage: control deploy|token|writers|import [--dry-run]');
+		else fail('usage: control deploy|token|hook|writers|import [--dry-run]');
 	} catch (error) {
 		if (!(error instanceof Failure)) throw error;
 		fail(error.message);

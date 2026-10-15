@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Bucket } from './bucket.ts';
 import { CatchUp, every } from './catch-up.ts';
-import { bucketMissing, configOf, tokenFor } from './config.ts';
+import { accountOf, bucketMissing, configOf, tokenFor } from './config.ts';
 import { Deployer } from './deploy.ts';
 import { GitHub } from './github.ts';
 import { Control, Releases } from './releases.ts';
@@ -31,6 +31,12 @@ if (config.owners.size === 0) console.log('deployer: WORKER_OWNERS names no Work
 const missing = bucketMissing(process.env);
 if (missing.length > 0) {
 	console.log(`deployer: ${missing.join(', ')} not set, so artifacts are read from GitHub`);
+}
+for (const worker of config.workerAccounts.keys()) {
+	const { name, missing: lacked } = accountOf(config, worker);
+	if (lacked.length > 0) {
+		console.log(`deployer: ${worker} deploys to ${name}, which has no ${lacked.join(' or ')}`);
+	}
 }
 if (!control.configured) {
 	console.log('deployer: CONTROL or CONTROL_WRITE_TOKEN is not set, so no release is recorded yet');

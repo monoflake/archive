@@ -7,12 +7,13 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { admit } from './admission.ts';
 import { unpack as unpackZip } from './artifact.ts';
-import { type Config, isDry } from './config.ts';
+import { type Config, accountOf, isDry } from './config.ts';
 import { manualIn } from './declarations.ts';
 import { type Artifact, type Built, type GitHub, Refused, Transient } from './github.ts';
 import type { Releases } from './releases.ts';
 import type { Store } from './store.ts';
 import {
+	type Cloudflare,
 	type Runner,
 	failureOf,
 	forget,
@@ -71,6 +72,18 @@ export interface Parts {
  */
 async function workerConfigOf(unpacked: string): Promise<Record<string, unknown>> {
 	return JSON.parse(await readFile(join(unpacked, 'wrangler.json'), 'utf8'));
+}
+
+/**
+ * The account `worker` deploys to, as wrangler is given it. Refused, naming the Worker, when that
+ * account lacks its id or its token, unless the run is dry and needs neither; the rest deploy on.
+ */
+function credentialsOf(config: Config, worker: string, dry: boolean): Cloudflare {
+	const { name, cloudflare, missing } = accountOf(config, worker);
+	if (dry || missing.length === 0) return cloudflare;
+	throw new Refused(
+		`${worker}: its account, ${name ?? 'the default'}, has no ${missing.join(' or ')}`,
+	);
 }
 
 function messageOf(error: unknown): string {
@@ -273,12 +286,13 @@ export class Deployer {
 			store.advance(id, 'admitting');
 			await (this.parts.unpack ?? unpackZip)(zip, unpacked);
 			admit(artifact.app, repository, await workerConfigOf(unpacked), config);
+			const cloudflare = credentialsOf(config, artifact.app, dry);
 
 			store.advance(id, 'uploading');
 			homeDir = await home();
-			const ran = await wrangler(invocation(unpacked, homeDir, dry, config.cloudflare));
+			const ran = await wrangler(invocation(unpacked, homeDir, dry, cloudflare));
 			if (ran.code !== 0) {
-				const failure = failureOf(ran, config.cloudflare);
+				const failure = failureOf(ran, cloudflare);
 				store.failed(id, failure.error, failure.output);
 				this.log(`${artifact.app} from run ${run} failed in wrangler:\n${failure.log}`);
 				return;
@@ -302,10 +316,11 @@ export class Deployer {
 		const id = store.openRollback(worker, config.owners.get(worker) ?? '', version);
 		let homeDir: string | undefined;
 		try {
+			const cloudflare = credentialsOf(config, worker, false);
 			homeDir = await home();
-			const ran = await wrangler(rollbackInvocation(worker, version, homeDir, config.cloudflare));
+			const ran = await wrangler(rollbackInvocation(worker, version, homeDir, cloudflare));
 			if (ran.code !== 0) {
-				const failure = failureOf(ran, config.cloudflare);
+				const failure = failureOf(ran, cloudflare);
 				store.failed(id, failure.error, failure.output);
 				this.log(`${worker} failed to roll back in wrangler:\n${failure.log}`);
 				return;

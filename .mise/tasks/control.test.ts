@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { UPSERT, body, deploySources, widened } from './control.ts';
+import { URLS } from '../../libs/sdk/src/index.ts';
+import { UPSERT, body, deploySources, widened, writerEnv } from './control.ts';
 
 const NODE = 'aaaaaaaaaaaaaaaa';
 const OTHER = 'bbbbbbbbbbbbbbbb';
@@ -62,6 +63,16 @@ describe("control's writers", () => {
 	it("widens a writer's sources, keeping its own first and each once", () => {
 		expect(widened(' a/b  c/d a/b', ['c/d', 'e/f'])).toBe('a/b c/d e/f');
 		expect(widened('', ['e/f'])).toBe('e/f');
+	});
+
+	it("sends the deployer's console to control's account, by its id among the secrets", () => {
+		const { secret, config } = writerEnv({ CONTROL_WRITE_TOKEN: 'w' }, 'mono-id');
+		expect(secret).toEqual({
+			CONTROL_WRITE_TOKEN: 'w',
+			CLOUDFLARE_ACCOUNT_ID_MONOFLAKE: 'mono-id',
+		});
+		expect(config).toMatchObject({ CONTROL: URLS.control, WORKER_ACCOUNTS: 'console=monoflake' });
+		expect(Object.keys(config)).not.toContain('CLOUDFLARE_ACCOUNT_ID_MONOFLAKE');
 	});
 
 	it("writes an app's env as the database task does, byte for byte", () => {
