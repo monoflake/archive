@@ -20,6 +20,7 @@ pub const APPS_PRODUCTION_CDN: &str = "https://cdn.monoflake.com";
 /// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const APPS_PRODUCTION_PANEL: &str = "https://infra.internal.ixc.one";
 pub const SOURCE: &str = "https://github.com/canmi21/web";
+pub const CONTROL: &str = "https://control.monoflake.net";
 /// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const INTERNAL_APP: &str = "https://canmi.app";
 pub const INTERNAL_ALIAS: &str = "https://ill.li";

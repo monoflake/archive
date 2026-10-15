@@ -177,6 +177,8 @@ export const URLS = {
 		},
 	},
 	source: SOURCE,
+	// The API that controls the platform, in a Cloudflare account of its own. See RFC o7eir.
+	control: 'https://control.monoflake.net',
 	// The apexes, declared once above so the one a worker answers on cannot be spelled twice.
 	internal: INTERNAL,
 	contact: CONTACT,

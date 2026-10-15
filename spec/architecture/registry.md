@@ -5,6 +5,9 @@ platform's Postgres, so the code's repositories hold only what an app needs -- R
 the nodes and where each app runs; what each binding resolves to follows them there. Every
 component that needs it reads it while it runs, and none restarts for a change -- RFC qcyb3.
 
+**It is moving to control**, a Worker over D1 in an account of its own -- [control.md](control.md),
+RFC o7eir. Until a part has moved, this file rules it.
+
 ## Where it runs, and what it keeps
 
 **It runs on the three cores, `tyo`, `sin` and `rdu`, its data in `platform_registry`** in the

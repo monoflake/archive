@@ -33,7 +33,7 @@ const PREFIX = /^[0-9a-f]{8,15}$/;
 /** What `list` and `get` print for a value the catalog marks `masked`, until `--reveal`. */
 const MASK = '••••••••';
 const TOKEN = 'REGISTRY_TOKEN';
-const PORT = 12013;
+export const PORT = 12013;
 const TIMEOUT_MS = 10_000;
 const VERBS = ['list', 'get', 'create', 'patch'] as const;
 type Verb = (typeof VERBS)[number];
@@ -736,7 +736,7 @@ async function typedIn(prompt: string): Promise<string> {
 }
 
 /** The nodes the service declared in `directory`'s service.toml runs on: the registry's cores. */
-function placements(directory = '..'): string[] {
+export function placements(directory = '..'): string[] {
 	const path = join(import.meta.dirname, directory, 'service.toml');
 	const declared = parse(readFileSync(path, 'utf8'));
 	const cores = declared.placements;
@@ -747,7 +747,7 @@ function placements(directory = '..'): string[] {
 }
 
 /** A node's tailnet IPv4, as tailscale knows it. */
-function address(node: string): string {
+export function address(node: string): string {
 	let found = '';
 	try {
 		found = execFileSync('tailscale', ['ip', '-4', node], { encoding: 'utf8' }).trim();
