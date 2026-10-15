@@ -98,8 +98,8 @@ def derived(table):
 
 
 # A node's failure domain, which nodes.toml writes as a provider's code and the registry never
-# keeps: it is read from the node's account -- RFC 32hd9.
-UNKEPT = ("domain",)
+# keeps: it is read from the node's account -- RFC 32hd9. Its `id` is the row's own.
+UNKEPT = ("domain", "id")
 
 
 def request_body(table, address, revision, by=BY):

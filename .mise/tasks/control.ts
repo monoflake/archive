@@ -21,7 +21,8 @@ const APP = join(ROOT, 'apps/control/control');
 const WORKER = 'control';
 const READ = 'CONTROL_READ_TOKEN';
 const IMPORT = 'CONTROL_IMPORT_TOKEN';
-const NODES = join(ROOT, '../infra/nodes/nodes.toml');
+const INFRA = join(ROOT, '../infra');
+const NODES = join(INFRA, 'nodes/nodes.toml');
 /** What control shows a node as, from nodes.toml -- infra's spec/architecture/nodes.md. */
 const SHOWN = ['city', 'country', 'continent'] as const;
 /** What the old registry keeps that control does not: the display it replaces. */
@@ -122,14 +123,16 @@ async function deploy(dry: boolean): Promise<void> {
 }
 
 /**
- * Both bearers drawn anew, each put on the Worker and into secrets.json on stdin alone; the old
- * ones stop working as the Worker takes the new. A Worker not there yet is refused, since
+ * Both bearers drawn anew, each put on the Worker and into secrets.json on stdin alone, the read
+ * one into infra's too, which hosts read control with; the old ones stop working as the Worker
+ * takes the new, so `mise run node` in infra follows. A Worker not there yet is refused, since
  * `wrangler secret put` would make an empty one of that name.
  */
 async function token(dry: boolean): Promise<void> {
 	if (dry) {
 		for (const name of [READ, IMPORT]) {
-			console.log(`would draw ${name}, put it on the Worker ${WORKER}, and set it in secrets.json`);
+			const where = name === READ ? 'secrets.json here and in infra' : 'secrets.json';
+			console.log(`would draw ${name}, put it on the Worker ${WORKER}, and set it in ${where}`);
 		}
 		return;
 	}
@@ -147,10 +150,12 @@ async function token(dry: boolean): Promise<void> {
 			env,
 			input: value,
 		});
-		run(['sops', 'set', '--value-stdin', 'secrets.json', `["${name}"]`], `setting ${name}`, {
-			cwd: ROOT,
-			input: JSON.stringify(value),
-		});
+		for (const cwd of name === READ ? [ROOT, INFRA] : [ROOT]) {
+			run(['sops', 'set', '--value-stdin', 'secrets.json', `["${name}"]`], `setting ${name}`, {
+				cwd,
+				input: JSON.stringify(value),
+			});
+		}
 		console.log(`control: ${name} drawn, put on ${WORKER} and set in secrets.json`);
 	}
 }
