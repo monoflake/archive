@@ -23,13 +23,17 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{Instant, MissedTickBehavior};
 use url::Url;
 
-/// Whether a socket may open from `origin`: a page on the platform's `.app` or a name under it, or
-/// no page at all -- a client that is not a browser sends no `Origin`. Anything else is a page
-/// elsewhere borrowing the reader's Access cookie.
+/// Whether a socket may open from `origin`: the console, a page on the platform's `.app` or a
+/// name under it, or no page at all -- a client that is not a browser sends no `Origin`. Anything
+/// else is a page elsewhere borrowing the reader's Access cookie.
 pub fn admitted(origin: Option<&str>) -> bool {
 	let Some(origin) = origin else {
 		return true;
 	};
+	if origin == monoflake::INTERNAL_CONSOLE {
+		return true;
+	}
+	// The console on `.app` until it is gone -- RFC o7eir.
 	let (Ok(origin), Ok(app)) = (Url::parse(origin), Url::parse(monoflake::INTERNAL_APP)) else {
 		return false;
 	};
@@ -355,6 +359,22 @@ mod tests {
 		assert!(!admitted(Some(&format!("http://{suffix}"))));
 		assert!(!admitted(Some(&format!("{}:8443", monoflake::INTERNAL_APP))));
 		assert!(!admitted(Some("null")));
+	}
+
+	#[test]
+	fn the_console_is_admitted_by_its_exact_origin() {
+		let console = Url::parse(monoflake::INTERNAL_CONSOLE).unwrap();
+		let host = console.host_str().unwrap().to_owned();
+		assert!(admitted(Some(monoflake::INTERNAL_CONSOLE)));
+		for origin in [
+			named(&format!("{host}.evil.test")),
+			named(&format!("x{host}")),
+			named(&format!("relay.{host}")),
+			format!("http://{host}"),
+			format!("{}:8443", monoflake::INTERNAL_CONSOLE),
+		] {
+			assert!(!admitted(Some(&origin)), "{origin}");
+		}
 	}
 
 	#[test]
