@@ -51,14 +51,15 @@ publish, the second the one to pin a node, debug one, or -- later -- for a clien
 which node is nearest and asks it directly. A page rendered on the server would use
 `monoflake.com`, so that what it renders can always be reached.
 
-### A second domain answers the same
+### One domain, until a second is chosen
 
-**`monoflake.net` answers everything `monoflake.com` does**: `api.monoflake.net` and
-`cdn.monoflake.net` are the same profiles as their `.com` twins, with the same rules, crawlers
-included. `.com` is the one published; `.net` is a way round the day a registry, a registrar or a
-resolver fails one of them, since two top-level domains are run by two registries. That both
-serve the same bytes is no concern of the service layer's -- see "A host admits crawlers or does
-not". `ixc.one` has no second: a deployment's own host is for pinning, not for publishing.
+**`monoflake.com` is the gateway's one domain, and it has no second.** `monoflake.net` is not the
+gateway's: it is control's, in a Cloudflare account of its own -- the console at its apex, behind
+Cloudflare Access, and the control API at `control.monoflake.net` -- per RFC o7eir, and the `api`
+and `cdn` hosts it once answered as twins of `.com`'s are retired, not replaced. A second domain is
+one more entry in `GATEWAY.domains` in `libs/sdk`, which the profiles read; its route in
+`wrangler.jsonc` and its zone in `rules/` go with it. `ixc.one` has no second either: a
+deployment's own host is for pinning, not for publishing.
 
 **A profile is a row in a table, not code.** A new short host, or a new node, is one more row: the
 hostname, what it fixes, the version it pins, and the path it puts in front, if any.
@@ -293,12 +294,12 @@ them, and a custom domain left out of the list is detached by the deploy, its DN
 The other Workers' domains are still the dashboard's, and move the same way if one goes.
 
 **A zone that is the gateway's alone is one wildcard route; an apex is a custom domain.**
-`monoflake.com`, `monoflake.net` and `ixc.one` serve nothing but the gateway below
-their apex, so each is `*.{zone}/*` over a proxied `*` record, and a host the profiles add needs no
-change here or in the dashboard -- one the profiles do not know is refused by the gateway and its
-whitelist. A route matches no apex, so `ill.li` and `symlink.si`, which are their apexes, are
-custom domains. The wildcard record exists before the deploy that drops a custom domain on it,
-since the explicit record goes with the domain and the wildcard is what answers after.
+`monoflake.com` and `ixc.one` serve nothing but the gateway below their apex, so each is
+`*.{zone}/*` over a proxied `*` record, and a host the profiles add needs no change here or in
+the dashboard -- one the profiles do not know is refused by the gateway and its whitelist. A route
+matches no apex, so `ill.li` and `symlink.si`, which are their apexes, are custom domains. The
+wildcard record exists before the deploy that drops a custom domain on it, since the explicit
+record goes with the domain and the wildcard is what answers after.
 
 ## Every host's files and firewall are derived
 

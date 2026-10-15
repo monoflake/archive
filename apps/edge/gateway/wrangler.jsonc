@@ -10,7 +10,6 @@
 	// spec/architecture/gateway.md, "The gateway declares its hosts in its `wrangler.jsonc`".
 	"routes": [
 		{ "pattern": "*.monoflake.com/*", "zone_name": "monoflake.com" },
-		{ "pattern": "*.monoflake.net/*", "zone_name": "monoflake.net" },
 		{ "pattern": "*.ixc.one/*", "zone_name": "ixc.one" },
 		{ "pattern": "cdn.ffoni.com/*", "zone_name": "ffoni.com" },
 		{ "pattern": "ill.li", "custom_domain": true },

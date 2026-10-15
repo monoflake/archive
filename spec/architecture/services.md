@@ -68,12 +68,13 @@ is [firewall.md](firewall.md).
 
 ## A domain says who can reach it, not what is behind it
 
-| Name                                                                | Who reaches it                                     | What goes there                      |
-| ------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------ |
-| `canmi.net`                                                         | everyone                                           | the site, and nothing else           |
-| `*.canmi.app`                                                       | the author, from anywhere, through Access          | interfaces                           |
-| `monoflake.com`, `monoflake.net`, `ixc.one`, `ill.li`, `symlink.si` | the public; whether a login is needed is per route | the gateway, and every API behind it |
-| `*.internal.ixc.one`                                                | the LAN and the tailnet only                       | everything, APIs included            |
+| Name                                               | Who reaches it                                                                       | What goes there                                               |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| `canmi.net`                                        | everyone                                                                             | the site, and nothing else                                    |
+| `*.canmi.app`                                      | the author, from anywhere, through Access                                            | interfaces                                                    |
+| `monoflake.com`, `ixc.one`, `ill.li`, `symlink.si` | the public; whether a login is needed is per route                                   | the gateway, and every API behind it                          |
+| `monoflake.net`                                    | the author through Access at the apex; the nodes, by key, at `control.monoflake.net` | the platform's control, in an account of its own -- RFC o7eir |
+| `*.internal.ixc.one`                               | the LAN and the tailnet only                                                         | everything, APIs included                                     |
 
 **"The LAN" includes the node's own containers.** Caddy admits `internal.ixc.one` from the sources host is told
 in `PRIVATE_SOURCES`: the LAN, the tailnet, loopback, and Docker's private range, `172.16.0.0/12`.
