@@ -35,8 +35,9 @@ apps names it, and the deployer's token reaches only the other account.
 - **`writers`** gives the writers what they write with: the deployer's `CONTROL` and
   `CONTROL_WRITE_TOKEN`, with the GitHub token, its sources and the artifact bucket, on its node,
   and both tokens to the console Worker as secrets -- what `registry token` did before the cut.
-- **`import`** copies the old registry into control whole, and is run again at will while the old
-  registry still takes the writes.
+- **`import`** copied the old registry into control whole. The cut ended it on 2026-10-15: the cores'
+  registry stopped, and `CONTROL_IMPORT_TOKEN` was deleted from the Worker and `secrets.json`, so the
+  route answers `503`.
 
 ## What it holds and answers
 
