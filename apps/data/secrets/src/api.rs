@@ -37,6 +37,8 @@ pub struct Secrets {
 	pub node_scopes: Vec<String>,
 	/// Where control is asked which apps a node runs.
 	pub control: peers::Control,
+	/// What control last answered for each node, asked again conditionally.
+	pub placements: peers::Placements,
 	pub client: reqwest::Client,
 }
 
@@ -735,7 +737,9 @@ async fn node_secrets(
 	if secrets.seal.is_sealed() {
 		return sealed();
 	}
-	let Some(apps) = peers::placed_apps(&secrets.client, &secrets.control, &node).await else {
+	let Some(apps) =
+		peers::placed_apps(&secrets.client, &secrets.control, &secrets.placements, &node).await
+	else {
 		return response::failure_with(
 			StatusCode::BAD_GATEWAY,
 			"upstream_unavailable",

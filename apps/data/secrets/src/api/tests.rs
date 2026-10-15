@@ -52,6 +52,7 @@ pub(crate) fn secrets(store: Store, seal: Arc<Seal>, control: peers::Control) ->
 		nodes: node_tokens(),
 		node_scopes: vec!["platform".into(), "canmi".into()],
 		control,
+		placements: peers::Placements::default(),
 		client: peers::client(),
 	})
 }

@@ -105,7 +105,8 @@ rather than used.
 on it**, `GET /v1/nodes/{id}/secrets` by its 16-hex id, with its own token. The service asks control
 with `?node=` over TLS with `CONTROL_READ_TOKEN` -- [control.md](control.md) -- and still keeps only
 the apps whose placements name the node, as host does, so an answer that ignored the query opens
-nothing it should not. That token is derived and never
+nothing it should not. It asks with the `ETag` of the last answer it took for that node and, on a
+`304`, answers from it; a control that does not answer is a refusal still, never the list held. That token is derived and never
 stored: HMAC-SHA256 of `platform secrets read` under the node's `HOST_TOKEN`, which is already root
 on that node. The service keeps only each one's SHA-256 digest, written by `mise run seal token`, so
 its environment reads nothing.

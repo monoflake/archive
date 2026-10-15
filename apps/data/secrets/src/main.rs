@@ -3,7 +3,7 @@
 
 use secrets_service::api::{self, Secrets, Shared};
 use secrets_service::ceremony;
-use secrets_service::peers::{self, Control, Cores, PORT};
+use secrets_service::peers::{self, Control, Cores, PORT, Placements};
 use secrets_service::seal::Seal;
 use secrets_service::store::Store;
 use secrets_service::tokens::{NodeTokens, ScopeTokens};
@@ -110,6 +110,7 @@ async fn serve() -> anyhow::Result<()> {
 		nodes,
 		node_scopes,
 		control,
+		placements: Placements::default(),
 		client,
 	});
 	let listener = tokio::net::TcpListener::bind(&listen).await?;

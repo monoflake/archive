@@ -2,11 +2,14 @@
 //! and control over HTTPS, for which apps are placed on a node. See RFC 231yq and RFC o7eir.
 
 use crate::seal::{self, Seal, Share, Written};
+use reqwest::StatusCode;
+use reqwest::header::{ETAG, HeaderValue, IF_NONE_MATCH};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// This service's port on every core. See spec/architecture/services.md, "A service keeps one
@@ -92,20 +95,64 @@ pub async fn shares(client: &reqwest::Client, peers: &[String], token: &str) -> 
 	asked.join_all().await.into_iter().flatten().collect()
 }
 
+/// What control last answered for each node that asked: the `ETag` of its last `200` and the apps
+/// it placed there, so the next ask is conditional and a `304` is answered from it. A node is asked
+/// about only once its id is valid and its token admitted, so this holds one entry per node holding
+/// a token, never one per garbage id.
+#[derive(Debug, Default)]
+pub struct Placements {
+	held: Mutex<HashMap<String, Placed>>,
+}
+
+/// One node's last answer: the tag as control sent it, weak or strong, and the names kept from it.
+#[derive(Debug, Clone)]
+struct Placed {
+	tag: HeaderValue,
+	apps: Vec<String>,
+}
+
+impl Placements {
+	fn get(&self, node: &str) -> Option<Placed> {
+		self.held.lock().expect("the placements' lock is never poisoned").get(node).cloned()
+	}
+
+	fn set(&self, node: &str, placed: Option<Placed>) {
+		let mut held = self.held.lock().expect("the placements' lock is never poisoned");
+		match placed {
+			Some(placed) => held.insert(node.to_owned(), placed),
+			None => held.remove(node),
+		};
+	}
+}
+
 /// The apps control places on `node`, a node's id; None when control is not set or does not answer.
+/// Asked with the tag of the last answer held for `node`, a `304` is answered from that answer; a
+/// failure is None whatever is held, so control down refuses a node rather than answering it stale.
 pub async fn placed_apps(
 	client: &reqwest::Client,
 	control: &Control,
+	placements: &Placements,
 	node: &str,
 ) -> Option<Vec<String>> {
 	if control.base.is_empty() {
 		return None;
 	}
+	let held = placements.get(node);
 	// A node's id is 16 hexadecimal digits, checked before it is asked about.
-	let asked = client.get(format!("{}/v1/registry/apps?node={node}", control.base));
+	let mut asked = client.get(format!("{}/v1/registry/apps?node={node}", control.base));
+	if let Some(held) = &held {
+		asked = asked.header(IF_NONE_MATCH, held.tag.clone());
+	}
 	let response = asked.bearer_auth(&control.token).send().await.ok()?;
+	if response.status() == StatusCode::NOT_MODIFIED {
+		return held.map(|held| held.apps);
+	}
+	let tag = response.headers().get(ETAG).cloned();
 	let listed = data(response).await?;
-	Some(placed(listed["items"].as_array()?, node))
+	let apps = placed(listed["items"].as_array()?, node);
+	// A control without tags answers every ask in full, and nothing is held to ask with.
+	placements.set(node, tag.map(|tag| Placed { tag, apps: apps.clone() }));
+	Some(apps)
 }
 
 /// The names among `items` whose placements name `node`, as host's `registry::placed` keeps them:
