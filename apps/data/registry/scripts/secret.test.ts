@@ -4,13 +4,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Failure } from './failure.ts';
 import { type SecretWorld, runSecret } from './secret.ts';
 
+/** Where the fake service and the fake control listen. */
+const LOOPBACK = '127.0.0.1';
 const TOKEN = 'token-for-the-fake';
+const CONTROL = 'control-token-for-the-fake';
 const VALUE = 'typed-s3cret';
 
 interface Sent {
 	method: string;
 	path: string;
 	auth: string | undefined;
+	agent: string | undefined;
 	body: Record<string, unknown> | undefined;
 }
 
@@ -56,8 +60,28 @@ class Service {
 		};
 	}
 
+	/** How control's `notice` scope answers, standing in on the same server. */
+	notice: [number, unknown] = [
+		202,
+		{
+			status: 'success',
+			data: {
+				reached: [
+					{ node: 'a', status: 204, ok: true },
+					{ node: 'b', status: 204, ok: true },
+					{ node: 'c', status: 404, ok: false },
+				],
+			},
+		},
+	];
+
 	answer(sent: Sent): [number, unknown] {
 		this.requests.push(sent);
+		if (sent.path === '/v1/notice') {
+			return sent.auth === `Bearer ${CONTROL}`
+				? this.notice
+				: [401, { status: 'error', code: 'invalid_token', message: 'No token' }];
+		}
 		if (sent.auth !== `Bearer ${TOKEN}`) {
 			return [401, { status: 'error', code: 'invalid_token', message: 'No token' }];
 		}
@@ -111,6 +135,8 @@ let server: Server;
 let printed: string[];
 let asked: string[];
 let token: string | undefined;
+let controlToken: string | undefined;
+let control: string | undefined;
 let typed: string;
 
 beforeEach(async () => {
@@ -118,6 +144,8 @@ beforeEach(async () => {
 	printed = [];
 	asked = [];
 	token = TOKEN;
+	controlToken = CONTROL;
+	control = undefined;
 	typed = VALUE;
 	server = createServer((request, response) => {
 		let text = '';
@@ -127,13 +155,14 @@ beforeEach(async () => {
 				method: request.method ?? '',
 				path: request.url ?? '',
 				auth: request.headers.authorization,
+				agent: request.headers['user-agent'],
 				body: text ? JSON.parse(text) : undefined,
 			});
 			response.writeHead(code, { 'Content-Type': 'application/json' });
 			response.end(JSON.stringify(answer));
 		});
 	});
-	await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+	await new Promise<void>((done) => server.listen(0, LOOPBACK, done));
 });
 
 afterEach(async () => {
@@ -141,11 +170,14 @@ afterEach(async () => {
 });
 
 function world(): SecretWorld {
+	const port = (server.address() as AddressInfo).port;
 	return {
 		placements: () => ['tyo', 'sin', 'rdu'],
-		address: () => '127.0.0.1',
-		port: (server.address() as AddressInfo).port,
+		address: () => LOOPBACK,
+		port,
 		token: () => token,
+		control: control ?? `http://${LOOPBACK}:${port}`,
+		controlToken: () => controlToken,
 		typedIn: async (prompt) => {
 			asked.push(prompt);
 			return typed;
@@ -165,7 +197,10 @@ async function task(...args: string[]): Promise<{ out: string; failed: string | 
 	return { out: printed.join('\n'), failed };
 }
 
-const writes = () => state.requests.filter((sent) => sent.method !== 'GET');
+const writes = () =>
+	state.requests.filter((sent) => sent.method !== 'GET' && sent.path !== '/v1/notice');
+const notices = () => state.requests.filter((sent) => sent.path === '/v1/notice');
+const TOLD = 'platform: 2 of 3 nodes told; missed: c';
 
 describe('platform secret', () => {
 	it('lists every value, a config with its value and a secret by its name alone', async () => {
@@ -190,7 +225,7 @@ describe('platform secret', () => {
 		]);
 		expect(sent!.body).toEqual({ by: 'operator', revision: 0, value: VALUE, class: 'secret' });
 		expect(asked).toEqual(['platform/geo/API_KEY (secret): ']);
-		expect(out).toBe('platform: platform/geo/API_KEY: written as secret, revision 5');
+		expect(out).toBe(`platform: platform/geo/API_KEY: written as secret, revision 5\n${TOLD}`);
 		expect(out).not.toContain(VALUE);
 	});
 
@@ -211,6 +246,7 @@ describe('platform secret', () => {
 		typed = 'debug';
 		const { out } = await task('set', 'geo', 'LEVEL', '--config');
 		expect(out).toBe('platform: platform/geo/LEVEL: unchanged');
+		expect(notices()).toEqual([]);
 	});
 
 	it('deletes at the revision read, and refuses a value not held', async () => {
@@ -218,10 +254,11 @@ describe('platform secret', () => {
 		const [sent] = writes();
 		expect([sent!.method, sent!.path]).toEqual(['DELETE', '/v1/secrets/geo/TOKEN']);
 		expect(sent!.body).toEqual({ by: 'operator', revision: 4 });
-		expect(out).toBe('platform: platform/geo/TOKEN: removed, revision 5');
+		expect(out).toBe(`platform: platform/geo/TOKEN: removed, revision 5\n${TOLD}`);
 		const { failed } = await task('delete', 'geo', 'TOKEN');
 		expect(failed).toBe('platform/geo/TOKEN: no such value');
 		expect(writes()).toHaveLength(1);
+		expect(notices()).toHaveLength(1);
 	});
 
 	it('asks for nothing and writes nothing on a dry run', async () => {
@@ -229,8 +266,15 @@ describe('platform secret', () => {
 		expect(set.out).toContain('would PUT /v1/secrets/geo/LEVEL as config at revision 3');
 		const removed = await task('delete', 'geo', 'TOKEN', '--dry-run');
 		expect(removed.out).toContain('would DELETE /v1/secrets/geo/TOKEN at revision 4');
+		for (const out of [set.out, removed.out]) {
+			expect(out).toMatch(
+				/would POST http:\/\/127\.0\.0\.1:\d+\/v1\/notice \{"changed":"secrets"\}/,
+			);
+			expect(out).not.toContain(CONTROL);
+		}
 		expect(asked).toEqual([]);
 		expect(writes()).toEqual([]);
+		expect(notices()).toEqual([]);
 	});
 
 	it('refuses a name of the wrong shape, an empty value, or no token, before writing', async () => {
@@ -244,6 +288,42 @@ describe('platform secret', () => {
 		token = undefined;
 		expect((await task('list')).failed).toContain('SECRETS_TOKEN');
 		expect(writes()).toEqual([]);
+	});
+
+	it('tells control once a value is written, with its write token, as the infra tasks agent', async () => {
+		await task('set', 'geo', 'API_KEY');
+		const [sent] = notices();
+		expect(sent).toEqual({
+			method: 'POST',
+			path: '/v1/notice',
+			auth: `Bearer ${CONTROL}`,
+			agent: 'monoflake-infra-tasks',
+			body: { changed: 'secrets' },
+		});
+		expect(printed.join('\n')).not.toContain(CONTROL);
+	});
+
+	it('passes over a missing token or control, a refusal and no answer, the value standing', async () => {
+		controlToken = undefined;
+		const untold = await task('set', 'geo', 'API_KEY');
+		expect(untold.failed).toBeUndefined();
+		expect(untold.out).toContain('CONTROL_WRITE_TOKEN is not set, so no node is told');
+		controlToken = CONTROL;
+		control = '';
+		const nowhere = await task('delete', 'geo', 'TOKEN', '--dry-run');
+		expect(nowhere.out).toContain('CONTROL is not set, so no node is told');
+		expect(notices()).toEqual([]);
+		control = undefined;
+		state.notice = [400, { status: 'error', code: 'invalid_body', message: 'Not a notice' }];
+		const refused = await task('set', 'geo', 'OTHER');
+		expect(refused.failed).toBeUndefined();
+		expect(refused.out).toContain('control refused the notice: invalid_body: Not a notice');
+		// Port 9, discard, which nothing on a test machine listens on.
+		control = `http://${LOOPBACK}:9`;
+		const silent = await task('set', 'geo', 'THIRD');
+		expect(silent.failed).toBeUndefined();
+		expect(silent.out).toContain('control did not answer the notice');
+		expect(writes()).toHaveLength(3);
 	});
 
 	it('fails a refusal with its code', async () => {

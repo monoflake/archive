@@ -820,6 +820,8 @@ async function secretWorld(): Promise<SecretWorld> {
 		address,
 		port: SECRET_PORT,
 		token: () => process.env[SECRET_TOKEN],
+		control: WORLD.control,
+		controlToken: WORLD.writeToken,
 		typedIn,
 		print: WORLD.print,
 	};

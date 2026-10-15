@@ -1,7 +1,8 @@
 /**
  * `platform secret`: an app's values in the secret service, each written once for every node the
- * app is placed on, which host writes into its environment. A value is read from standard input,
- * never from an argument, and never printed back. See spec/architecture/secrets.md and RFC 231yq.
+ * app is placed on, which host writes into its environment, told to control once written or removed
+ * so host asks at once. A value is read from standard input, never from an argument, and never
+ * printed back. See spec/architecture/secrets.md and RFC 231yq.
  */
 import { parseArgs } from 'node:util';
 import { fail } from './failure.ts';
@@ -11,6 +12,10 @@ export const TOKEN = 'SECRETS_TOKEN';
 export const PORT = 12014;
 /** Who a change is recorded as made by. */
 const BY = 'operator';
+/** What control's `notice` scope is written with. */
+export const CONTROL_TOKEN = 'CONTROL_WRITE_TOKEN';
+/** The agent a notice is sent as: Cloudflare refuses some defaults in front of control. */
+const AGENT = 'monoflake-infra-tasks';
 const TIMEOUT_MS = 10_000;
 const VERBS = ['list', 'set', 'delete'] as const;
 type Verb = (typeof VERBS)[number];
@@ -28,6 +33,10 @@ export interface SecretWorld {
 	address(node: string): string;
 	port: number;
 	token(): string | undefined;
+	/** Control's base URL, `URLS.control`, told once a value is written or removed. */
+	control: string;
+	/** What control is told with: `CONTROL_WRITE_TOKEN`. */
+	controlToken(): string | undefined;
 	/** The value: typed in unechoed on a terminal, or one line of a pipe. */
 	typedIn(prompt: string): Promise<string>;
 	print(text: string): void;
@@ -174,6 +183,57 @@ async function revisionOf(world: SecretWorld, path: string, what: string): Promi
 	return (dataOf(answer, what) as Item).revision;
 }
 
+/** What a node is told of a change, as control's `notice` scope reads it. */
+const NOTICE = { changed: 'secrets' };
+
+/**
+ * Control told that a value changed, which tells host on every node to ask for its own now -- see
+ * spec/architecture/control.md. The value is already written, so nothing here fails the task: a
+ * missing control or token, a control that does not answer and a refusal are each said and passed
+ * over.
+ */
+async function notify(world: SecretWorld, dry: boolean): Promise<void> {
+	const url = `${world.control}/v1/notice`;
+	const secret = world.controlToken();
+	if (!world.control || !secret) {
+		const missing = world.control ? CONTROL_TOKEN : 'CONTROL';
+		world.print(`platform: ${missing} is not set, so no node is told; the value stands`);
+		return;
+	}
+	if (dry) {
+		world.print(`platform: would POST ${url} ${JSON.stringify(NOTICE)}, as Bearer <redacted>`);
+		return;
+	}
+	let answer: Response;
+	try {
+		answer = await fetch(url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: `Bearer ${secret}`,
+				'User-Agent': AGENT,
+			},
+			body: JSON.stringify(NOTICE),
+			signal: AbortSignal.timeout(TIMEOUT_MS),
+		});
+	} catch (error) {
+		world.print(`platform: control did not answer the notice: ${(error as Error).message}`);
+		return;
+	}
+	const envelope = (await answer.json().catch(() => undefined)) as Envelope | undefined;
+	if (envelope?.status !== 'success') {
+		const why = envelope?.code ? `${envelope.code}: ${envelope.message}` : String(answer.status);
+		world.print(`platform: control refused the notice: ${why}`);
+		return;
+	}
+	const reached = (envelope.data as { reached?: { node: string; ok: boolean }[] }).reached ?? [];
+	const missed = reached.filter(({ ok }) => !ok).map(({ node }) => node);
+	world.print(
+		`platform: ${reached.length - missed.length} of ${reached.length} nodes told` +
+			(missed.length > 0 ? `; missed: ${missed.join(', ')}` : ''),
+	);
+}
+
 /** Every value as a table: a `config`'s value shown, a `secret` by its name alone. */
 export function table(items: readonly Item[]): string {
 	const rows = [['scope', 'app', 'name', 'class', 'revision', 'changed', 'value']];
@@ -224,10 +284,12 @@ export async function runSecret(world: SecretWorld, args: readonly string[]): Pr
 		const body = { by: BY, revision };
 		if (options.dry) {
 			world.print(`platform: would DELETE ${path} at revision ${revision}, as Bearer <redacted>`);
+			await notify(world, true);
 			return;
 		}
 		const done = dataOf(await ask(world, 'DELETE', path, body), what) as { revision: number };
 		world.print(`platform: ${what}: removed, revision ${done.revision}`);
+		await notify(world, false);
 		return;
 	}
 	const kind = options.config ? 'config' : 'secret';
@@ -236,15 +298,17 @@ export async function runSecret(world: SecretWorld, args: readonly string[]): Pr
 			`platform: would PUT ${path} as ${kind} at revision ${revision}, the value read from` +
 				' standard input, as Bearer <redacted>',
 		);
+		await notify(world, true);
 		return;
 	}
 	const value = await world.typedIn(`${what} (${kind}): `);
 	if (!value) fail(`${what}: no value given on standard input`);
 	const body = { by: BY, revision, value, class: kind };
 	const done = dataOf(await ask(world, 'PUT', path, body), what) as { revision?: number };
-	world.print(
-		done.revision === undefined
-			? `platform: ${what}: unchanged`
-			: `platform: ${what}: written as ${kind}, revision ${done.revision}`,
-	);
+	if (done.revision === undefined) {
+		world.print(`platform: ${what}: unchanged`);
+		return;
+	}
+	world.print(`platform: ${what}: written as ${kind}, revision ${done.revision}`);
+	await notify(world, false);
 }

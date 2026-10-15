@@ -131,4 +131,7 @@ from a pipe -- never from an argument, and never prints it. It is a `secret` unl
 given, and `--scope` names another scope than `platform`. It reads the revision first and writes at
 it, so a write sent again to another core after no answer is never applied twice. `delete` removes at
 the revision read. `list` shows a `config`'s value and a `secret` by its name alone. Each takes
-`SECRETS_TOKEN` from `secrets.json`, and `set` and `delete` take `--dry-run`.
+`SECRETS_TOKEN` from `secrets.json`, and `set` and `delete` take `--dry-run`. After a value written
+or removed -- not after a `set` that changed nothing -- they tell every node through control's
+`POST /v1/notice`, `{"changed":"secrets"}`, with `CONTROL_WRITE_TOKEN`, so each host reads its
+secrets then rather than on a timer; a notice not taken is said and never fails the write.
