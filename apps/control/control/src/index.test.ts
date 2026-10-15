@@ -16,6 +16,7 @@ import {
 	Sqlite,
 	TYO,
 	WEB,
+	WRITE,
 } from './testing.ts';
 
 describe('health', () => {
@@ -136,6 +137,98 @@ describe('reads', () => {
 		expect(await get('/v1/registry/apps?node=tyo')).toEqual(refused(400, 'invalid_resource'));
 		const web = await get('/v1/registry/apps?name=web');
 		expect(web.body.data).toMatchObject({ items: [{ id: WEB }], revision: 41 });
+	});
+});
+
+/** `db`, every query it is asked to prepare and every batch it runs written down. */
+function watched(db: Database) {
+	const asked: string[] = [];
+	let batches = 0;
+	const watching: Database = {
+		prepare: (query) => {
+			asked.push(query);
+			return db.prepare(query);
+		},
+		batch: (statements) => {
+			batches += 1;
+			return db.batch(statements);
+		},
+	};
+	return { watching, asked, batches: () => batches };
+}
+
+/** A list read with `If-None-Match`, when one is given, the answer as it came. */
+function listing(db: Database, path: string, tag?: string) {
+	const headers = new Headers({ Authorization: `Bearer ${READ}` });
+	if (tag !== undefined) headers.set('If-None-Match', tag);
+	return app.fetch(new Request(new URL(path, ORIGIN), { headers }), {
+		DB: db,
+		CONTROL_READ_TOKEN: READ,
+	});
+}
+
+describe('conditional lists', () => {
+	it('tags every list with the newest change, filtered or not', async () => {
+		const { db } = await imported();
+		const paths = ['/v1/registry/nodes', '/v1/registry/apps', `/v1/registry/apps?node=${TYO}`];
+		const answers = await Promise.all(paths.map((path) => listing(db, path)));
+		for (const [index, answer] of answers.entries()) {
+			expect(answer.status, paths[index]).toBe(200);
+			expect(answer.headers.get('ETag'), paths[index]).toBe('"41"');
+		}
+	});
+
+	it('answers 304 with no body when the tag is current, the newest change alone read', async () => {
+		const { db } = await imported();
+		const { watching, asked, batches } = watched(db);
+		const answer = await listing(watching, `/v1/registry/apps?node=${TYO}`, '"41"');
+		expect(answer.status).toBe(304);
+		expect(answer.headers.get('ETag')).toBe('"41"');
+		expect(answer.headers.get('X-Powered-By')).toBe('Hono');
+		expect(await answer.text()).toBe('');
+		expect(asked).toEqual(['SELECT coalesce(max(id), 0) AS revision FROM changes']);
+		expect(batches()).toBe(0);
+	});
+
+	it('takes a weak tag and a list of tags, and no star', async () => {
+		const { db } = await imported();
+		expect((await listing(db, '/v1/registry/apps', 'W/"41"')).status).toBe(304);
+		expect((await listing(db, '/v1/registry/apps', '"7", W/"41"')).status).toBe(304);
+		expect((await listing(db, '/v1/registry/apps', '"7",W/"41" ')).status).toBe(304);
+		expect((await listing(db, '/v1/registry/apps', '*')).status).toBe(200);
+		expect((await listing(db, '/v1/registry/apps', '41')).status).toBe(200);
+		expect((await listing(db, '/v1/registry/apps', '"410"')).status).toBe(200);
+	});
+
+	it('lists again once a write lands past the tag held', async () => {
+		const { db, call } = await imported();
+		const sent = { by: 'test', revision: 11, spec: { retired: true } };
+		expect(
+			(await call('PATCH', `/v1/registry/nodes/${TYO}`, { token: WRITE, body: sent })).status,
+		).toBe(202);
+		const answer = await listing(db, '/v1/registry/nodes', '"41"');
+		expect(answer.status).toBe(200);
+		expect(answer.headers.get('ETag')).toBe('"42"');
+		const listed = (await answer.json()) as { data: { revision: number } };
+		expect(listed.data.revision).toBe(42);
+		expect((await listing(db, '/v1/registry/nodes', '"42"')).status).toBe(304);
+	});
+
+	it('refuses before it compares: a bad filter or bearer is never a 304', async () => {
+		const { db } = await imported();
+		expect((await listing(db, '/v1/registry/apps?node=tyo', '"41"')).status).toBe(400);
+		const unbearered = await app.fetch(
+			new Request(new URL('/v1/registry/apps', ORIGIN), { headers: { 'If-None-Match': '"41"' } }),
+			{ DB: db, CONTROL_READ_TOKEN: READ },
+		);
+		expect(unbearered.status).toBe(401);
+	});
+
+	it('tags no read of one resource', async () => {
+		const { db } = await imported();
+		const answer = await listing(db, `/v1/registry/apps/${WEB}`, '"41"');
+		expect(answer.status).toBe(200);
+		expect(answer.headers.get('ETag')).toBeNull();
 	});
 });
 

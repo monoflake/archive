@@ -25,6 +25,7 @@ import {
 	listed,
 	replaced,
 	type Resource,
+	revised,
 } from './store.ts';
 import { checked, clash, merged, type Written, written } from './write.ts';
 
@@ -112,6 +113,20 @@ function unnamed(kind: Kind): Response {
 	return failure(400, 'invalid_name', { message });
 }
 
+/** A list's `ETag`: the newest change control holds, strong. See spec/architecture/control.md. */
+function tagged(revision: number): string {
+	return `"${revision}"`;
+}
+
+/**
+ * Whether an `If-None-Match` list names `revision`, a `W/` taken as the strong tag, since
+ * Cloudflare weakens a tag on an answer it compresses. `*` names none.
+ */
+function names(asked: string, revision: number): boolean {
+	const tag = tagged(revision);
+	return asked.split(',').some((given) => given.trim().replace(/^W\//, '') === tag);
+}
+
 /** The body sent, or nothing where it is not JSON, which `written` refuses. */
 async function sent(c: Context<App>): Promise<unknown> {
 	return c.req.json().catch(() => undefined);
@@ -166,6 +181,10 @@ registry.all('/import', invalidMethod('PUT'));
 registry.get('/kinds', read, () => success(CATALOG));
 registry.all('/kinds', invalidMethod('GET'));
 
+/**
+ * A kind's list, tagged with the newest change; `304` and no body, the newest change alone read,
+ * when `If-None-Match` names it. See spec/architecture/control.md.
+ */
 registry.get('/:plural', read, (c) => {
 	const kind = KINDS.get(c.req.param('plural'));
 	if (!kind) return failure(404, 'no_such_kind');
@@ -180,7 +199,17 @@ registry.get('/:plural', read, (c) => {
 	if (node !== undefined && !isId(node)) {
 		return failure(400, 'invalid_resource', { message: '`node` is a node id' });
 	}
-	return held(async () => success(await listed(c.env.DB, kind, { name, node })));
+	return held(async () => {
+		const asked = c.req.header('If-None-Match');
+		if (asked !== undefined) {
+			const revision = await revised(c.env.DB);
+			if (names(asked, revision)) {
+				return new Response(null, { status: 304, headers: { ETag: tagged(revision) } });
+			}
+		}
+		const list = await listed(c.env.DB, kind, { name, node });
+		return success(list, { headers: { ETag: tagged(list.revision) } });
+	});
 });
 
 /** Makes a node or an account at revision 0, its id drawn by control and answered. */

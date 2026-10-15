@@ -66,6 +66,13 @@ its base URL and its token: `GET /v1/registry/{nodes,apps,accounts}`, an app lis
 other an app's name. Every read takes the read token or the write token, since a writer reads
 what it is about to change.
 
+**A list read is conditional, so a poller whose copy is current costs one row.** Every `200` of
+`GET /v1/registry/{plural}` carries `ETag: "<revision>"`, the revision its body carries, which is
+control's whole: any write moves it. A request whose `If-None-Match` names the current one is
+answered `304` with no body, after reading the revision alone and never the list, a tag compared
+without a `W/`, which Cloudflare puts on a strong tag it compresses. A poller sends back the tag it
+was given and keeps the answer that came with it; nothing it holds outlives the process.
+
 **It takes writes as the old registry did**, each with `Authorization: Bearer CONTROL_WRITE_TOKEN`
 and a body `{by, revision, spec}` held to the revision read, answered `202 {revision, task}` or,
 when nothing changed, `200 {}`; a write that lands adds a `changes` row naming `by`:

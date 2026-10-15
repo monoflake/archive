@@ -1,6 +1,7 @@
 /**
- * What control reads from and writes to its database: every resource of a kind, one by its id or
- * its name, one write held to the revision read, and an import replacing them all. See RFC o7eir.
+ * What control reads from and writes to its database: the newest change, every resource of a
+ * kind, one by its id or its name, one write held to the revision read, and an import replacing
+ * them all. See RFC o7eir.
  */
 import type { Identity } from './specs.ts';
 
@@ -64,6 +65,12 @@ function resource(row: Row): Resource {
 /** Whether the database answers, for `/v1/health`. */
 export async function answers(db: Database): Promise<void> {
 	await db.prepare('SELECT 1').first();
+}
+
+/** The newest change control holds, alone: one row, what a list's `ETag` is compared to. */
+export async function revised(db: Database): Promise<number> {
+	const latest = await db.prepare(LATEST).first<{ revision: number }>();
+	return latest?.revision ?? 0;
 }
 
 export async function listed(db: Database, kind: Kind, filter: Filter): Promise<Listed> {
