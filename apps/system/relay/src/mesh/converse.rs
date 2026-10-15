@@ -122,6 +122,10 @@ pub async fn converse<S: Halves>(
 	if let Some(theirs) = theirs_minutes {
 		minutes_behind(&relay, &mut outbox, &theirs, &peer).await?;
 	}
+	// A neighbor met while a page here watches lends from now, not from the next renewal.
+	if lends && relay.watched() && speaking.speaks() {
+		outbox.send(&Message::Watch { lease: crate::relay::LEASE.as_secs() }, None)?;
+	}
 
 	let every = if synced { SYNC } else { COMPARISON };
 	let mut comparison = tokio::time::interval_at(Instant::now() + every, every);
@@ -264,12 +268,12 @@ pub async fn converse<S: Halves>(
 				Err(RecvError::Closed) => return Ok(()),
 			},
 			asked = asking.recv() => match asked {
-				Ok(node) => {
-					if node == peer && lends && speaking.speaks() {
-						outbox.send(&Message::Watch { lease: crate::relay::LEASE.as_secs() }, None)?;
+				Ok(lease) => {
+					if lends && speaking.speaks() {
+						outbox.send(&Message::Watch { lease: lease.as_secs() }, None)?;
 					}
 				}
-				// A page asks again before its lease lapses.
+				// The round asks again before a lease lapses, and an unreleased one lapses alone.
 				Err(RecvError::Lagged(_)) => {}
 				Err(RecvError::Closed) => return Ok(()),
 			},

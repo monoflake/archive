@@ -1,5 +1,5 @@
 //! A browser's socket: every node at once, then each newer snapshot as this relay takes it, each
-//! state time alone changed, a round's beats, and the fine readings of a node a page here watches.
+//! state time alone changed, a round's beats, and a round's fine readings while a page watches.
 //! Nothing a browser sends is acted on. See spec/architecture/console.md, "Live, through the
 //! nearest node".
 
@@ -7,7 +7,7 @@ use crate::delta::{Changes, diff};
 use crate::mesh::HEARTBEAT;
 use crate::own::EVERY;
 use crate::presence::Entry;
-use crate::relay::{Change, Pulse, Relay, State};
+use crate::relay::{Change, Pulse, Relay, State, Watching};
 use crate::socket::{Heard, Received, Socket, SocketError};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::{Stream, StreamExt};
@@ -45,6 +45,14 @@ pub fn admitted(origin: Option<&str>) -> bool {
 	origin.scheme() == app.scheme() && origin.port() == app.port() && under
 }
 
+/// What a browser asked of its stream: each node's changes rather than its entry whole, and a
+/// watch on every node's fine readings for as long as the stream is open.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Asked {
+	pub deltas: bool,
+	pub watches: bool,
+}
+
 /// What a browser is sent. A browser keeps, per node, the highest version it has been sent.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -60,10 +68,10 @@ pub enum Live {
 	Beats {
 		beats: BTreeMap<String, Timestamp>,
 	},
-	/// A watched node's fine readings of a round, the meter's `sample`.
-	Readings {
-		node: String,
-		sample: serde_json::Value,
+	/// The fine readings lent in a round while a page here watches, each node's newest, the
+	/// meter's `sample`: gathered as beats are, so a page is sent one message a round.
+	Seconds {
+		seconds: BTreeMap<String, Value>,
 	},
 	/// To a socket that asked for them, what changed of a node's entry since the one it was last
 	/// sent: its own keys, and its snapshot's as the mesh's delta says them, apps by name. `base` is
@@ -127,7 +135,7 @@ pub const PING: Duration = Duration::from_secs(15);
 
 /// What a browser is sent, in order, whichever way it reads: the whole cluster first, then each
 /// node's changes -- its entry whole, or what changed of it to a reader that asked for `deltas` --
-/// a round's beats, and the fine readings of a node a page here watches.
+/// a round's beats, and a round's fine readings while a page here watches.
 pub struct Feed {
 	relay: Arc<Relay>,
 	changes: broadcast::Receiver<Change>,
@@ -137,29 +145,41 @@ pub struct Feed {
 	sent: BTreeMap<String, Value>,
 	/// The beats heard since the round's last went out, the newest of each node.
 	beats: BTreeMap<String, Timestamp>,
+	/// The fine readings lent since the round's last went out, the newest of each node.
+	seconds: BTreeMap<String, Value>,
+	/// The round's second message, sent after its beats.
+	queued: Option<Live>,
 	round: tokio::time::Interval,
+	/// The watch on every node this reader asked for, released as the feed ends.
+	_watching: Option<Watching>,
 }
 
 impl Feed {
 	/// A feed and the whole cluster it opens with, subscribed before the cluster is read so nothing
-	/// taken meanwhile is missed.
-	pub fn open(relay: Arc<Relay>, deltas: bool) -> (Self, Live) {
-		Self::rounded(relay, deltas, EVERY)
+	/// taken meanwhile is missed; one that `watches` holds a watch on every node while it lasts.
+	pub fn open(relay: Arc<Relay>, asked: Asked) -> (Self, Live) {
+		Self::rounded(relay, asked, EVERY)
 	}
 
-	/// The same, its beats gathered over `every` rather than the relay's round.
-	fn rounded(relay: Arc<Relay>, deltas: bool, every: Duration) -> (Self, Live) {
+	/// The same, its beats and readings gathered over `every` rather than the relay's round.
+	fn rounded(relay: Arc<Relay>, Asked { deltas, watches }: Asked, every: Duration) -> (Self, Live) {
 		let (changes, pulses) = (relay.subscribe_changes(), relay.subscribe_pulses());
+		let _watching = watches.then(|| relay.watch());
 		let state = relay.state();
 		let sent = if deltas { entries(&state) } else { BTreeMap::new() };
 		let mut round = tokio::time::interval_at(Instant::now() + every, every);
 		round.set_missed_tick_behavior(MissedTickBehavior::Delay);
-		let beats = BTreeMap::new();
-		(Self { relay, changes, pulses, deltas, sent, beats, round }, Live::Cluster(state))
+		let (beats, seconds, queued) = (BTreeMap::new(), BTreeMap::new(), None);
+		let feed =
+			Self { relay, changes, pulses, deltas, sent, beats, seconds, queued, round, _watching };
+		(feed, Live::Cluster(state))
 	}
 
 	/// The next message, or none once the relay stops. Cancel-safe, so it can wait in a `select!`.
 	pub async fn next(&mut self) -> Option<Live> {
+		if let Some(live) = self.queued.take() {
+			return Some(live);
+		}
 		loop {
 			tokio::select! {
 				change = self.changes.recv() => match change {
@@ -182,14 +202,24 @@ impl Feed {
 						let held = self.beats.entry(node).or_insert(heard_at);
 						*held = (*held).max(heard_at);
 					}
-					Ok(Pulse::Readings { node, sample }) => return Some(Live::Readings { node, sample }),
+					Ok(Pulse::Readings { node, sample }) => {
+						self.seconds.insert(node, sample);
+					}
 					// The next beat and the next readings say the same, newer.
 					Err(RecvError::Lagged(_)) => {}
 					Err(RecvError::Closed) => return None,
 				},
 				_ = self.round.tick() => {
-					if !self.beats.is_empty() {
-						return Some(Live::Beats { beats: std::mem::take(&mut self.beats) });
+					let beats = std::mem::take(&mut self.beats);
+					let seconds = std::mem::take(&mut self.seconds);
+					let seconds = (!seconds.is_empty()).then_some(Live::Seconds { seconds });
+					if beats.is_empty() {
+						if seconds.is_some() {
+							return seconds;
+						}
+					} else {
+						self.queued = seconds;
+						return Some(Live::Beats { beats });
 					}
 				}
 			}
@@ -212,12 +242,13 @@ impl Feed {
 }
 
 /// A browser's event stream: what a `Feed` says, a `data:` line each, and `: ping` every `PING`
-/// when nothing else went out. It ends when the browser goes; a new one starts whole.
+/// when nothing else went out. It ends when the browser goes, and its watch with it; a new one
+/// starts whole.
 pub fn stream(
 	relay: Arc<Relay>,
-	deltas: bool,
+	asked: Asked,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-	let (feed, cluster) = Feed::open(relay, deltas);
+	let (feed, cluster) = Feed::open(relay, asked);
 	let event = |live: Live| Ok(Event::default().data(text(&live)));
 	let rest = futures_util::stream::unfold(feed, move |mut feed| async move {
 		let live = feed.next().await?;
@@ -232,9 +263,9 @@ pub fn stream(
 pub async fn watch<S: Socket>(
 	relay: Arc<Relay>,
 	socket: Heard<S>,
-	deltas: bool,
+	asked: Asked,
 ) -> Result<(), SocketError> {
-	match watching(relay, socket, deltas).await {
+	match watching(relay, socket, asked).await {
 		Err(error) if error.silent() => Ok(()),
 		ended => ended,
 	}
@@ -243,9 +274,9 @@ pub async fn watch<S: Socket>(
 async fn watching<S: Socket>(
 	relay: Arc<Relay>,
 	mut socket: Heard<S>,
-	deltas: bool,
+	asked: Asked,
 ) -> Result<(), SocketError> {
-	let (mut feed, cluster) = Feed::open(relay, deltas);
+	let (mut feed, cluster) = Feed::open(relay, asked);
 	send(&mut socket, &cluster).await?;
 	let mut heartbeat = tokio::time::interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
 	loop {
@@ -321,7 +352,8 @@ mod tests {
 			let carried = Carried { version: now - 1_000, snapshot: Arc::new(serde_json::json!({})) };
 			relay.take(node, carried, None);
 		}
-		let (mut feed, _) = Feed::rounded(relay.clone(), true, Duration::from_millis(50));
+		let asked = Asked { deltas: true, watches: false };
+		let (mut feed, _) = Feed::rounded(relay.clone(), asked, Duration::from_millis(50));
 		relay.beaten("d132b0f553e3dcc3", now, Some("e38f403f033d87f7"));
 		relay.beaten("e38f403f033d87f7", now + 10, Some("e38f403f033d87f7"));
 		relay.beaten("d132b0f553e3dcc3", now + 20, Some("e38f403f033d87f7"));
@@ -339,6 +371,42 @@ mod tests {
 		// A round nobody was heard in sends nothing.
 		let quiet = tokio::time::timeout(Duration::from_millis(200), feed.next()).await;
 		assert!(quiet.is_err());
+	}
+
+	#[tokio::test]
+	async fn a_rounds_readings_go_to_a_page_as_one_message_after_its_beats_and_hold_a_watch() {
+		let relay = Relay::new(
+			"d62c82b23a858876".into(),
+			"s3cret".into(),
+			std::collections::BTreeSet::new(),
+			crate::runs::Store::memory().unwrap(),
+		)
+		.unwrap();
+		let now = u64::try_from(Timestamp::now().as_millisecond()).unwrap();
+		let carried =
+			crate::cluster::Carried { version: now - 1_000, snapshot: Arc::new(serde_json::json!({})) };
+		relay.take("d132b0f553e3dcc3", carried, None);
+		let asked = Asked { deltas: true, watches: true };
+		let (mut feed, _) = Feed::rounded(relay.clone(), asked, Duration::from_millis(50));
+		assert!(relay.watched());
+		relay.beaten("d132b0f553e3dcc3", now, Some("d132b0f553e3dcc3"));
+		relay.heard_readings("d132b0f553e3dcc3", serde_json::json!({ "values": { "cpu.usage": 1.0 } }));
+		relay.heard_readings("d132b0f553e3dcc3", serde_json::json!({ "values": { "cpu.usage": 2.0 } }));
+		relay.heard_readings("e38f403f033d87f7", serde_json::json!({ "values": { "cpu.usage": 3.0 } }));
+		let mut sent = Vec::new();
+		while sent.len() < 2 {
+			let next = tokio::time::timeout(Duration::from_secs(5), feed.next()).await.unwrap();
+			if let Some(live @ (Live::Beats { .. } | Live::Seconds { .. })) = next {
+				sent.push(live);
+			}
+		}
+		assert!(matches!(sent[0], Live::Beats { .. }));
+		let Live::Seconds { seconds } = &sent[1] else { panic!("{:?}", sent[1]) };
+		// Each node's newest of the round, in one message.
+		assert_eq!(seconds.len(), 2);
+		assert_eq!(seconds["d132b0f553e3dcc3"]["values"]["cpu.usage"], 2.0);
+		drop(feed);
+		assert!(!relay.watched());
 	}
 
 	#[test]

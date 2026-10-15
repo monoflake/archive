@@ -193,7 +193,7 @@ fn a_nodes_newest_minute_is_shown_with_its_readings_and_round_trips() {
 }
 
 #[test]
-fn a_lease_lends_this_nodes_readings_to_a_page_here_and_to_a_neighbor_holding_one() {
+fn a_page_watching_is_lent_this_nodes_readings_and_so_is_a_neighbor_holding_a_lease() {
 	let relay = relay("d62c82b23a858876");
 	let mut pulses = relay.subscribe_pulses();
 	let mut lent = relay.subscribe_lent();
@@ -205,13 +205,42 @@ fn a_lease_lends_this_nodes_readings_to_a_page_here_and_to_a_neighbor_holding_on
 	};
 	relay.observe(round());
 	assert!(!readings(&mut pulses) && lent.try_recv().is_err());
-	relay.watch("d62c82b23a858876");
+	let watching = relay.watch();
 	relay.observe(round());
 	assert!(readings(&mut pulses) && lent.try_recv().is_err());
 	relay.leased("d132b0f553e3dcc3", Duration::from_secs(600));
 	assert!(relay.leased_to("d132b0f553e3dcc3"));
 	relay.observe(round());
 	assert_eq!(lent.try_recv().unwrap(), serde_json::json!({ "values": { "cpu.usage": 3.0 } }));
+	assert!(readings(&mut pulses));
+	// The page gone, and the neighbor's lease released: nothing is lent.
+	drop(watching);
+	relay.leased("d132b0f553e3dcc3", Duration::ZERO);
+	assert!(!relay.leased_to("d132b0f553e3dcc3"));
+	relay.observe(round());
+	assert!(!readings(&mut pulses) && lent.try_recv().is_err());
+}
+
+#[test]
+fn every_neighbor_is_asked_while_a_page_watches_again_by_half_a_lease_and_released_by_the_last() {
+	let relay = relay("d62c82b23a858876");
+	let mut asking = relay.subscribe_asking();
+	let first = relay.watch();
+	assert_eq!(asking.try_recv().unwrap(), LEASE);
+	let second = relay.watch();
+	assert!(relay.watched() && asking.try_recv().is_err());
+	let now = Instant::now();
+	relay.renew(now);
+	assert!(asking.try_recv().is_err(), "asked within half a lease");
+	relay.renew(now + LEASE / 2);
+	assert_eq!(asking.try_recv().unwrap(), LEASE);
+	drop(first);
+	assert!(relay.watched() && asking.try_recv().is_err());
+	drop(second);
+	assert!(!relay.watched());
+	assert_eq!(asking.try_recv().unwrap(), Duration::ZERO);
+	relay.renew(now + LEASE * 2);
+	assert!(asking.try_recv().is_err(), "nobody watching asks nothing");
 }
 
 #[test]

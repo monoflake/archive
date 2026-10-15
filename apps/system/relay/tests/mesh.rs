@@ -326,7 +326,7 @@ async fn a_node_is_heard_by_its_beats_while_its_version_stands_still() {
 }
 
 #[tokio::test]
-async fn a_page_watching_another_node_is_sent_its_fine_readings() {
+async fn a_stream_watching_every_node_is_sent_their_fine_readings_until_it_closes() {
 	let rdu = start("d62c82b23a858876", "geo:1").await;
 	let tyo = start("d132b0f553e3dcc3", "geo:2").await;
 	hold(&rdu, &tyo);
@@ -336,17 +336,24 @@ async fn a_page_watching_another_node_is_sent_its_fine_readings() {
 			&& tyo.relay.speaking().contains("d62c82b23a858876")
 	})
 	.await;
-	let (mut browser, _) =
-		tokio_tungstenite::connect_async(format!("ws://{}/live", rdu.address)).await.unwrap();
-	rdu.relay.watch("d132b0f553e3dcc3");
-	loop {
-		let next = text(&mut browser).await;
-		if next["type"] == "readings" && next["node"] == "d132b0f553e3dcc3" {
-			assert_eq!(next["sample"]["values"]["cpu.usage"], 5.0);
-			break;
+	let (_, mut events) = Events::open(rdu.address, "?deltas=true&watch=all").await;
+	let seconds = async {
+		loop {
+			let next = events.next().await;
+			assert_ne!(next["type"], "readings", "a page is sent a round's readings, never one a node");
+			let seconds = &next["seconds"];
+			if next["type"] == "seconds" && seconds.get("d132b0f553e3dcc3").is_some() {
+				assert_eq!(seconds["d132b0f553e3dcc3"]["values"]["cpu.usage"], 5.0);
+				return;
+			}
 		}
-	}
-	assert!(tyo.relay.leased_to("d62c82b23a858876"));
+	};
+	tokio::time::timeout(PATIENCE, seconds).await.expect("tyo's readings in time");
+	assert!(rdu.relay.watched() && tyo.relay.leased_to("d62c82b23a858876"));
+	// The page gone, its watch goes, and tyo is told at once rather than left to the lease's end.
+	drop(events);
+	until("rdu's page gone", || !rdu.relay.watched()).await;
+	until("tyo released", || !tyo.relay.leased_to("d62c82b23a858876")).await;
 }
 
 /// An event stream as a browser reads it: each `data:` line, as it arrives.

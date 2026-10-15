@@ -111,8 +111,9 @@ stay as they were. An entry also carries `readings`, its newest minute's mean an
 of the meter's metrics, and `round_trip`, this relay's own as timed now and any other node's over
 its newest minute; between entries a browser is sent `beats`, once a round, every node heard since
 the last as its new `heard_at`, `{"type":"beats","beats":{node: heard_at}}`; nothing goes in a
-round that heard none, and, for a node a page on this relay watches, `readings`, its second as its origin reads it. A socket opened with
-`deltas=true` is sent, after the whole cluster, each node's changes rather than its entry whole:
+round that heard none; and, to a socket opened with `watch=all`, `seconds`, once a round after its
+beats, each node's newest second as its origin read it, `{"type":"seconds","seconds":{node: sample}}`.
+A socket opened with `deltas=true` is sent, after the whole cluster, each node's changes rather than its entry whole:
 `delta`, its keys set or gone and its snapshot's as the mesh's delta says them, with `base`, the
 version of the entry it was last sent. A browser holding another version opens the socket again.
 
@@ -165,10 +166,13 @@ Decided with the author on 2026-10-09.
 ## A node's readings stay on the node
 
 Its meter keeps them -- infra's `spec/architecture/meter.md`, "Retention" -- and the mesh carries
-its minutes alone. A page open on a node holds a lease on its second, `POST /watch?node=`, sixty
-seconds long and renewed every thirty while the page is shown, asked of the relay its stream is on.
-That relay asks the node's own over the mesh, which sends its second every round to it alone while
-the lease holds. A node's charts read its own host through its binding, and where it does not
+its minutes alone. **A page is sent every node's second only while it is shown**: its stream, opened
+with `watch=all`, holds a watch on every node for as long as it is open, and the page closes its
+stream once hidden ten seconds. The first watch on a relay asks every neighbor that lends for a
+lease sixty seconds long, the round asks again once half of it has passed, and the last watch to
+close sends a lease of none, which releases it at once; each neighbor sends its second every round
+to that relay alone while the lease holds, and the relay its own while any page there watches. A
+node's charts read its own host through its binding, and where it does not
 answer, the nearest relay's minutes of it. **A threshold is judged on the node, from each minute**:
 the table in `alarm.rs` -- processor at 90% or more for five minutes, memory at 90% for five,
 storage at 90% at once, any temperature zone at 85 C for five -- each said in the snapshot as

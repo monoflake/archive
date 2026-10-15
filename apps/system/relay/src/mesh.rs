@@ -114,7 +114,8 @@ pub enum Message {
 	Minutes(crate::history::Batch),
 	/// That its node is alive, at its clock in milliseconds: every round, and nothing else.
 	Beat { node: String, at: u64 },
-	/// A page on the sender asks this node's fine readings, for `lease` seconds.
+	/// A page on the sender watches this node's fine readings, for `lease` seconds; none releases
+	/// them.
 	Watch { lease: u64 },
 	/// The node's fine readings of a round, to a neighbor holding a lease.
 	Readings { node: String, sample: serde_json::Value },

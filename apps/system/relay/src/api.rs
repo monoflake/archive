@@ -13,7 +13,7 @@ use axum::extract::{Query, State};
 use axum::http::header::{ACCEPT, ORIGIN};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use serde::Deserialize;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
@@ -30,7 +30,6 @@ pub fn routes(relay: Arc<Relay>) -> Router {
 	Router::new()
 		.merge(answers)
 		.route("/live", get(watched))
-		.route("/watch", post(watch))
 		.route(mesh::PATH, get(neighbor))
 		.fallback(|| async { response::failure(StatusCode::NOT_FOUND, "no_such_route") })
 		.with_state(relay)
@@ -121,36 +120,15 @@ fn streams(headers: &HeaderMap) -> bool {
 		.is_some_and(|accept| accept.contains("text/event-stream"))
 }
 
-/// `/live`'s query: whether the socket is sent each node's changes rather than its entry whole.
+/// `/live`'s query: whether the socket is sent each node's changes rather than its entry whole, and
+/// whether it watches every node's fine readings while open, `watch=all`. A value this relay does
+/// not know watches nothing, rather than refusing the stream.
 #[derive(Deserialize)]
 struct Streamed {
 	#[serde(default)]
 	deltas: bool,
-}
-
-/// `/watch`'s query: the node a page asks the fine readings of.
-#[derive(Deserialize)]
-struct Watched {
-	node: String,
-}
-
-/// A page's lease on a node's fine readings, `relay::LEASE` long, renewed while the page stays:
-/// asked of the node's own relay over the mesh, and passed on on `/live`. A lease on a node no
-/// neighbor lends for is held and lends nothing. As read-only as `/live`, with the same `Origin`.
-async fn watch(
-	State(relay): State<Arc<Relay>>,
-	headers: HeaderMap,
-	query: Result<Query<Watched>, QueryRejection>,
-) -> Response {
-	let origin = headers.get(ORIGIN).map(|value| value.to_str().unwrap_or_default());
-	if !live::admitted(origin) {
-		return response::failure(StatusCode::FORBIDDEN, "invalid_address");
-	}
-	let Ok(Query(Watched { node })) = query else {
-		return response::failure(StatusCode::BAD_REQUEST, "invalid_route");
-	};
-	relay.watch(&node);
-	response::success(StatusCode::OK, ())
+	#[serde(default)]
+	watch: Option<String>,
 }
 
 /// Read-only, with no token: Access stands in front of the public name, and the private one admits
@@ -163,7 +141,13 @@ async fn watched(
 	query: Result<Query<Streamed>, QueryRejection>,
 	upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
-	let deltas = query.is_ok_and(|Query(streamed)| streamed.deltas);
+	let asked = query.map_or_else(
+		|_| live::Asked::default(),
+		|Query(streamed)| live::Asked {
+			deltas: streamed.deltas,
+			watches: streamed.watch.as_deref() == Some("all"),
+		},
+	);
 	let origin = headers.get(ORIGIN).map(|value| value.to_str().unwrap_or_default());
 	if !live::admitted(origin) {
 		return response::failure(StatusCode::FORBIDDEN, "invalid_address");
@@ -171,12 +155,12 @@ async fn watched(
 	let Ok(upgrade) = upgrade else {
 		// An event stream where the reader asks for one, as the console does since RFC grmtb.
 		if streams(&headers) {
-			return live::stream(relay, deltas).into_response();
+			return live::stream(relay, asked).into_response();
 		}
 		return response::failure(StatusCode::UPGRADE_REQUIRED, "invalid_method");
 	};
 	upgrade.on_upgrade(move |socket| async move {
-		if let Err(error) = live::watch(relay, Heard::new(socket), deltas).await {
+		if let Err(error) = live::watch(relay, Heard::new(socket), asked).await {
 			eprintln!("relay: a browser's socket: {error}");
 		}
 	})

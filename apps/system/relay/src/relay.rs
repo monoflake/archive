@@ -24,6 +24,7 @@ mod tasks;
 #[cfg(test)]
 mod tests;
 
+pub use leases::Watching;
 pub use tasks::{recall, watch, write, written};
 
 /// The version of what the mesh and a browser are sent, read first by either. See the workspace's
@@ -41,7 +42,7 @@ const BACKLOG: usize = 256;
 /// A round trip not timed again within three pings is no longer current, and is left out.
 const CURRENT: Duration = Duration::from_secs(3 * crate::mesh::PING.as_secs());
 
-/// How long a page's ask for a node's fine readings holds before it is asked again. See
+/// How long a neighbor lends its fine readings to a page here before it is asked again. See
 /// spec/architecture/relay.md, RFC grmtb.
 pub const LEASE: Duration = Duration::from_secs(60);
 
@@ -161,12 +162,14 @@ pub struct Relay {
 	pulses: broadcast::Sender<Pulse>,
 	/// This node's own beats, its clock in milliseconds, for the mesh to send each neighbor.
 	beats: broadcast::Sender<u64>,
-	/// The nodes a page here asked the fine readings of, for the mesh to ask each origin.
-	asking: broadcast::Sender<String>,
+	/// The lease asked of every neighbor that lends: `LEASE` while a page here watches, and none
+	/// once the last stops.
+	asking: broadcast::Sender<Duration>,
+	/// The pages here watching every node.
+	watchers: Mutex<leases::Watchers>,
 	/// This node's fine readings each round while a neighbor holds a lease on them.
 	lent: broadcast::Sender<Value>,
-	/// Who holds a lease on this node's fine readings, and until when: a neighbor by its name, a
-	/// page on this relay by this node's.
+	/// Which neighbors hold a lease on this node's fine readings, and until when.
 	leases: Mutex<BTreeMap<String, Instant>>,
 	/// Each open conversation with a neighbor, and whether that neighbor hears by beats.
 	met: Mutex<BTreeMap<u64, bool>>,
@@ -231,6 +234,7 @@ impl Relay {
 			beats: broadcast::channel(BACKLOG).0,
 			asking: broadcast::channel(BACKLOG).0,
 			lent: broadcast::channel(BACKLOG).0,
+			watchers: Mutex::default(),
 			leases: Mutex::default(),
 			met: Mutex::default(),
 			compressing: std::sync::atomic::AtomicBool::new(true),
@@ -270,7 +274,7 @@ impl Relay {
 		self.beats.subscribe()
 	}
 
-	pub fn subscribe_asking(&self) -> broadcast::Receiver<String> {
+	pub fn subscribe_asking(&self) -> broadcast::Receiver<Duration> {
 		self.asking.subscribe()
 	}
 
@@ -339,6 +343,7 @@ impl Relay {
 		let at = u64::try_from(now.as_millisecond()).unwrap_or(0);
 		self.beaten(&self.node, at, None);
 		let _ = self.beats.send(at);
+		self.renew(Instant::now());
 		if let Some(sample) = sample {
 			self.lend(sample);
 		}
