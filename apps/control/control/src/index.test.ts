@@ -20,7 +20,7 @@ import {
 
 describe('health', () => {
 	it('answers {} while the database answers, and 503 once it does not', async () => {
-		expect(await control()('GET', '/health')).toEqual({
+		expect(await control()('GET', '/v1/health')).toEqual({
 			status: 200,
 			body: { status: 'success', data: {} },
 		});
@@ -30,7 +30,7 @@ describe('health', () => {
 			},
 			batch: () => Promise.reject(new Error('D1 is down')),
 		};
-		expect(await control(broken)('GET', '/health')).toEqual(refused(503, 'store_unavailable'));
+		expect(await control(broken)('GET', '/v1/health')).toEqual(refused(503, 'store_unavailable'));
 		const read = await control(broken)('GET', '/v1/registry/nodes', { token: READ });
 		expect(read).toEqual(refused(500, 'store_unavailable'));
 	});
@@ -66,7 +66,7 @@ describe('auth', () => {
 		);
 		const answer = await call('PUT', '/v1/registry/import', { token: IMPORT, body: body() });
 		expect(answer).toEqual(refused(503, 'service_unavailable'));
-		expect((await call('GET', '/health')).status).toBe(200);
+		expect((await call('GET', '/v1/health')).status).toBe(200);
 	});
 });
 

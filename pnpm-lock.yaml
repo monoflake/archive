@@ -217,6 +217,9 @@ importers:
       '@canmi/response':
         specifier: ^2.2.0
         version: 2.2.0(hono@4.13.12)
+      '@canmi/web':
+        specifier: ^2026.1005.5
+        version: 2026.1005.5(@sveltejs/kit@3.0.0(@sveltejs/vite-plugin-svelte@7.3.1(svelte@5.57.1)(vite@8.3.2(@types/node@26.6.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)))(svelte@5.57.1)(typescript@7.0.2)(vite@8.3.2(@types/node@26.6.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)))(hono@4.13.12)
       hono:
         specifier: ^4.13.12
         version: 4.13.12

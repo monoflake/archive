@@ -1,11 +1,12 @@
 /**
- * control's routes, apart from the Worker so a test can stand a database in: `/health`, and the
+ * control's routes, apart from the Worker so a test can stand a database in: `/v1/health`, and the
  * `registry` scope at `/v1/registry`: the resources read and written as the old registry answers
  * them, the catalog of their kinds, and the import that copies them across. Every route but
- * `/health` takes a bearer. See RFC o7eir and spec/architecture/control.md.
+ * `/v1/health` takes a bearer. See RFC o7eir and spec/architecture/control.md.
  */
 import { failure, success } from '@canmi/response';
 import { envelopeErrors } from '@canmi/response/hono';
+import { poweredBy } from '@canmi/web/disclose/hono';
 import { type Context, Hono, type MiddlewareHandler } from 'hono';
 import { admitted } from './auth.ts';
 import { canonical, imported } from './import.ts';
@@ -104,7 +105,11 @@ async function sent(c: Context<App>): Promise<unknown> {
 
 export const app = new Hono<App>();
 
-app.get('/health', async (c) => {
+// First, so every answer says what made it. See lib's spec/web/disclose.md.
+app.use(poweredBy());
+
+// The `health` scope: whether control and its database answer, the one route that takes no bearer.
+app.get('/v1/health', async (c) => {
 	try {
 		await answers(c.env.DB);
 		return success({});
@@ -113,7 +118,7 @@ app.get('/health', async (c) => {
 		return failure(503, 'store_unavailable');
 	}
 });
-app.all('/health', invalidMethod('GET'));
+app.all('/v1/health', invalidMethod('GET'));
 
 // The write token reads too: a writer reads what it is about to hold its write to.
 const read = bearer('CONTROL_READ_TOKEN', 'CONTROL_WRITE_TOKEN');
@@ -267,7 +272,7 @@ registry.all('/:plural/:key', (c) => {
 app.route('/v1/registry', registry);
 
 /** Every scope under `/v1`: a path one does not take is no route, and any other scope none. */
-const SCOPES = new Set(['registry']);
+const SCOPES = new Set(['health', 'registry']);
 
 const unscoped = (c: Context<App>) =>
 	SCOPES.has(c.req.param('scope') ?? '')

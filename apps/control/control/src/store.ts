@@ -61,7 +61,7 @@ function resource(row: Row): Resource {
 	return { ...row, spec: JSON.parse(row.spec) };
 }
 
-/** Whether the database answers, for `/health`. */
+/** Whether the database answers, for `/v1/health`. */
 export async function answers(db: Database): Promise<void> {
 	await db.prepare('SELECT 1').first();
 }

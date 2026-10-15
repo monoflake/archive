@@ -47,11 +47,12 @@ sorted, so two specs compare as text.
 
 **It is the lower layer's gateway as well as control**, decided with the author on 2026-10-15: every
 address is `/v{n}/{scope}/*`, the registry the scope `registry`, so a second scope is one more
-mount, and one worth a Worker of its own is split out only then. `/health` is at the root; a scope it does not hold answers `404
+mount, and one worth a Worker of its own is split out only then. `/v1/health` is the scope `health`, whether control and its database answer, the one route with no
+bearer; a scope it does not hold answers `404
 no_such_scope`, and a path no scope takes `404 no_such_route`, both in the envelope.
 
 **The registry scope answers as the old registry does**, in `@canmi/response`'s envelope, so a caller changes only
-its base URL and its token: `GET /health`; `GET /v1/registry/{nodes,apps,accounts}`, an app list narrowed by
+its base URL and its token: `GET /v1/registry/{nodes,apps,accounts}`, an app list narrowed by
 `?name=` or by `?node=<node id>`; `GET /v1/registry/{plural}/{key}`, a key of an id's shape an id and any
 other an app's name. Every read takes the read token or the write token, since a writer reads
 what it is about to change.
