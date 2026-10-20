@@ -16,8 +16,8 @@ describe('the configuration', () => {
 	});
 
 	it('reaches the ledger and is rung on the private side unless told otherwise', () => {
-		const config = configOf({ NODE: 'tyo', NODE_ID: 'd132b0f553e3dcc3' });
-		expect(config.node).toBe('d132b0f553e3dcc3');
+		const config = configOf({ NODE: 'tyo', NODE_ID: '0000000000000001' });
+		expect(config.node).toBe('0000000000000001');
 		expect(config.ledger).toMatch(/\/ledger$/);
 		expect(config.pushUrl).toMatch(/\/executor\/turns$/);
 		expect(config.bindings).toEqual(defaultBindings());

@@ -141,7 +141,7 @@ mod tests {
 		let mut tally = Tally::default();
 		let up = [app("geo", true, false), app("apt", false, true)];
 		let down = [app("geo", false, false), app("apt", false, true)];
-		let trips = |seconds: f64| RoundTrips::from([("d132b0f553e3dcc3".into(), seconds)]);
+		let trips = |seconds: f64| RoundTrips::from([("0000000000000001".into(), seconds)]);
 		assert!(tally.round(true, Some(&up), &trips(0.15), at(0)).is_none());
 		assert!(tally.round(true, Some(&down), &trips(0.17), at(3)).is_none());
 		// Host not read: no beat, and no apps to say anything of.
@@ -152,14 +152,14 @@ mod tests {
 		assert_eq!(minute.beats, 2);
 		assert_eq!(minute.down, BTreeMap::from([("geo".into(), 1)]));
 		assert_eq!(minute.held, 1);
-		assert_eq!(minute.round_trip, RoundTrips::from([("d132b0f553e3dcc3".into(), 0.16)]));
+		assert_eq!(minute.round_trip, RoundTrips::from([("0000000000000001".into(), 0.16)]));
 		assert_eq!(minute.leaving, None);
 
 		let written = serde_json::to_value(&minute).unwrap();
 		assert_eq!(
 			written,
 			serde_json::json!({ "at": at(0).as_millisecond(), "beats": 2, "down": { "geo": 1 },
-				"held": 1, "round_trip": { "d132b0f553e3dcc3": 0.16 } })
+				"held": 1, "round_trip": { "0000000000000001": 0.16 } })
 		);
 	}
 

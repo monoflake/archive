@@ -59,9 +59,9 @@ pub const EXTERNAL_CONTENT_USAGE: &str =
 pub const EXTERNAL_AGENT_INCIDENT: &str =
 	"https://openai.com/index/hugging-face-incident-and-the-road-ahead/";
 pub const EXTERNAL_SENTRY_SITE: &str =
-	"https://a7f2f790ed2fa4f8e0c4310d26d9c39f@o4511131162116096.ingest.us.sentry.io/4511380121976832";
+	"https://00000000000000000000000000000000@o0.ingest.us.sentry.io/1";
 pub const EXTERNAL_SENTRY_STATUS: &str =
-	"https://0c9dd7de9a89dddc79dbdc2252e1c940@o4511131162116096.ingest.us.sentry.io/4512173650542592";
+	"https://00000000000000000000000000000000@o0.ingest.us.sentry.io/2";
 pub const EXTERNAL_FEEDSMITH: &str = "https://feedsmith.dev";
 pub const EXTERNAL_INDEXNOW: &str = "https://api.indexnow.org/IndexNow";
 pub const EXTERNAL_SOCIAL_TELEGRAM: &str = "https://t.me";
@@ -90,5 +90,5 @@ pub const EXTERNAL_DOH_GOOGLE: &str = "https://8.8.8.8/resolve";
 pub const EXTERNAL_CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
 /// Deprecated: read the app's environment, which host writes from `[urls]` (RFC zvrk7).
 pub const EXTERNAL_ARTIFACTS: &str =
-	"https://62163885eb1943e6561e004ac10a5f22.r2.cloudflarestorage.com";
+	"https://00000000000000000000000000000000.r2.cloudflarestorage.com";
 pub const EXTERNAL_GEOLITE_MAXMIND: &str = "https://www.maxmind.com";

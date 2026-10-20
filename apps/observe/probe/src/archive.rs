@@ -142,9 +142,9 @@ mod tests {
 		let directory = tempfile::tempdir().unwrap();
 		let mut archive = Archive::open(&directory.path().join("probe.db")).unwrap();
 		let rounds = [round("a", 1_000, true), round("b", 1_500, false), round("a", 2_000, false)];
-		archive.keep("d62c82b23a858876", &rounds).unwrap();
-		archive.keep("d62c82b23a858876", &rounds[..1]).unwrap();
-		let span = archive.span("d62c82b23a858876", 1_000, 2_000).unwrap();
+		archive.keep("0000000000000007", &rounds).unwrap();
+		archive.keep("0000000000000007", &rounds[..1]).unwrap();
+		let span = archive.span("0000000000000007", 1_000, 2_000).unwrap();
 		assert_eq!(span.len(), 2);
 		assert!(span.contains(&("b".into(), false, 7)));
 		assert!(archive.span("vps", 0, 10_000).unwrap().is_empty());
@@ -156,18 +156,18 @@ mod tests {
 		let mut archive = Archive::open(&directory.path().join("probe.db")).unwrap();
 		let rounds: Vec<Round> =
 			[10_000, 10_500, 11_000, 11_200, 11_400, 12_000].map(|at| round("a", at, true)).to_vec();
-		archive.keep("d62c82b23a858876", &rounds).unwrap();
+		archive.keep("0000000000000007", &rounds).unwrap();
 
-		let all = archive.page("a", "d62c82b23a858876", 10, 13, 10).unwrap();
+		let all = archive.page("a", "0000000000000007", 10, 13, 10).unwrap();
 		assert_eq!((all.rounds.len(), all.next), (6, None));
 		// Four would cut second 11 in two, so the page ends at 11 and says so.
-		let first = archive.page("a", "d62c82b23a858876", 10, 13, 4).unwrap();
+		let first = archive.page("a", "0000000000000007", 10, 13, 4).unwrap();
 		assert_eq!(first.rounds.iter().map(|round| round.at).collect::<Vec<_>>(), [10_000, 10_500]);
 		assert_eq!(first.next, Some(11));
-		let second = archive.page("a", "d62c82b23a858876", 11, 13, 4).unwrap();
+		let second = archive.page("a", "0000000000000007", 11, 13, 4).unwrap();
 		assert_eq!((second.rounds.len(), second.next), (4, None));
 		// A page that fits inside one second goes on from the next.
-		let tight = archive.page("a", "d62c82b23a858876", 11, 13, 2).unwrap();
+		let tight = archive.page("a", "0000000000000007", 11, 13, 2).unwrap();
 		assert_eq!((tight.rounds.len(), tight.next), (2, Some(12)));
 		assert_eq!(first.rounds[0].detail, None);
 	}

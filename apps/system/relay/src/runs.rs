@@ -515,7 +515,7 @@ mod tests {
 
 	#[test]
 	fn a_row_is_versioned_when_first_read_and_again_when_it_changes() {
-		let mut window = window("d62c82b23a858876");
+		let mut window = window("0000000000000007");
 		let first = window.observe(&[event(1, "running", at(0))], at(0)).unwrap();
 		assert_eq!((first.above, first.version), (0, ms(at(0))));
 		assert_eq!(first.rows[0].version, ms(at(0)));
@@ -526,14 +526,14 @@ mod tests {
 		let second = window.observe(&read, at(6)).unwrap();
 		assert_eq!((second.above, second.version), (ms(at(0)), ms(at(6))));
 		assert_eq!(second.rows.len(), 2);
-		assert_eq!(window.versions(), Versions::from([("d62c82b23a858876".into(), ms(at(6)))]));
+		assert_eq!(window.versions(), Versions::from([("0000000000000007".into(), ms(at(6)))]));
 	}
 
 	#[test]
 	fn a_version_climbs_when_the_clock_does_not_and_starts_above_the_file() {
 		// The file holds a version ahead of the clock, as after a restart within a millisecond.
-		let held = Versions::from([("d62c82b23a858876".into(), ms(at(0)) + 5)]);
-		let mut window = Window::new("d62c82b23a858876".into(), held, vec![]);
+		let held = Versions::from([("0000000000000007".into(), ms(at(0)) + 5)]);
+		let mut window = Window::new("0000000000000007".into(), held, vec![]);
 		let batch = window.observe(&[event(1, "running", at(0))], at(0)).unwrap();
 		assert_eq!(batch.version, ms(at(0)) + 6);
 		let batch = window.observe(&[event(1, "succeeded", at(0))], at(0)).unwrap();
@@ -544,13 +544,13 @@ mod tests {
 	fn the_files_own_rows_are_not_versioned_again() {
 		let own = vec![row(1, 7, at(0))];
 		let mut window =
-			Window::new("d62c82b23a858876".into(), Versions::from([("d62c82b23a858876".into(), 7)]), own);
+			Window::new("0000000000000007".into(), Versions::from([("0000000000000007".into(), 7)]), own);
 		assert!(window.observe(&[event(1, "succeeded", at(0))], at(9)).is_none());
 	}
 
 	#[test]
 	fn rows_past_keeping_or_with_no_start_are_not_mirrored() {
-		let mut window = window("d62c82b23a858876");
+		let mut window = window("0000000000000007");
 		let old = at(0) - KEPT - Duration::from_secs(1);
 		let mut unstarted = event(2, "running", at(0));
 		unstarted.started_at = "yesterday".into();
@@ -559,7 +559,7 @@ mod tests {
 
 	#[test]
 	fn a_row_stays_until_it_is_written_and_older_than_the_window() {
-		let mut window = window("d62c82b23a858876");
+		let mut window = window("0000000000000007");
 		window.observe(&[event(1, "running", at(0))], at(0));
 
 		// Older than the window, but no write has taken it.
@@ -567,7 +567,7 @@ mod tests {
 		assert_eq!(window.unwritten().len(), 1);
 
 		// Written, but not yet older than the window.
-		let mut window = self::window("d62c82b23a858876");
+		let mut window = self::window("0000000000000007");
 		window.observe(&[event(1, "running", at(0))], at(0));
 		let taken = window.unwritten();
 		window.written(&taken);
@@ -580,7 +580,7 @@ mod tests {
 
 	#[test]
 	fn a_row_changed_after_a_write_took_it_is_still_unwritten() {
-		let mut window = window("d62c82b23a858876");
+		let mut window = window("0000000000000007");
 		window.observe(&[event(1, "running", at(0))], at(0));
 		let taken = window.unwritten();
 		window.observe(&[event(1, "succeeded", at(0))], at(1));
@@ -592,9 +592,9 @@ mod tests {
 
 	#[test]
 	fn a_neighbors_batch_is_taken_when_it_follows_on_and_the_newer_row_wins() {
-		let mut window = window("d62c82b23a858876");
+		let mut window = window("0000000000000007");
 		let first = Batch {
-			node: "d132b0f553e3dcc3".into(),
+			node: "0000000000000001".into(),
 			above: 0,
 			version: 10,
 			rows: vec![row(1, 10, at(0))],
@@ -602,44 +602,44 @@ mod tests {
 		assert!(window.merge(first));
 		// A gap: above what is held of tyo.
 		let gap = Batch {
-			node: "d132b0f553e3dcc3".into(),
+			node: "0000000000000001".into(),
 			above: 15,
 			version: 20,
 			rows: vec![row(2, 20, at(0))],
 		};
 		assert!(!window.merge(gap));
-		assert_eq!(window.versions()["d132b0f553e3dcc3"], 10);
+		assert_eq!(window.versions()["0000000000000001"], 10);
 
 		// Follows on, and carries row 1 at a newer version and again at the one held.
 		let mut newer = row(1, 12, at(0));
 		newer.event.outcome = "failed".into();
 		let rows = vec![row(1, 10, at(0)), newer, row(2, 11, at(1))];
-		assert!(window.merge(Batch { node: "d132b0f553e3dcc3".into(), above: 5, version: 12, rows }));
+		assert!(window.merge(Batch { node: "0000000000000001".into(), above: 5, version: 12, rows }));
 		let held: BTreeMap<i64, (u64, String)> = window
 			.rows()
 			.map(|(_, row)| (row.event.id, (row.version, row.event.outcome.clone())))
 			.collect();
 		assert_eq!(held, BTreeMap::from([(1, (12, "failed".into())), (2, (11, "succeeded".into()))]));
-		assert_eq!(window.versions()["d132b0f553e3dcc3"], 12);
+		assert_eq!(window.versions()["0000000000000001"], 12);
 
 		// What is held already is not taken again, and this node's own rows never are.
 		let again = Batch {
-			node: "d132b0f553e3dcc3".into(),
+			node: "0000000000000001".into(),
 			above: 0,
 			version: 12,
 			rows: vec![row(1, 9, at(0))],
 		};
 		assert!(!window.merge(again));
 		let own =
-			Batch { node: "d62c82b23a858876".into(), above: 0, version: 9, rows: vec![row(1, 9, at(0))] };
+			Batch { node: "0000000000000007".into(), above: 0, version: 9, rows: vec![row(1, 9, at(0))] };
 		assert!(!window.merge(own));
 	}
 
 	#[test]
 	fn a_neighbor_behind_what_memory_holds_is_answered_from_the_file() {
-		let mut window = window("d62c82b23a858876");
+		let mut window = window("0000000000000007");
 		window.merge(Batch {
-			node: "d132b0f553e3dcc3".into(),
+			node: "0000000000000001".into(),
 			above: 0,
 			version: 10,
 			rows: vec![row(1, 10, at(0))],
@@ -649,24 +649,24 @@ mod tests {
 		window.written(&taken);
 		window.evict(at(600));
 		window.merge(Batch {
-			node: "d132b0f553e3dcc3".into(),
+			node: "0000000000000001".into(),
 			above: 10,
 			version: 20,
 			rows: vec![row(2, 20, at(0))],
 		});
 
-		let theirs = Versions::from([("d132b0f553e3dcc3".into(), 10), ("d62c82b23a858876".into(), 0)]);
-		let lacking = window.lacking(&theirs, "e38f403f033d87f7");
+		let theirs = Versions::from([("0000000000000001".into(), 10), ("0000000000000007".into(), 0)]);
+		let lacking = window.lacking(&theirs, "0000000000000006");
 		assert_eq!(lacking.len(), 2);
 		// rdu's row left memory, so a neighbor holding none of it is behind; tyo's 20 is still here.
 		assert!(
-			matches!(&lacking[1], Lack::Behind(batch) if batch.node == "d62c82b23a858876" && batch.rows.is_empty())
+			matches!(&lacking[1], Lack::Behind(batch) if batch.node == "0000000000000007" && batch.rows.is_empty())
 		);
 		assert!(matches!(&lacking[0], Lack::Held(batch)
-			if batch.node == "d132b0f553e3dcc3" && batch.above == 10 && batch.rows == [row(2, 20, at(0))]));
+			if batch.node == "0000000000000001" && batch.above == 10 && batch.rows == [row(2, 20, at(0))]));
 		// Never a neighbor's own rows.
-		assert!(window.lacking(&Versions::new(), "d132b0f553e3dcc3").iter().all(|lack| match lack {
-			Lack::Held(batch) | Lack::Behind(batch) => batch.node != "d132b0f553e3dcc3",
+		assert!(window.lacking(&Versions::new(), "0000000000000001").iter().all(|lack| match lack {
+			Lack::Held(batch) | Lack::Behind(batch) => batch.node != "0000000000000001",
 		}));
 	}
 
@@ -676,14 +676,14 @@ mod tests {
 		let now = at(0);
 		let mut newer = row(1, 12, now);
 		newer.event.outcome = "failed".into();
-		store.keep(&[("d132b0f553e3dcc3".into(), newer.clone())], now).unwrap();
-		store.keep(&[("d132b0f553e3dcc3".into(), row(1, 10, now))], now).unwrap();
-		assert_eq!(store.above("d132b0f553e3dcc3", 0).unwrap(), [newer]);
+		store.keep(&[("0000000000000001".into(), newer.clone())], now).unwrap();
+		store.keep(&[("0000000000000001".into(), row(1, 10, now))], now).unwrap();
+		assert_eq!(store.above("0000000000000001", 0).unwrap(), [newer]);
 
 		let old = now - KEPT - Duration::from_secs(1);
-		store.keep(&[("d132b0f553e3dcc3".into(), row(2, 13, old))], now).unwrap();
-		assert_eq!(store.above("d132b0f553e3dcc3", 12).unwrap(), []);
-		assert_eq!(store.held().unwrap(), Versions::from([("d132b0f553e3dcc3".into(), 12)]));
+		store.keep(&[("0000000000000001".into(), row(2, 13, old))], now).unwrap();
+		assert_eq!(store.above("0000000000000001", 12).unwrap(), []);
+		assert_eq!(store.held().unwrap(), Versions::from([("0000000000000001".into(), 12)]));
 	}
 
 	#[test]
@@ -692,27 +692,27 @@ mod tests {
 		let now = at(0);
 		let many: Vec<(String, Row)> = (0..=i64::try_from(MOST).unwrap())
 			.map(|id| {
-				("d132b0f553e3dcc3".into(), row(id, 1, now - Duration::from_secs(id.unsigned_abs())))
+				("0000000000000001".into(), row(id, 1, now - Duration::from_secs(id.unsigned_abs())))
 			})
-			.chain([("d62c82b23a858876".into(), row(0, 1, now))])
+			.chain([("0000000000000007".into(), row(0, 1, now))])
 			.collect();
 		store.keep(&many, now).unwrap();
-		let tyo = store.above("d132b0f553e3dcc3", 0).unwrap();
+		let tyo = store.above("0000000000000001", 0).unwrap();
 		assert_eq!(tyo.len(), MOST);
 		// The one that started first went.
 		assert!(tyo.iter().all(|row| row.event.id != i64::try_from(MOST).unwrap()));
-		assert_eq!(store.above("d62c82b23a858876", 0).unwrap().len(), 1);
+		assert_eq!(store.above("0000000000000007", 0).unwrap().len(), 1);
 	}
 
 	#[tokio::test]
 	async fn listed_merges_the_file_and_the_window_newest_first() {
-		let mirror = Mirror::open("d62c82b23a858876".into(), shared(Store::memory().unwrap())).unwrap();
+		let mirror = Mirror::open("0000000000000007".into(), shared(Store::memory().unwrap())).unwrap();
 		mirror.observe(&[event(1, "running", at(0)), event(2, "succeeded", at(-60))], at(0));
 		mirror.write(at(0)).await.unwrap();
 		// Written, then moved on in memory alone.
 		mirror.observe(&[event(1, "succeeded", at(0))], at(3));
 		let tyo =
-			Batch { node: "d132b0f553e3dcc3".into(), above: 0, version: 4, rows: vec![row(9, 4, at(0))] };
+			Batch { node: "0000000000000001".into(), above: 0, version: 4, rows: vec![row(9, 4, at(0))] };
 		mirror.merge(tyo);
 
 		let listed = mirror.listed(None, at(5)).await.unwrap();
@@ -723,26 +723,26 @@ mod tests {
 		assert_eq!(
 			order,
 			[
-				("d132b0f553e3dcc3", 9, "succeeded"),
-				("d62c82b23a858876", 1, "succeeded"),
-				("d62c82b23a858876", 2, "succeeded")
+				("0000000000000001", 9, "succeeded"),
+				("0000000000000007", 1, "succeeded"),
+				("0000000000000007", 2, "succeeded")
 			]
 		);
 		let written = serde_json::to_value(&listed[0]).unwrap();
-		assert_eq!((&written["node"], &written["id"]), (&"d132b0f553e3dcc3".into(), &9.into()));
+		assert_eq!((&written["node"], &written["id"]), (&"0000000000000001".into(), &9.into()));
 		assert!(written.get("version").is_none());
 	}
 
 	#[tokio::test]
 	async fn a_neighbor_behind_gets_the_file_and_the_window_together() {
-		let mirror = Mirror::open("d62c82b23a858876".into(), shared(Store::memory().unwrap())).unwrap();
+		let mirror = Mirror::open("0000000000000007".into(), shared(Store::memory().unwrap())).unwrap();
 		mirror.observe(&[event(1, "running", at(0)), event(2, "running", at(0))], at(0));
 		mirror.write(at(0)).await.unwrap();
 		mirror.write(at(600)).await.unwrap();
 		// Row 2 moves on after row 1 left memory.
 		mirror.observe(&[event(2, "succeeded", at(0))], at(601));
 
-		let batches = mirror.lacking(&Versions::new(), "d132b0f553e3dcc3").await.unwrap();
+		let batches = mirror.lacking(&Versions::new(), "0000000000000001").await.unwrap();
 		assert_eq!(batches.len(), 1);
 		let rows: Vec<(i64, &str)> =
 			batches[0].rows.iter().map(|row| (row.event.id, row.event.outcome.as_str())).collect();
@@ -757,8 +757,8 @@ mod tests {
 
 		let mut store = Store::open(&path).unwrap();
 		assert_eq!(store.held().unwrap(), Versions::new());
-		store.keep(&[("d132b0f553e3dcc3".into(), row(1, 4, at(0)))], at(0)).unwrap();
-		assert_eq!(store.held().unwrap(), Versions::from([("d132b0f553e3dcc3".into(), 4)]));
+		store.keep(&[("0000000000000001".into(), row(1, 4, at(0)))], at(0)).unwrap();
+		assert_eq!(store.held().unwrap(), Versions::from([("0000000000000001".into(), 4)]));
 
 		// Read alone, a `-wal` that is no log is let go of by SQLite as it closes; one it keeps
 		// goes aside with the file.
@@ -795,10 +795,10 @@ mod tests {
 		let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
 		assert_eq!(schema, SCHEMA);
 
-		store.keep(&[("d132b0f553e3dcc3".into(), row(1, 4, at(0)))], at(0)).unwrap();
+		store.keep(&[("0000000000000001".into(), row(1, 4, at(0)))], at(0)).unwrap();
 		drop(store);
 		let store = Store::open(&path).unwrap();
-		assert_eq!(store.held().unwrap(), Versions::from([("d132b0f553e3dcc3".into(), 4)]));
+		assert_eq!(store.held().unwrap(), Versions::from([("0000000000000001".into(), 4)]));
 	}
 
 	#[test]
@@ -814,10 +814,10 @@ mod tests {
 		let path = directory.path().join(FILE);
 		{
 			let mirror =
-				Mirror::open("d62c82b23a858876".into(), shared(Store::open(&path).unwrap())).unwrap();
+				Mirror::open("0000000000000007".into(), shared(Store::open(&path).unwrap())).unwrap();
 			mirror.observe(&[event(1, "running", at(0))], at(0));
 			mirror.merge(Batch {
-				node: "d132b0f553e3dcc3".into(),
+				node: "0000000000000001".into(),
 				above: 0,
 				version: 4,
 				rows: vec![row(9, 4, at(0))],
@@ -825,10 +825,10 @@ mod tests {
 			mirror.write(at(0)).await.unwrap();
 		}
 		let mirror =
-			Mirror::open("d62c82b23a858876".into(), shared(Store::open(&path).unwrap())).unwrap();
+			Mirror::open("0000000000000007".into(), shared(Store::open(&path).unwrap())).unwrap();
 		assert_eq!(
 			mirror.versions(),
-			Versions::from([("d62c82b23a858876".into(), ms(at(0))), ("d132b0f553e3dcc3".into(), 4)])
+			Versions::from([("0000000000000007".into(), ms(at(0))), ("0000000000000001".into(), 4)])
 		);
 		assert!(mirror.observe(&[event(1, "running", at(0))], at(9)).is_none());
 	}

@@ -108,9 +108,9 @@ pub fn peers(value: &str, node: &str) -> Result<Vec<Peer>, Invalid> {
 mod tests {
 	use super::*;
 
-	const TYO: &str = "d132b0f553e3dcc3";
-	const RDU: &str = "d62c82b23a858876";
-	const BUF: &str = "e38f403f033d87f7";
+	const TYO: &str = "0000000000000001";
+	const RDU: &str = "0000000000000007";
+	const BUF: &str = "0000000000000006";
 
 	#[test]
 	fn peers_are_addresses_by_id_and_this_node_is_passed_over() {

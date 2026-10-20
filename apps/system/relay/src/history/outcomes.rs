@@ -241,13 +241,13 @@ mod tests {
 	#[test]
 	fn a_run_on_a_node_is_its_apps_latest_rows_skips_saying_nothing() {
 		let rows = [
-			("d62c82b23a858876", event(1, 7, "geo", "failed", DAWN)),
-			("d62c82b23a858876", event(2, 7, "geo", "succeeded", DAWN + 5)),
-			("d62c82b23a858876", event(3, 7, "apt", "failed", DAWN + 9)),
-			("d132b0f553e3dcc3", event(4, 7, "geo", "succeeded", DAWN + 2)),
-			("d132b0f553e3dcc3", event(5, 8, "geo", "skipped", DAWN + 2)),
-			("d132b0f553e3dcc3", event(6, 9, "apt", "running", DAWN + 3)),
-			("d132b0f553e3dcc3", event(7, 9, "geo", "failed", DAWN + 1)),
+			("0000000000000007", event(1, 7, "geo", "failed", DAWN)),
+			("0000000000000007", event(2, 7, "geo", "succeeded", DAWN + 5)),
+			("0000000000000007", event(3, 7, "apt", "failed", DAWN + 9)),
+			("0000000000000001", event(4, 7, "geo", "succeeded", DAWN + 2)),
+			("0000000000000001", event(5, 8, "geo", "skipped", DAWN + 2)),
+			("0000000000000001", event(6, 9, "apt", "running", DAWN + 3)),
+			("0000000000000001", event(7, 9, "geo", "failed", DAWN + 1)),
 		];
 		// The panel's: a restart failed then retried in the same minute is one; the next minute's,
 		// and another app's, are their own.
@@ -263,18 +263,18 @@ mod tests {
 			panel(11, "apt", "succeeded", DAWN + 30_000),
 		];
 		let rows = rows.iter().map(|(node, event)| (*node, event));
-		let runs = runs(rows.chain(apart.iter().map(|event| ("d62c82b23a858876", event))));
+		let runs = runs(rows.chain(apart.iter().map(|event| ("0000000000000007", event))));
 		let read: Vec<(&str, Option<u64>, i64, Outcome)> =
 			runs.iter().map(|run| (run.node.as_str(), run.run, run.started, run.outcome)).collect();
 		assert_eq!(
 			read,
 			[
-				("d132b0f553e3dcc3", Some(7), DAWN + 2, Outcome::Succeeded),
-				("d132b0f553e3dcc3", Some(9), DAWN + 1, Outcome::Running),
-				("d62c82b23a858876", Some(7), DAWN, Outcome::PartlyFailed),
-				("d62c82b23a858876", None, DAWN + 30_000, Outcome::Succeeded),
-				("d62c82b23a858876", None, DAWN, Outcome::Succeeded),
-				("d62c82b23a858876", None, DAWN + 60_000, Outcome::Failed),
+				("0000000000000001", Some(7), DAWN + 2, Outcome::Succeeded),
+				("0000000000000001", Some(9), DAWN + 1, Outcome::Running),
+				("0000000000000007", Some(7), DAWN, Outcome::PartlyFailed),
+				("0000000000000007", None, DAWN + 30_000, Outcome::Succeeded),
+				("0000000000000007", None, DAWN, Outcome::Succeeded),
+				("0000000000000007", None, DAWN + 60_000, Outcome::Failed),
 			]
 		);
 	}
@@ -292,20 +292,20 @@ mod tests {
 		];
 		let rows: Vec<(String, Row)> = rows
 			.into_iter()
-			.map(|event| ("d132b0f553e3dcc3".into(), Row { version: 1, event }))
+			.map(|event| ("0000000000000001".into(), Row { version: 1, event }))
 			.collect();
 		let kept = Timestamp::from_millisecond(DAWN).unwrap() + crate::runs::KEPT;
 		store.keep(&rows, kept).unwrap();
 		// The cutoff is at the day's start: nothing of it has gone, and the day before is counted.
 		let counted = read(store.connection(), None, DAWN - DAY, DAWN + 3 * DAY).unwrap();
 		let before = Outcomes { succeeded: 1, ..Outcomes::default() };
-		let day = |at, outcomes, beyond| Day { node: "d132b0f553e3dcc3".into(), at, outcomes, beyond };
+		let day = |at, outcomes, beyond| Day { node: "0000000000000001".into(), at, outcomes, beyond };
 		assert_eq!(counted, [day(DAWN - DAY, before, vec![7])]);
 
 		let later = kept + jiff::SignedDuration::from_hours(2);
 		store.keep(&[], later).unwrap();
 		// Run 7's first row is gone, and it is still not counted again.
-		let counted = read(store.connection(), Some("d132b0f553e3dcc3"), DAWN, DAWN + 3 * DAY).unwrap();
+		let counted = read(store.connection(), Some("0000000000000001"), DAWN, DAWN + 3 * DAY).unwrap();
 		let partly = Outcomes { partly_failed: 1, ..Outcomes::default() };
 		assert_eq!(counted, [day(DAWN, partly, vec![])]);
 		// Counted once, though rows of the day stay a while yet.

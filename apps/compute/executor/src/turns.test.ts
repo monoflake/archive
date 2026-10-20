@@ -31,7 +31,7 @@ function turn(run: string, workflow: string): Turn {
 
 function start(heapMb?: number) {
 	return threads({
-		node: 'd132b0f553e3dcc3',
+		node: '0000000000000001',
 		ledger: `${ledger.base}/ledger`,
 		bindings: { SERVICE: `${ledger.base}/service` },
 		workflows: {
@@ -57,7 +57,7 @@ describe('a turn in a thread', () => {
 			output: { echoed: { hello: 'node' }, at: '2026-10-14T12:00:00.000Z' },
 		});
 		expect(outcomeOf('echo-1')).toMatchObject({
-			node: 'd132b0f553e3dcc3',
+			node: '0000000000000001',
 			fence: 1,
 			outcome: 'done',
 		});

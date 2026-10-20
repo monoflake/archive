@@ -13,9 +13,9 @@ const ACCOUNTS: &str = "accounts-s3cret";
 const TYO: &str = "tyo-read-s3cret";
 const SIN: &str = "sin-read-s3cret";
 /// What control holds tyo, sin and rdu as.
-const TYO_ID: &str = "d132b0f553e3dcc3";
-const SIN_ID: &str = "9d399312d1c3ddc4";
-const RDU_ID: &str = "d62c82b23a858876";
+const TYO_ID: &str = "0000000000000001";
+const SIN_ID: &str = "0000000000000009";
+const RDU_ID: &str = "0000000000000007";
 /// What control's read token is in these tests.
 const CONTROL_READ: &str = "control-read-s3cret";
 

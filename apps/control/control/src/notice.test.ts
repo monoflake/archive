@@ -78,7 +78,7 @@ describe('a registry write that lands', () => {
 		const { sent, env } = bindings({ [TYO]: taking });
 		const { write, waited } = await bound(env);
 		expect((await write('PUT', '/v1/registry/apps/fresh', 0, { placements: [] })).status).toBe(202);
-		const node = shown('100.64.0.9', 'Raleigh', 'US');
+		const node = shown('100.64.0.9', 'Ashburn', 'US');
 		expect((await write('POST', '/v1/registry/nodes', 0, node)).status).toBe(202);
 		expect((await write('PATCH', `/v1/registry/nodes/${TYO}`, 11, { city: 'Osaka' })).status).toBe(
 			202,

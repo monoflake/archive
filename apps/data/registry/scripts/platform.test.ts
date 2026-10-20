@@ -52,8 +52,8 @@ const IDENTITIES = [
 	{ kind: 'username', value: 'ocid1.user.oc1..example' },
 	{ kind: 'email', value: SECRET_VALUE },
 ];
-const NODE_ID = 'abd3922110a78032';
-const SIN_ID = '9d399312d1c3ddc4';
+const NODE_ID = '0000000000000005';
+const SIN_ID = '0000000000000009';
 /** Each node's id by its name, as nodes.toml holds them. */
 const IDS = new Map([
 	['tyo', NODE_ID],

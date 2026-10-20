@@ -129,9 +129,9 @@ async fn a_share_file_that_is_not_one_is_not_held() {
 	assert!(read_share(&path.with_file_name("absent")).is_err());
 }
 
-const TYO: &str = "d132b0f553e3dcc3";
-const SIN: &str = "9d399312d1c3ddc4";
-const NRT: &str = "055d9b63bb419ba4";
+const TYO: &str = "0000000000000001";
+const SIN: &str = "0000000000000009";
+const NRT: &str = "0000000000000002";
 
 #[test]
 fn control_is_its_base_without_a_trailing_slash() {

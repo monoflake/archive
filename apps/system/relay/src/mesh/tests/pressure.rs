@@ -34,11 +34,11 @@ impl Halves for Stuck {
 
 #[tokio::test]
 async fn a_neighbor_that_takes_nothing_written_is_dropped_once_silent() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	let (feed, incoming) = mpsc::unbounded_channel();
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "d132b0f553e3dcc3".into(),
+		node: "0000000000000001".into(),
 		versions: Versions::new(),
 		runs: None,
 		minutes: None,
@@ -51,10 +51,10 @@ async fn a_neighbor_that_takes_nothing_written_is_dropped_once_silent() {
 	let silence = Duration::from_millis(300);
 	let stuck = Heard::within(Stuck { incoming }, silence);
 	let opened = Instant::now();
-	let conversing = tokio::spawn(converse(relay.clone(), Some("d132b0f553e3dcc3"), stuck));
+	let conversing = tokio::spawn(converse(relay.clone(), Some("0000000000000001"), stuck));
 	// This node's next snapshot, which the socket starts to write and never finishes.
 	relay.take(
-		"d62c82b23a858876",
+		"0000000000000007",
 		Carried { version: 1, snapshot: Arc::new(serde_json::json!({})) },
 		None,
 	);
@@ -100,11 +100,11 @@ async fn narrow() -> (Dial, Dial) {
 /// read, and so each still hears the other's newest once the writing stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_ends_writing_faster_than_either_reads_keep_reading() {
-	let (here, there) = (relay("d62c82b23a858876"), relay("9d399312d1c3ddc4"));
+	let (here, there) = (relay("0000000000000007"), relay("0000000000000009"));
 	let (dialed, accepted) = narrow().await;
 	let silence = Duration::from_secs(10);
 	let dialing =
-		tokio::spawn(converse(here.clone(), Some("9d399312d1c3ddc4"), Heard::within(dialed, silence)));
+		tokio::spawn(converse(here.clone(), Some("0000000000000009"), Heard::within(dialed, silence)));
 	let accepting = tokio::spawn(converse(there.clone(), None, Heard::within(accepted, silence)));
 
 	let snapshot = Arc::new(serde_json::json!({ "said": "x".repeat(1024 * 1024) }));
@@ -112,13 +112,13 @@ async fn two_ends_writing_faster_than_either_reads_keep_reading() {
 	let writing = Instant::now();
 	while writing.elapsed() < Duration::from_secs(1) {
 		last += 1;
-		here.take("d62c82b23a858876", Carried { version: last, snapshot: snapshot.clone() }, None);
-		there.take("9d399312d1c3ddc4", Carried { version: last, snapshot: snapshot.clone() }, None);
+		here.take("0000000000000007", Carried { version: last, snapshot: snapshot.clone() }, None);
+		there.take("0000000000000009", Carried { version: last, snapshot: snapshot.clone() }, None);
 		tokio::time::sleep(Duration::from_millis(10)).await;
 	}
 	let caught = async {
-		while here.versions().get("9d399312d1c3ddc4") != Some(&last)
-			|| there.versions().get("d62c82b23a858876") != Some(&last)
+		while here.versions().get("0000000000000009") != Some(&last)
+			|| there.versions().get("0000000000000007") != Some(&last)
 		{
 			tokio::time::sleep(Duration::from_millis(50)).await;
 		}

@@ -10,7 +10,7 @@
 		{
 			"binding": "DB",
 			"database_name": "control",
-			"database_id": "b985205f-ab63-40f0-9212-2148a5e5a2d8",
+			"database_id": "00000000-0000-0000-0000-000000000000",
 			"migrations_dir": "migrations",
 		},
 	],

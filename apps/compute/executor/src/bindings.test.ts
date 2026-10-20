@@ -9,9 +9,9 @@ describe('a binding', () => {
 		expect(
 			addressOf(
 				'http://s.invalid/service/',
-				'https://anything.invalid/v1/things?node=d62c82b23a858876',
+				'https://anything.invalid/v1/things?node=0000000000000007',
 			),
-		).toBe('http://s.invalid/service/v1/things?node=d62c82b23a858876');
+		).toBe('http://s.invalid/service/v1/things?node=0000000000000007');
 		expect(addressOf('http://r.invalid', new Request('http://x.invalid/v1/kinds'))).toBe(
 			'http://r.invalid/v1/kinds',
 		);

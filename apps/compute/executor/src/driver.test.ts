@@ -84,7 +84,7 @@ let lines: string[];
 
 function driver(options: Partial<DriverOptions> = {}): Driver {
 	return new Driver({
-		node: 'd132b0f553e3dcc3',
+		node: '0000000000000001',
 		capacity: 2,
 		pushUrl: 'http://executor.invalid/turns',
 		workflows: ['echo', 'nap'],
@@ -175,7 +175,7 @@ describe('the driver', () => {
 		expect(ledger.renewals).toEqual(
 			Array.from({ length: 3 }, () => ({
 				path: '/v1/runs/test/a/lease',
-				node: 'd132b0f553e3dcc3',
+				node: '0000000000000001',
 				fence: 3,
 			})),
 		);
@@ -234,7 +234,7 @@ describe('the driver', () => {
 		await vi.advanceTimersByTimeAsync(1);
 		expect(runs.terminated).toEqual(['a@4']);
 		expect(ledger.stalls).toEqual([
-			{ path: '/v1/runs/test/a/stalls', node: 'd132b0f553e3dcc3', fence: 4 },
+			{ path: '/v1/runs/test/a/stalls', node: '0000000000000001', fence: 4 },
 		]);
 		expect(lines).toContain('test/a at fence 4 stalled: the run is ready');
 		await stopped(at);

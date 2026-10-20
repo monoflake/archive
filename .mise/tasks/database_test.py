@@ -213,7 +213,7 @@ class Grant(unittest.TestCase):
 class Placed(unittest.TestCase):
 	"""Which nodes an app is placed on, asked of control by id and answered by name."""
 
-	IDS = {"tyo": "d132b0f553e3dcc3", "sin": "9d399312d1c3ddc4", "rdu": "d62c82b23a858876"}
+	IDS = {"tyo": "0000000000000001", "sin": "0000000000000009", "rdu": "0000000000000007"}
 
 	def setUp(self):
 		self.scratch = tempfile.TemporaryDirectory()

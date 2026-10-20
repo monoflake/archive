@@ -1,11 +1,11 @@
 use super::*;
 
 // Nodes by their ids in infra's nodes.toml, which sort sin, gvx, tyo, rdu, buf.
-const SIN: &str = "9d399312d1c3ddc4";
-const GVX: &str = "a0a24bbaa0c0beba";
-const TYO: &str = "d132b0f553e3dcc3";
-const RDU: &str = "d62c82b23a858876";
-const BUF: &str = "e38f403f033d87f7";
+const SIN: &str = "0000000000000009";
+const GVX: &str = "0000000000000004";
+const TYO: &str = "0000000000000001";
+const RDU: &str = "0000000000000007";
+const BUF: &str = "0000000000000006";
 
 fn node(address: &str) -> Node {
 	Node { address: address.into(), retired: false }

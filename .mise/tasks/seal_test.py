@@ -355,7 +355,7 @@ HOST = "host-s3cret"
 READ = "e427d2347bcf34900e081847095ac6d30609ba546b08e680d5f8f4ee8c389116"
 DIGEST = "d0cd53f06568c9cdf0be664afcf1aa86acef7179e1840e1377afe84c902ba564"
 # Each node's id, as nodes.toml holds it and the service keys its token by.
-IDS = {"tyo": "d132b0f553e3dcc3", "sin": "9d399312d1c3ddc4", "rdu": "d62c82b23a858876", "buf": "e38f403f033d87f7"}
+IDS = {"tyo": "0000000000000001", "sin": "0000000000000009", "rdu": "0000000000000007", "buf": "0000000000000006"}
 CONTROL_READ = "control-read-value"
 
 

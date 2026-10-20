@@ -229,7 +229,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn the_mesh_asks_for_the_secret_before_anything_else() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		for bearer in [None, Some("wrong")] {
 			let (status, body) = ask(&relay, mesh::PATH, bearer).await;
 			assert_eq!((status, &body["code"]), (StatusCode::UNAUTHORIZED, &"invalid_token".into()));
@@ -241,7 +241,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn health_waits_for_host_and_state_answers_every_node() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		let (status, body) = ask(&relay, "/health", None).await;
 		assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 		assert_eq!(body["code"], "upstream_unavailable");
@@ -253,24 +253,24 @@ mod tests {
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
 			(&body["data"]["version"], &body["data"]["node"]),
-			(&2.into(), &"d62c82b23a858876".into())
+			(&2.into(), &"0000000000000007".into())
 		);
-		assert!(body["data"]["nodes"]["d62c82b23a858876"]["version"].as_u64().is_some());
-		assert!(body["data"]["nodes"]["d62c82b23a858876"]["heard_at"].is_string());
+		assert!(body["data"]["nodes"]["0000000000000007"]["version"].as_u64().is_some());
+		assert!(body["data"]["nodes"]["0000000000000007"]["heard_at"].is_string());
 		assert_eq!(
-			body["data"]["nodes"]["d62c82b23a858876"]["snapshot"]["apps"],
+			body["data"]["nodes"]["0000000000000007"]["snapshot"]["apps"],
 			serde_json::json!([])
 		);
 	}
 
 	#[tokio::test]
 	async fn runs_answers_every_nodes_rows_with_their_node() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		let (status, body) = ask(&relay, "/runs", None).await;
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
 			body["data"],
-			serde_json::json!({ "version": 2, "node": "d62c82b23a858876", "runs": [] })
+			serde_json::json!({ "version": 2, "node": "0000000000000007", "runs": [] })
 		);
 
 		let started_at = jiff::Timestamp::now().to_string();
@@ -291,7 +291,7 @@ mod tests {
 		let (_, body) = ask(&relay, "/runs", None).await;
 		assert_eq!(
 			body["data"]["runs"],
-			serde_json::json!([{ "node": "d62c82b23a858876", "id": 42, "app": "geo", "action": "deploy",
+			serde_json::json!([{ "node": "0000000000000007", "id": 42, "app": "geo", "action": "deploy",
 				"source": { "kind": "panel" }, "outcome": "running", "stage": "loading",
 				"started_at": started_at }])
 		);
@@ -299,7 +299,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn runs_answer_from_a_moment_with_what_still_runs_and_lean_of_what_no_count_reads() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		let now = jiff::Timestamp::now();
 		let ago = |hours: i64| (now - jiff::SignedDuration::from_hours(hours)).to_string();
 		let event = |id: i64, outcome: &str, started_at: String| crate::host::Event {
@@ -351,13 +351,13 @@ mod tests {
 
 	#[tokio::test]
 	async fn history_answers_every_node_and_refuses_a_span_it_cannot_cut() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		let (status, body) = ask(&relay, "/history?span=86400&slot=3600", None).await;
 		assert_eq!(status, StatusCode::OK);
 		let data = &body["data"];
 		assert_eq!(
 			(&data["version"], &data["node"], &data["slot"]),
-			(&2.into(), &"d62c82b23a858876".into(), &3600.into())
+			(&2.into(), &"0000000000000007".into(), &3600.into())
 		);
 		assert!(data["from"].is_string() && data["until"].is_string());
 		assert_eq!(data["nodes"], serde_json::json!({}));
@@ -375,7 +375,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn an_answer_is_compressed_when_the_reader_accepts_it_and_plain_when_not() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		let request = |encoding: Option<&str>| {
 			let mut request = Request::get("/runs");
 			if let Some(encoding) = encoding {
@@ -401,7 +401,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_page_elsewhere_cannot_open_the_live_socket() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		let foreign = Some(("origin", "https://evil.test".to_owned()));
 		let (status, body) = asked(&relay, "/live", foreign).await;
 		assert_eq!((status, &body["code"]), (StatusCode::FORBIDDEN, &"invalid_address".into()));
@@ -414,7 +414,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn anything_else_is_no_route() {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		assert_eq!(ask(&relay, "/", None).await.0, StatusCode::NOT_FOUND);
 	}
 

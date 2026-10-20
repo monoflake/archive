@@ -52,7 +52,7 @@ async function writable() {
 describe('create', () => {
 	it('makes a node at revision 0, its id drawn and answered, and a change naming who', async () => {
 		const { write, get, changes } = await writable();
-		const spec = shown('100.64.0.3', 'Raleigh', 'US');
+		const spec = shown('100.64.0.3', 'Ashburn', 'US');
 		const made = await write('POST', '/v1/registry/nodes', 0, spec);
 		expect(made).toEqual(landed(42, expect.stringMatching(/^[0-9a-f]{16}$/)));
 		const id = (made.body.data as { id: string }).id;
@@ -98,7 +98,7 @@ describe('create', () => {
 			(array as Uint8Array).set(held);
 			return array;
 		});
-		const made = await write('POST', '/v1/registry/nodes', 0, shown('100.64.0.3', 'Raleigh', 'US'));
+		const made = await write('POST', '/v1/registry/nodes', 0, shown('100.64.0.3', 'Ashburn', 'US'));
 		expect(made.status).toBe(202);
 		expect((made.body.data as { id: string }).id).not.toBe(TYO);
 		expect(draw.mock.calls.length).toBeGreaterThan(2);

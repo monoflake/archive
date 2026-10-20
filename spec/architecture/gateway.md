@@ -113,7 +113,7 @@ recognize first. A deployment that runs everywhere at once, as a Worker does, is
 
 | Code  | Where                                            | So a deployment there is                     |
 | ----- | ------------------------------------------------ | -------------------------------------------- |
-| `rdu` | the machine at home, by Raleigh-Durham's airport | `api-rdu-int.ixc.one`, `geo-rdu-int.ixc.one` |
+| `rdu` | the machine at home | `api-rdu-int.ixc.one`, `geo-rdu-int.ixc.one` |
 | `glo` | Cloudflare's Workers, everywhere                 | `api-glo-cf.ixc.one`                         |
 
 ## A version is in the path, and it moves only on a break

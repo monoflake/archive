@@ -150,9 +150,9 @@ impl ScopeTokens {
 mod tests {
 	use super::*;
 
-	const TYO: &str = "d132b0f553e3dcc3";
-	const SIN: &str = "9d399312d1c3ddc4";
-	const RDU: &str = "d62c82b23a858876";
+	const TYO: &str = "0000000000000001";
+	const SIN: &str = "0000000000000009";
+	const RDU: &str = "0000000000000007";
 
 	#[test]
 	fn a_node_is_admitted_by_its_own_token_alone() {

@@ -9,7 +9,7 @@ import { Store } from './store.ts';
 const COMMIT = 'c9a97660'.padEnd(40, '0');
 const RELEASE: Release = { repository: 'monoflake/platform', run: 9, commit: COMMIT };
 const CONTROL = URLS.control;
-const TYO = 'd132b0f553e3dcc3';
+const TYO = '0000000000000001';
 
 /** An app as `GET /v1/registry/apps/{name}` answers it, at `revision`, released by `release`. */
 function app(revision: number, release?: Partial<Release>) {

@@ -196,7 +196,7 @@ export const URLS = {
 		cloudflare: { api: 'https://api.cloudflare.com/client/v4' },
 		// The bucket CI leaves each run's artifacts in, Cloudflare R2's, which the registry task tells
 		// the deployer. See RFC q28g5 and 7cwmp.
-		artifacts: 'https://62163885eb1943e6561e004ac10a5f22.r2.cloudflarestorage.com',
+		artifacts: 'https://00000000000000000000000000000000.r2.cloudflarestorage.com',
 		// Whose GeoLite2 is, which `geo` credits in every answer. The files themselves are fetched by
 		// geo's Dockerfile; see spec/architecture/geo.md, "GeoLite2 is fetched as the image is built".
 		geolite: {
@@ -230,7 +230,7 @@ export const GATEWAY = {
 		az: 'Azure',
 		rkn: 'RackNerd',
 	},
-	regions: { rdu: 'the machine at home, by Raleigh-Durham', glo: 'everywhere, as a Worker runs' },
+	regions: { rdu: 'the machine at home', glo: 'everywhere, as a Worker runs' },
 } as const;
 
 /**

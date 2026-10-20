@@ -292,15 +292,15 @@ mod tests {
 	] }"#;
 
 	const APPS: &str = r#"{ "status": "success", "data": [
-		{ "manifest": { "version": 1, "name": "geo", "placements": ["d62c82b23a858876"],
+		{ "manifest": { "version": 1, "name": "geo", "placements": ["0000000000000007"],
 				"container": { "port": 23440, "health": "/health", "memory_mb": 768 },
 				"interface": { "domain": "where", "lan": true } },
 			"image": "geo:9f1c2ab",
-			"previous": { "manifest": { "version": 1, "name": "geo", "placements": ["d62c82b23a858876"] },
+			"previous": { "manifest": { "version": 1, "name": "geo", "placements": ["0000000000000007"] },
 				"image": "geo:1b2c3d4" },
 			"deployed_at": "2026-10-05T08:00:00Z", "held": false, "running": true,
 			"restorable": true, "platform": false, "driver": false, "rollout": "beside" },
-		{ "manifest": { "version": 1, "name": "apt", "placements": ["d62c82b23a858876"] },
+		{ "manifest": { "version": 1, "name": "apt", "placements": ["0000000000000007"] },
 			"image": "apt:1b2c3d4", "previous": null, "deployed_at": "2026-10-01T08:00:00Z",
 			"held": true, "running": false, "restorable": false, "platform": false, "driver": false }
 	] }"#;

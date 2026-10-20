@@ -88,26 +88,26 @@ impl Halves for Fake {
 
 #[tokio::test]
 async fn meeting_sends_hello_and_then_exactly_what_the_other_lacks() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	let snapshot = Arc::new(serde_json::json!({}));
 	for (node, version) in [
-		("d62c82b23a858876", 9),
-		("d132b0f553e3dcc3", 4),
-		("e38f403f033d87f7", 7),
-		("a0a24bbaa0c0beba", 2),
+		("0000000000000007", 9),
+		("0000000000000001", 4),
+		("0000000000000006", 7),
+		("0000000000000004", 2),
 	] {
 		relay.take(node, Carried { version, snapshot: snapshot.clone() }, None);
 	}
 	let (feed, incoming) = mpsc::unbounded_channel();
 	let sent = Arc::new(Mutex::new(Vec::new()));
 	let theirs = Versions::from([
-		("d132b0f553e3dcc3".into(), 6),
-		("e38f403f033d87f7".into(), 7),
-		("a0a24bbaa0c0beba".into(), 1),
+		("0000000000000001".into(), 6),
+		("0000000000000006".into(), 7),
+		("0000000000000004".into(), 1),
 	]);
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "d132b0f553e3dcc3".into(),
+		node: "0000000000000001".into(),
 		versions: theirs,
 		runs: None,
 		minutes: None,
@@ -120,10 +120,10 @@ async fn meeting_sends_hello_and_then_exactly_what_the_other_lacks() {
 	drop(feed);
 
 	let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
-	converse(relay.clone(), Some("d132b0f553e3dcc3"), fake).await.unwrap();
+	converse(relay.clone(), Some("0000000000000001"), fake).await.unwrap();
 	let sent = sent.lock().unwrap();
 	assert!(matches!(&sent[0], Message::Hello { node, versions, .. }
-		if node == "d62c82b23a858876" && *versions == relay.versions()));
+		if node == "0000000000000007" && *versions == relay.versions()));
 	// Not tyo's own, however old it is here, and not buf, which it holds as new.
 	let nodes: Vec<(&str, u64)> = sent[1..]
 		.iter()
@@ -132,13 +132,13 @@ async fn meeting_sends_hello_and_then_exactly_what_the_other_lacks() {
 			other => panic!("sent {other:?}"),
 		})
 		.collect();
-	assert_eq!(nodes, [("a0a24bbaa0c0beba", 2), ("d62c82b23a858876", 9)]);
+	assert_eq!(nodes, [("0000000000000004", 2), ("0000000000000007", 9)]);
 }
 
 /// A relay of version 1 names each node by its name, so its nodes would be held twice over.
 #[tokio::test]
 async fn a_neighbor_speaking_names_is_refused() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	let (feed, incoming) = mpsc::unbounded_channel();
 	let hello = Message::Hello {
 		version: 1,
@@ -154,7 +154,7 @@ async fn a_neighbor_speaking_names_is_refused() {
 	feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 	drop(feed);
 	let fake = Heard::new(Fake { incoming, sent: Arc::new(Mutex::new(Vec::new())), echo: None });
-	let ended = converse(relay.clone(), Some("d132b0f553e3dcc3"), fake).await;
+	let ended = converse(relay.clone(), Some("0000000000000001"), fake).await;
 	assert!(matches!(ended, Err(MeshError::Version(1))), "{ended:?}");
 	assert!(!relay.versions().contains_key("tyo"));
 }
@@ -165,7 +165,7 @@ async fn met(relay: &Arc<Relay>, runs: Option<Versions>) -> Vec<Message> {
 	let sent = Arc::new(Mutex::new(Vec::new()));
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "d132b0f553e3dcc3".into(),
+		node: "0000000000000001".into(),
 		versions: Versions::new(),
 		runs,
 		minutes: None,
@@ -177,13 +177,13 @@ async fn met(relay: &Arc<Relay>, runs: Option<Versions>) -> Vec<Message> {
 	feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 	drop(feed);
 	let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
-	converse(relay.clone(), Some("d132b0f553e3dcc3"), fake).await.unwrap();
+	converse(relay.clone(), Some("0000000000000001"), fake).await.unwrap();
 	sent.lock().unwrap().clone()
 }
 
 #[tokio::test]
 async fn a_neighbor_is_sent_the_runs_it_lacks_and_one_older_than_runs_none() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	let row = |id: i64, version: u64| crate::runs::Row {
 		version,
 		event: crate::host::Event {
@@ -199,12 +199,12 @@ async fn a_neighbor_is_sent_the_runs_it_lacks_and_one_older_than_runs_none() {
 			finished_at: None,
 		},
 	};
-	for (node, version) in [("e38f403f033d87f7", 7), ("d132b0f553e3dcc3", 4)] {
+	for (node, version) in [("0000000000000006", 7), ("0000000000000001", 4)] {
 		relay.take_runs(Batch { node: node.into(), above: 0, version, rows: vec![row(1, version)] });
 	}
 
 	let runs: Vec<(String, u64, usize)> =
-		met(&relay, Some(Versions::from([("e38f403f033d87f7".into(), 3)])))
+		met(&relay, Some(Versions::from([("0000000000000006".into(), 3)])))
 			.await
 			.into_iter()
 			.filter_map(|message| match message {
@@ -213,7 +213,7 @@ async fn a_neighbor_is_sent_the_runs_it_lacks_and_one_older_than_runs_none() {
 			})
 			.collect();
 	// buf above what tyo holds of it, and never tyo's own.
-	assert_eq!(runs, [("e38f403f033d87f7".into(), 3, 1)]);
+	assert_eq!(runs, [("0000000000000006".into(), 3, 1)]);
 
 	let older = met(&relay, None).await;
 	assert!(matches!(&older[0], Message::Hello { runs: Some(_), .. }));
@@ -226,7 +226,7 @@ async fn met_minutes(relay: &Arc<Relay>, minutes: Option<Versions>) -> Vec<Messa
 	let sent = Arc::new(Mutex::new(Vec::new()));
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "d132b0f553e3dcc3".into(),
+		node: "0000000000000001".into(),
 		versions: Versions::new(),
 		runs: None,
 		minutes,
@@ -238,24 +238,24 @@ async fn met_minutes(relay: &Arc<Relay>, minutes: Option<Versions>) -> Vec<Messa
 	feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 	drop(feed);
 	let fake = Heard::new(Fake { incoming, sent: sent.clone(), echo: None });
-	converse(relay.clone(), Some("d132b0f553e3dcc3"), fake).await.unwrap();
+	converse(relay.clone(), Some("0000000000000001"), fake).await.unwrap();
 	sent.lock().unwrap().clone()
 }
 
 #[tokio::test]
 async fn a_neighbor_is_sent_the_minutes_it_lacks_and_one_older_than_minutes_none() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	let minute = |version: u64, at: i64| crate::history::Row {
 		version,
 		minute: serde_json::from_value(serde_json::json!({ "at": at, "beats": 20 })).unwrap(),
 	};
-	for (node, version) in [("e38f403f033d87f7", 7), ("d132b0f553e3dcc3", 4)] {
+	for (node, version) in [("0000000000000006", 7), ("0000000000000001", 4)] {
 		let rows = vec![minute(version, 1_791_499_980_000)];
 		relay.take_minutes(crate::history::Batch { node: node.into(), above: 0, version, rows });
 	}
-	let sent = met_minutes(&relay, Some(Versions::from([("e38f403f033d87f7".into(), 3)]))).await;
+	let sent = met_minutes(&relay, Some(Versions::from([("0000000000000006".into(), 3)]))).await;
 	assert!(matches!(&sent[0], Message::Hello { minutes: Some(minutes), .. }
-		if minutes.get("e38f403f033d87f7") == Some(&7)));
+		if minutes.get("0000000000000006") == Some(&7)));
 	let minutes: Vec<(String, u64, usize)> = sent
 		.into_iter()
 		.filter_map(|message| match message {
@@ -264,26 +264,26 @@ async fn a_neighbor_is_sent_the_minutes_it_lacks_and_one_older_than_minutes_none
 		})
 		.collect();
 	// buf above what tyo holds of it, and never tyo's own.
-	assert_eq!(minutes, [("e38f403f033d87f7".into(), 3, 1)]);
+	assert_eq!(minutes, [("0000000000000006".into(), 3, 1)]);
 	let older = met_minutes(&relay, None).await;
 	assert!(!older.iter().any(|message| matches!(message, Message::Minutes(_))));
 	// A minute not on a minute's start is no minute, and is not taken.
 	let odd = vec![minute(9, 1_791_499_980_001)];
 	relay.take_minutes(crate::history::Batch {
-		node: "a0a24bbaa0c0beba".into(),
+		node: "0000000000000004".into(),
 		above: 0,
 		version: 9,
 		rows: odd,
 	});
-	let lacking = relay.lacking_minutes(&Versions::new(), "e38f403f033d87f7").await.unwrap();
-	assert!(lacking.iter().find(|batch| batch.node == "a0a24bbaa0c0beba").unwrap().rows.is_empty());
+	let lacking = relay.lacking_minutes(&Versions::new(), "0000000000000006").await.unwrap();
+	assert!(lacking.iter().find(|batch| batch.node == "0000000000000004").unwrap().rows.is_empty());
 }
 
 #[tokio::test]
 async fn a_neighbor_that_is_not_the_one_dialed_is_refused() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	for (said, expected) in
-		[("e38f403f033d87f7", Some("d132b0f553e3dcc3")), ("d62c82b23a858876", None)]
+		[("0000000000000006", Some("0000000000000001")), ("0000000000000007", None)]
 	{
 		let (feed, incoming) = mpsc::unbounded_channel();
 		let hello = Message::Hello {
@@ -306,9 +306,9 @@ async fn a_neighbor_that_is_not_the_one_dialed_is_refused() {
 
 #[tokio::test]
 async fn a_neighbor_held_as_retired_is_refused() {
-	let relay = relay("d62c82b23a858876");
-	relay.set_retired(std::collections::BTreeSet::from(["e38f403f033d87f7".to_owned()]));
-	for (said, refused) in [("e38f403f033d87f7", true), ("d132b0f553e3dcc3", false)] {
+	let relay = relay("0000000000000007");
+	relay.set_retired(std::collections::BTreeSet::from(["0000000000000006".to_owned()]));
+	for (said, refused) in [("0000000000000006", true), ("0000000000000001", false)] {
 		let (feed, incoming) = mpsc::unbounded_channel();
 		let hello = Message::Hello {
 			version: VERSION,
@@ -332,11 +332,11 @@ async fn a_neighbor_held_as_retired_is_refused() {
 
 #[tokio::test]
 async fn a_pong_times_the_round_trip_to_the_neighbor_that_sent_it() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	let (feed, incoming) = mpsc::unbounded_channel();
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "d132b0f553e3dcc3".into(),
+		node: "0000000000000001".into(),
 		versions: Versions::new(),
 		runs: None,
 		minutes: None,
@@ -347,7 +347,7 @@ async fn a_pong_times_the_round_trip_to_the_neighbor_that_sent_it() {
 	};
 	feed.send(Received::Text(serde_json::to_string(&hello).unwrap())).unwrap();
 	let fake = Heard::new(Fake { incoming, sent: Arc::default(), echo: Some(feed) });
-	let conversing = tokio::spawn(converse(relay.clone(), Some("d132b0f553e3dcc3"), fake));
+	let conversing = tokio::spawn(converse(relay.clone(), Some("0000000000000001"), fake));
 	let timed = async {
 		while relay.round_trips().is_empty() {
 			tokio::time::sleep(Duration::from_millis(5)).await;
@@ -356,8 +356,8 @@ async fn a_pong_times_the_round_trip_to_the_neighbor_that_sent_it() {
 	tokio::time::timeout(Duration::from_secs(5), timed).await.expect("the first ping, timed");
 	conversing.abort();
 	let round_trips = relay.round_trips();
-	assert_eq!(round_trips.keys().collect::<Vec<_>>(), ["d132b0f553e3dcc3"]);
-	assert!((0.0..1000.0).contains(&round_trips["d132b0f553e3dcc3"]));
+	assert_eq!(round_trips.keys().collect::<Vec<_>>(), ["0000000000000001"]);
+	assert!((0.0..1000.0).contains(&round_trips["0000000000000001"]));
 }
 
 #[test]
@@ -391,10 +391,10 @@ fn the_secret_admits_and_nothing_else_does() {
 
 #[test]
 fn the_messages_are_tagged_by_type() {
-	let versions = Versions::from([("d132b0f553e3dcc3".into(), 7)]);
+	let versions = Versions::from([("0000000000000001".into(), 7)]);
 	let hello = Message::Hello {
 		version: 1,
-		node: "d62c82b23a858876".into(),
+		node: "0000000000000007".into(),
 		versions,
 		runs: None,
 		minutes: None,
@@ -405,27 +405,27 @@ fn the_messages_are_tagged_by_type() {
 	};
 	assert_eq!(
 		serde_json::to_value(&hello).unwrap(),
-		serde_json::json!({ "type": "hello", "version": 1, "node": "d62c82b23a858876", "versions": { "d132b0f553e3dcc3": 7 } })
+		serde_json::json!({ "type": "hello", "version": 1, "node": "0000000000000007", "versions": { "0000000000000001": 7 } })
 	);
 	let node: Message = serde_json::from_str(
-		r#"{ "type": "node", "node": "d132b0f553e3dcc3", "state": { "version": 8, "snapshot": { "apps": [] } } }"#,
+		r#"{ "type": "node", "node": "0000000000000001", "state": { "version": 8, "snapshot": { "apps": [] } } }"#,
 	)
 	.unwrap();
 	assert!(
-		matches!(node, Message::Node { node, state } if node == "d132b0f553e3dcc3" && state.version == 8)
+		matches!(node, Message::Node { node, state } if node == "0000000000000001" && state.version == 8)
 	);
 
 	// A relay older than the runs says nothing of them, and is read as such.
 	let older: Message =
-		serde_json::from_str(r#"{ "type": "versions", "versions": { "d132b0f553e3dcc3": 7 } }"#)
+		serde_json::from_str(r#"{ "type": "versions", "versions": { "0000000000000001": 7 } }"#)
 			.unwrap();
 	assert!(matches!(older, Message::Versions { runs: None, minutes: None, .. }));
 	let runs: Message = serde_json::from_str(
-		r#"{ "type": "runs", "node": "d132b0f553e3dcc3", "above": 3, "version": 9, "rows": [{ "version": 9,
+		r#"{ "type": "runs", "node": "0000000000000001", "above": 3, "version": 9, "rows": [{ "version": 9,
 			"id": 1, "app": "geo", "action": "deploy", "source": { "kind": "panel" },
 			"outcome": "running", "started_at": "2026-10-09T12:00:00Z" }] }"#,
 	)
 	.unwrap();
 	assert!(matches!(runs, Message::Runs(Batch { node, above: 3, version: 9, rows })
-		if node == "d132b0f553e3dcc3" && rows[0].event.id == 1 && rows[0].version == 9));
+		if node == "0000000000000001" && rows[0].event.id == 1 && rows[0].version == 9));
 }

@@ -30,7 +30,7 @@ impl Halves for Raw {
 fn hello_from_tyo(zstd: Option<bool>) -> Received {
 	let hello = Message::Hello {
 		version: VERSION,
-		node: "d132b0f553e3dcc3".into(),
+		node: "0000000000000001".into(),
 		versions: Versions::new(),
 		runs: None,
 		minutes: None,
@@ -45,15 +45,15 @@ fn hello_from_tyo(zstd: Option<bool>) -> Received {
 #[tokio::test]
 async fn a_neighbor_that_reads_compressed_frames_is_sent_them_and_one_that_does_not_plain() {
 	for (zstd, packed) in [(Some(true), true), (None, false)] {
-		let relay = relay("d62c82b23a858876");
+		let relay = relay("0000000000000007");
 		let snapshot = Arc::new(serde_json::json!({ "apps": [{ "name": "geo" }] }));
-		relay.take("d62c82b23a858876", Carried { version: 9, snapshot }, None);
+		relay.take("0000000000000007", Carried { version: 9, snapshot }, None);
 		let (feed, incoming) = mpsc::unbounded_channel();
 		feed.send(hello_from_tyo(zstd)).unwrap();
 		drop(feed);
 		let frames = Arc::new(Mutex::new(Vec::new()));
 		let raw = Heard::new(Raw { incoming, frames: frames.clone() });
-		converse(relay, Some("d132b0f553e3dcc3"), raw).await.unwrap();
+		converse(relay, Some("0000000000000001"), raw).await.unwrap();
 		let frames = frames.lock().unwrap();
 		// The hello goes plain either way: it is what says whether the other end reads them.
 		assert!(matches!(&frames[0], Frame::Text(hello) if hello.contains("\"zstd\":true")));
@@ -69,30 +69,30 @@ async fn a_neighbor_that_reads_compressed_frames_is_sent_them_and_one_that_does_
 			})
 			.collect();
 		assert!(
-			matches!(&sent[0], Message::Node { node, state } if node == "d62c82b23a858876" && state.version == 9)
+			matches!(&sent[0], Message::Node { node, state } if node == "0000000000000007" && state.version == 9)
 		);
 	}
 }
 
 #[tokio::test]
 async fn a_corrupt_frame_ends_the_conversation_and_the_next_starts_fresh() {
-	let relay = relay("d62c82b23a858876");
+	let relay = relay("0000000000000007");
 	let (feed, incoming) = mpsc::unbounded_channel();
 	feed.send(hello_from_tyo(Some(true))).unwrap();
 	feed.send(Received::Binary(Bytes::from_static(b"no zstd stream"))).unwrap();
 	let raw = Heard::new(Raw { incoming, frames: Arc::default() });
-	let ended = converse(relay.clone(), Some("d132b0f553e3dcc3"), raw).await;
+	let ended = converse(relay.clone(), Some("0000000000000001"), raw).await;
 	assert!(matches!(ended, Err(MeshError::Corrupt(_))), "{ended:?}");
 	drop(feed);
 
 	// Redialed: new contexts both ways, and the first compressed frame reads at once.
 	let (feed, incoming) = mpsc::unbounded_channel();
 	feed.send(hello_from_tyo(Some(true))).unwrap();
-	let beat = Message::Beat { node: "d132b0f553e3dcc3".into(), at: 1_791_999_000_000 };
+	let beat = Message::Beat { node: "0000000000000001".into(), at: 1_791_999_000_000 };
 	let packed = Packer::new().unwrap().pack(serde_json::to_string(&beat).unwrap().as_bytes());
 	feed.send(Received::Binary(packed.unwrap().into())).unwrap();
 	drop(feed);
 	let raw = Heard::new(Raw { incoming, frames: Arc::default() });
-	converse(relay.clone(), Some("d132b0f553e3dcc3"), raw).await.unwrap();
-	assert_eq!(relay.beats().get("d132b0f553e3dcc3"), Some(&1_791_999_000_000));
+	converse(relay.clone(), Some("0000000000000001"), raw).await.unwrap();
+	assert_eq!(relay.beats().get("0000000000000001"), Some(&1_791_999_000_000));
 }
